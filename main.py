@@ -353,6 +353,7 @@ def refresh_token(
         "token_type": "bearer"
     }
 
+@app.delete("/delete")
 def delete_account(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -373,6 +374,9 @@ def delete_account(
     db.query(User).filter_by(id=current_user.id).delete()
 
     db.commit()
+
+    # Disconnect all the websockets for this user
+    asyncio.run(manager.disconnect_user(current_user.id))
 
     return {"message": "Your account and all associated data have been deleted."}
 
