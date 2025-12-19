@@ -313,25 +313,28 @@ def logout(
     return {"message": "Logged out successfully"}
 
 
-@app.post("/refresh", response_model=Token,dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+@app.post("/refresh", response_model=Token, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
 def refresh_token(
     refresh_token: str = Body(...),
     db: Session = Depends(get_db)
 ):
     encrypted_input_token = encrypt_token(refresh_token)
     token_entry = db.query(RefreshToken).filter(RefreshToken.token == encrypted_input_token).first()
+    
     if not token_entry or token_entry.expiry < datetime.utcnow():
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
-    db.delete(token_entry)
-    db.commit()
+    # Store necessary info before deleting the old entry
+    user_id = token_entry.user_id
+    device_id = token_entry.device_id 
 
-    user = db.query(User).filter(User.id == token_entry.user_id).first()
+    user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Create new tokens
     access_token = create_access_token(
-        data={"sub": user.email, "device_id": device.device_id},
+        data={"sub": user.email, "device_id": device_id}, # Fixed reference
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
 
@@ -339,11 +342,13 @@ def refresh_token(
     encrypted_refresh_token = encrypt_token(new_plain_refresh_token)
     refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
+    # Replace the old token with the new one (Rotation)
+    db.delete(token_entry)
     db.add(RefreshToken(
         user_id=user.id,
         token=encrypted_refresh_token,
         expiry=refresh_expiry,
-        device_id=user.device_id
+        device_id=device_id # Fixed reference
     ))
     db.commit()
 
