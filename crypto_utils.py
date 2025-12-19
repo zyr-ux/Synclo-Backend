@@ -22,7 +22,7 @@ def decrypt_clipboard(encrypted_blob: bytes, key: bytes) -> str:
 
 def hash_refresh_token(token: str) -> str:
     return hmac.new(
-        REFRESH_SECRET_KEY.encode(),
+        REFRESH_SECRET_KEY,
         token.encode(),
         hashlib.sha256
     ).hexdigest()
