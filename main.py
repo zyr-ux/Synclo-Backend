@@ -17,7 +17,7 @@ from database import SessionLocal, engine, Base
 from models import User, Device, Clipboard, EncryptionKey, RefreshToken, BlacklistedToken
 from schemas import Token, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, ClipboardOutList, SessionInfo
 from auth import hash_password, verify_password, create_access_token, get_current_user, get_user_from_token_ws, SECRET_KEY, ALGORITHM
-from crypto_utils import encrypt_clipboard, decrypt_clipboard, encrypt_token
+from crypto_utils import encrypt_clipboard, decrypt_clipboard, hash_refresh_token
 from connection_manager import ConnectionManager
 from utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries
 from logging_config import logger
@@ -75,17 +75,14 @@ def health_check():
 
 @app.post("/register", response_model=Token,dependencies=[Depends(RateLimiter(times=3, seconds=60))])
 def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
-    # Check if email already exists
     if db.query(User).filter(User.email == user.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    # Create user
     new_user = User(email=user.email, hashed_password=hash_password(user.password))
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
 
-    # Register device
     existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
     if not existing_device:
         new_device = Device(
@@ -96,20 +93,19 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
         db.add(new_device)
         db.commit()
 
-    # Create access token with device_id
     access_token = create_access_token(
         data={"sub": new_user.email, "device_id": user.device_id},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
 
-    # Create refresh token
     plain_refresh_token = token_urlsafe(64)
-    encrypted_refresh_token = encrypt_token(plain_refresh_token)
+    hashed_refresh = hash_refresh_token(plain_refresh_token)
+
     refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
     db.add(RefreshToken(
         user_id=new_user.id,
-        token=encrypted_refresh_token,
+        token=hashed_refresh,
         expiry=refresh_expiry,
         device_id=user.device_id
     ))
@@ -122,17 +118,14 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     }
 
 # Login route
-@app.post("/login", response_model=Token,dependencies=[Depends(RateLimiter(times=5, seconds=60))])
+@app.post("/login", response_model=Token, dependencies=[Depends(RateLimiter(times=5, seconds=60))])
 def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
     if not db_user or not verify_password(user.password, db_user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    # Cleaup Expired Refresh Tokens
-    cleanup_expired_refresh_tokens(db)
-    #logger.info("Logger initialized")
 
-    # Check if device is registered for this user
+    cleanup_expired_refresh_tokens(db)
+
     device = db.query(Device).filter_by(device_id=user.device_id, user_id=db_user.id).first()
     if not device:
         if ALLOW_AUTO_DEVICE_REGISTRATION:
@@ -153,14 +146,16 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
     )
 
     plain_refresh_token = token_urlsafe(64)
-    encrypted_refresh_token = encrypt_token(plain_refresh_token)
+    hashed_refresh = hash_refresh_token(plain_refresh_token)
+
     refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+
     db.add(RefreshToken(
-        user_id=db_user.id, 
-        token=encrypted_refresh_token, 
+        user_id=db_user.id,
+        token=hashed_refresh,
         expiry=refresh_expiry,
         device_id=user.device_id
-        ))
+    ))
     db.commit()
 
     return {
@@ -288,73 +283,64 @@ def get_clipboard_history(
     return {"history": decrypted}
 
 @app.post("/logout")
-def logout(
-    refresh_token: str = Body(...),
-    access_token: str = Depends(oauth2_scheme),  # Access token comes from Authorization header
-    db: Session = Depends(get_db)
-):
-    # Step 1: Blacklist the access token
+def logout(refresh_token: str = Body(...),access_token: str = Depends(oauth2_scheme),db: Session = Depends(get_db)):
     try:
         payload = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM])
         exp = payload.get("exp")
         if not exp:
-            raise HTTPException(status_code=400, detail="Invalid token")
+            raise HTTPException(status_code=400, detail="Invalid access token")
 
         db.add(BlacklistedToken(token=access_token, expiry=datetime.utcfromtimestamp(exp)))
 
     except jwt.JWTError:
         raise HTTPException(status_code=401, detail="Invalid access token")
 
-    # Step 2: Delete the refresh token
-    encrypted_refresh = encrypt_token(refresh_token)
-    db.query(RefreshToken).filter(RefreshToken.token == encrypted_refresh).delete()
+    hashed_refresh = hash_refresh_token(refresh_token)
+    db.query(RefreshToken).filter(RefreshToken.token == hashed_refresh).delete()
 
     db.commit()
     return {"message": "Logged out successfully"}
 
-
 @app.post("/refresh", response_model=Token, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
-def refresh_token(
-    refresh_token: str = Body(...),
-    db: Session = Depends(get_db)
-):
-    encrypted_input_token = encrypt_token(refresh_token)
-    token_entry = db.query(RefreshToken).filter(RefreshToken.token == encrypted_input_token).first()
-    
+def refresh_token(refresh_token: str = Body(...), db: Session = Depends(get_db)):
+    hashed_input = hash_refresh_token(refresh_token)
+
+    token_entry = db.query(RefreshToken).filter(
+        RefreshToken.token == hashed_input
+    ).first()
+
     if not token_entry or token_entry.expiry < datetime.utcnow():
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
-    # Store necessary info before deleting the old entry
     user_id = token_entry.user_id
-    device_id = token_entry.device_id 
+    device_id = token_entry.device_id
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Create new tokens
     access_token = create_access_token(
-        data={"sub": user.email, "device_id": device_id}, # Fixed reference
+        data={"sub": user.email, "device_id": device_id},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
 
-    new_plain_refresh_token = token_urlsafe(64)
-    encrypted_refresh_token = encrypt_token(new_plain_refresh_token)
-    refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    new_refresh_plain = token_urlsafe(64)
+    new_refresh_hashed = hash_refresh_token(new_refresh_plain)
 
-    # Replace the old token with the new one (Rotation)
+    new_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+
     db.delete(token_entry)
     db.add(RefreshToken(
         user_id=user.id,
-        token=encrypted_refresh_token,
-        expiry=refresh_expiry,
-        device_id=device_id # Fixed reference
+        token=new_refresh_hashed,
+        expiry=new_expiry,
+        device_id=device_id
     ))
     db.commit()
 
     return {
         "access_token": access_token,
-        "refresh_token": new_plain_refresh_token,
+        "refresh_token": new_refresh_plain,
         "token_type": "bearer"
     }
 
