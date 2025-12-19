@@ -303,6 +303,8 @@ def logout(refresh_token: str = Body(...),access_token: str = Depends(oauth2_sch
 
 @app.post("/refresh", response_model=Token, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
 def refresh_token(refresh_token: str = Body(...), db: Session = Depends(get_db)):
+    print(f"DEBUG: raw_token_value: [{refresh_token}]")
+    print(f"DEBUG: hashed_value: {hash_refresh_token(refresh_token)}")
     hashed_input = hash_refresh_token(refresh_token)
 
     token_entry = db.query(RefreshToken).filter(
