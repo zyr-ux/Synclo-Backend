@@ -5,26 +5,18 @@ services:
     env_file:
       - .env
     restart: unless-stopped
-    expose:
-      - 8000
+    ports:
+      - "8000:8000"
     volumes:
       - ./data:/app/data        # SQLite DB
       - ./logs:/app/logs        # Logs
     depends_on:
       - redis
-    networks:
-      - caddy_network
-
+    
   redis:
     image: redis:7-alpine
     container_name: redis
     restart: unless-stopped
     expose:
       - 6379
-    networks:
-      - caddy_network
-
-networks:
-  caddy_network:
-    external: true
 
