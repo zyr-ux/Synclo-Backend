@@ -150,6 +150,12 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
 
     refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
+    db.query(RefreshToken).filter_by(
+    user_id=db_user.id,
+    device_id=user.device_id
+    ).delete()
+
+
     db.add(RefreshToken(
         user_id=db_user.id,
         token=hashed_refresh,
