@@ -69,6 +69,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
 
 def get_user_from_token_ws(token: str):
+    db = SessionLocal()
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
@@ -77,16 +78,17 @@ def get_user_from_token_ws(token: str):
         if email is None or device_id is None:
             return None
 
-        db = SessionLocal()
+        # Check if token is blacklisted
+        if db.query(BlacklistedToken).filter_by(token=token).first():
+            return None
+
         user = db.query(User).filter(User.email == email).first()
         if not user:
-            db.close()
             return None
 
         # Check if device belongs to this user
         device = db.query(Device).filter_by(user_id=user.id, device_id=device_id).first()
-        db.close()
-
+        
         if device is None:
             return None
 
@@ -94,3 +96,5 @@ def get_user_from_token_ws(token: str):
 
     except JWTError:
         return None
+    finally:
+        db.close()
