@@ -15,7 +15,7 @@ from Crypto.Random import get_random_bytes
 from jose import JWTError, jwt
 from database import SessionLocal, engine, Base
 from models import User, Device, Clipboard, EncryptionKey, RefreshToken, BlacklistedToken
-from schemas import Token, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, ClipboardOutList, SessionInfo
+from schemas import Token, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, ClipboardOutList, SessionInfo, RefreshTokenRequest # Import new schema
 from auth import hash_password, verify_password, create_access_token, get_current_user, get_user_from_token_ws, SECRET_KEY, ALGORITHM
 from crypto_utils import encrypt_clipboard, decrypt_clipboard, hash_refresh_token
 from connection_manager import ConnectionManager
@@ -324,7 +324,11 @@ def get_clipboard_history(
     return {"history": decrypted}
 
 @app.post("/logout")
-def logout(refresh_token: str = Body(...),access_token: str = Depends(oauth2_scheme),db: Session = Depends(get_db)):
+def logout(
+    request: RefreshTokenRequest, # Use Pydantic model
+    access_token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
     try:
         payload = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM])
         exp = payload.get("exp")
@@ -336,15 +340,18 @@ def logout(refresh_token: str = Body(...),access_token: str = Depends(oauth2_sch
     except jwt.JWTError:
         raise HTTPException(status_code=401, detail="Invalid access token")
 
-    hashed_refresh = hash_refresh_token(refresh_token)
+    hashed_refresh = hash_refresh_token(request.refresh_token) # Access via .refresh_token
     db.query(RefreshToken).filter(RefreshToken.token == hashed_refresh).delete()
 
     db.commit()
     return {"message": "Logged out successfully"}
 
 @app.post("/refresh", response_model=Token, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
-def refresh_token(refresh_token: str = Body(...,embed=True), db: Session = Depends(get_db)):
-    hashed_input = hash_refresh_token(refresh_token)
+def refresh_token(
+    request: RefreshTokenRequest, # Use Pydantic model instead of Body(..., embed=True)
+    db: Session = Depends(get_db)
+):
+    hashed_input = hash_refresh_token(request.refresh_token) # Access via .refresh_token
 
     token_entry = db.query(RefreshToken).filter(
         RefreshToken.token == hashed_input
