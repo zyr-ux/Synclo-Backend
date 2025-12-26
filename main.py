@@ -22,6 +22,7 @@ from connection_manager import ConnectionManager
 from utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries
 from logging_config import logger
 from config import Settings
+from uuid import uuid4
 
 ALLOW_AUTO_DEVICE_REGISTRATION = Settings.ALLOW_AUTO_DEVICE_REGISTRATION  #Turn this off in production!
 
@@ -109,12 +110,18 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     plain_refresh_token = token_urlsafe(64)
     hashed_refresh = hash_refresh_token(plain_refresh_token)
     refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    
+    # Generate family ID
+    from uuid import uuid4
+    family_id = str(uuid4())
 
     db.add(RefreshToken(
         user_id=new_user.id,
         token=hashed_refresh,
         expiry=refresh_expiry,
-        device_id=user.device_id
+        device_id=user.device_id,
+        family_id=family_id,
+        is_revoked=False
     ))
     db.commit()
 
@@ -154,20 +161,24 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
 
     plain_refresh_token = token_urlsafe(64)
     hashed_refresh = hash_refresh_token(plain_refresh_token)
-
     refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    
+    # Generate a new family ID for this login session
+    family_id = str(uuid4())
 
+    # Remove any existing tokens for this device to start fresh
     db.query(RefreshToken).filter_by(
-    user_id=db_user.id,
-    device_id=user.device_id
+        user_id=db_user.id,
+        device_id=user.device_id
     ).delete()
-
 
     db.add(RefreshToken(
         user_id=db_user.id,
         token=hashed_refresh,
         expiry=refresh_expiry,
-        device_id=user.device_id
+        device_id=user.device_id,
+        family_id=family_id,  # Start new family
+        is_revoked=False
     ))
     db.commit()
 
@@ -316,16 +327,26 @@ def logout(refresh_token: str = Body(...),access_token: str = Depends(oauth2_sch
 
 @app.post("/refresh", response_model=Token, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
 def refresh_token(refresh_token: str = Body(...,embed=True), db: Session = Depends(get_db)):
-    print(f"DEBUG: raw_token_value: {refresh_token}")
-    print(f"DEBUG: hashed_value: {hash_refresh_token(refresh_token)}")
     hashed_input = hash_refresh_token(refresh_token)
 
     token_entry = db.query(RefreshToken).filter(
         RefreshToken.token == hashed_input
     ).first()
 
-    if not token_entry or token_entry.expiry < datetime.utcnow():
-        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    # 1. Check if token exists
+    if not token_entry:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    # 2. REUSE DETECTION: If token is already revoked, it's a theft attempt!
+    if token_entry.is_revoked:
+        # Security Alert: Delete the ENTIRE family to lock out the attacker
+        db.query(RefreshToken).filter(RefreshToken.family_id == token_entry.family_id).delete()
+        db.commit()
+        raise HTTPException(status_code=401, detail="Refresh token reused. Security alert: Session terminated.")
+
+    # 3. Check expiry
+    if token_entry.expiry < datetime.utcnow():
+        raise HTTPException(status_code=401, detail="Expired refresh token")
 
     user_id = token_entry.user_id
     device_id = token_entry.device_id
@@ -334,6 +355,7 @@ def refresh_token(refresh_token: str = Body(...,embed=True), db: Session = Depen
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # 4. ROTATION: Issue new tokens
     access_token = create_access_token(
         data={"sub": user.email, "device_id": device_id},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -341,15 +363,19 @@ def refresh_token(refresh_token: str = Body(...,embed=True), db: Session = Depen
 
     new_refresh_plain = token_urlsafe(64)
     new_refresh_hashed = hash_refresh_token(new_refresh_plain)
-
     new_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
-    db.delete(token_entry)
+    # Revoke the old token (don't delete it yet, keep it to detect reuse)
+    token_entry.is_revoked = True
+    
+    # Create new token in the SAME family
     db.add(RefreshToken(
         user_id=user.id,
         token=new_refresh_hashed,
         expiry=new_expiry,
-        device_id=device_id
+        device_id=device_id,
+        family_id=token_entry.family_id, # Maintain the chain
+        is_revoked=False
     ))
     db.commit()
 

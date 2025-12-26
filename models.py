@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, ForeignKey, LargeBinary, DateTime
+from sqlalchemy import Column, Integer, String, ForeignKey, LargeBinary, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -44,6 +44,10 @@ class RefreshToken(Base):
     token = Column(String, unique=True, index=True)
     expiry = Column(DateTime, index=True)
     device_id = Column(String, nullable=False)
+    
+    # New fields for rotation & reuse detection
+    family_id = Column(String, index=True, nullable=False)
+    is_revoked = Column(Boolean, default=False)
 
     user = relationship("User")
 
