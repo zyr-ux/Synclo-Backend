@@ -219,7 +219,7 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
         "token_type": "bearer"
     }
 
-@app.post("/devices/register", response_model=DeviceOut)
+@app.post("/devices/register", response_model=DeviceOut, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
 def register_device(
     device: DeviceRegister,
     db: Session = Depends(get_db),
@@ -240,7 +240,7 @@ def register_device(
     db.refresh(new_device)
     return new_device
 
-@app.get("/devices", response_model=List[DeviceOut])
+@app.get("/devices", response_model=List[DeviceOut], dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_devices(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -248,7 +248,7 @@ def get_devices(
     return db.query(Device).filter(Device.user_id == current_user.id).all()
 
 
-@app.post("/clipboard")
+@app.post("/clipboard", dependencies=[Depends(RateLimiter(times=30, seconds=60))])
 def sync_clipboard(
     data: ClipboardIn,
     db: Session = Depends(get_db),
@@ -275,7 +275,7 @@ def sync_clipboard(
 
     return {"status": "clipboard synced", "id": new_entry.uid}
 
-@app.get("/clipboard", response_model=ClipboardOut)
+@app.get("/clipboard", response_model=ClipboardOut, dependencies=[Depends(RateLimiter(times=30, seconds=60))])
 def get_clipboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -303,7 +303,7 @@ def get_clipboard(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Decryption error: {str(e)}")
 
-@app.get("/clipboard/all", response_model=ClipboardOutList)
+@app.get("/clipboard/all", response_model=ClipboardOutList, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_clipboard_history(
     page: int = 1,
     limit: int = 50,
@@ -342,7 +342,7 @@ def get_clipboard_history(
 
     return {"history": decrypted}
 
-@app.post("/logout")
+@app.post("/logout", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
 def logout(
     request: RefreshTokenRequest, # Use Pydantic model
     access_token: str = Depends(oauth2_scheme),
@@ -428,7 +428,7 @@ def refresh_token(
         "token_type": "bearer"
     }
 
-@app.delete("/delete")
+@app.delete("/delete", dependencies=[Depends(RateLimiter(times=2, seconds=60))])
 async def delete_account(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -455,7 +455,7 @@ async def delete_account(
 
     return {"message": "Your account and all associated data have been deleted."}
 
-@app.delete("/devices/{device_id}")
+@app.delete("/devices/{device_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
 async def delete_device(
     device_id: str,
     db: Session = Depends(get_db),
@@ -480,7 +480,7 @@ async def delete_device(
 
     return {"message": f"Device '{device.device_name}' deleted successfully"}
 
-@app.delete("/clipboard")
+@app.delete("/clipboard", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
 def delete_clipboard_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -590,7 +590,7 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
         manager.disconnect(user.id, device_id)
 
 
-@app.get("/sessions", response_model=List[SessionInfo])
+@app.get("/sessions", response_model=List[SessionInfo], dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_active_sessions(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     sessions = db.query(RefreshToken).filter(RefreshToken.user_id == current_user.id).all()
     return [
@@ -601,7 +601,7 @@ def get_active_sessions(current_user: User = Depends(get_current_user), db: Sess
         for session in sessions
     ]
 
-@app.delete("/sessions/{device_id}")
+@app.delete("/sessions/{device_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
 def revoke_session(device_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     deleted = db.query(RefreshToken).filter_by(user_id=current_user.id, device_id=device_id).delete()
     db.commit()
