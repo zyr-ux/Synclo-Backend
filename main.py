@@ -467,7 +467,9 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
         return
 
     await websocket.accept()
-    manager.connect(user.id, device_id, websocket)
+    await manager.connect(user.id, device_id, websocket) # Await the async connect
+    
+    # Use a context manager or ensure close is called
     db = SessionLocal()
 
     try:
@@ -487,7 +489,8 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
                     if pong.get("type") != "pong":
                         raise ValueError("Invalid pong")
                     continue
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"WebSocket ping/pong failed: {e}")
                     await websocket.close(code=4002)
                     break
 
@@ -499,23 +502,29 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
             if not text:
                 continue
 
-            # Store encrypted clipboard
-            key_entry = db.query(EncryptionKey).filter_by(user_id=user.id).first()
-            if not key_entry:
-                key_entry = EncryptionKey(user_id=user.id, key=get_random_bytes(32))
-                db.add(key_entry)
-                db.commit()
-                db.refresh(key_entry)
+            # Run blocking DB operations in a separate thread
+            def save_clipboard_entry():
+                # Re-check DB session state if needed, but here we just use the open one
+                key_entry = db.query(EncryptionKey).filter_by(user_id=user.id).first()
+                if not key_entry:
+                    key_entry = EncryptionKey(user_id=user.id, key=get_random_bytes(32))
+                    db.add(key_entry)
+                    db.commit()
+                    db.refresh(key_entry)
 
-            encrypted_data, nonce = encrypt_clipboard(text, key_entry.key)
-            new_entry = Clipboard(
-                user_id=user.id,
-                encrypted_data=encrypted_data,
-                nonce=nonce,
-                timestamp=datetime.utcnow()
-            )
-            db.add(new_entry)
-            db.commit()
+                encrypted_data, nonce = encrypt_clipboard(text, key_entry.key)
+                new_entry = Clipboard(
+                    user_id=user.id,
+                    encrypted_data=encrypted_data,
+                    nonce=nonce,
+                    timestamp=datetime.utcnow()
+                )
+                db.add(new_entry)
+                db.commit()
+                return new_entry
+
+            # Execute in thread pool to avoid blocking event loop
+            new_entry = await asyncio.to_thread(save_clipboard_entry)
 
             await manager.broadcast_to_user(
                 user_id=user.id,
@@ -528,6 +537,10 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
 
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        logger.error(traceback.format_exc())
+        await websocket.close(code=1011) # Internal Error
     finally:
         manager.disconnect(user.id, device_id)
         db.close()
