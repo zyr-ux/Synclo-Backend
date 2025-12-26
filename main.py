@@ -413,7 +413,7 @@ def delete_account(
     return {"message": "Your account and all associated data have been deleted."}
 
 @app.delete("/devices/{device_id}")
-def delete_device(
+async def delete_device(
     device_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -424,8 +424,16 @@ def delete_device(
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
+    # 1. Delete the device record
     db.delete(device)
+
+    # 2. Revoke all refresh tokens for this device
+    db.query(RefreshToken).filter_by(user_id=current_user.id, device_id=device_id).delete()
+    
     db.commit()
+
+    # 3. Disconnect active WebSocket for this device
+    await manager.disconnect_device(current_user.id, device_id)
 
     return {"message": f"Device '{device.device_name}' deleted successfully"}
 
