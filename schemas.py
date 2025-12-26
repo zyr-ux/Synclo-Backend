@@ -25,6 +25,7 @@ class ClipboardIn(BaseModel):
     text: str
 
 class ClipboardOut(BaseModel):
+    id: str # New field
     text: str
     timestamp: datetime
 

@@ -30,6 +30,7 @@ class EncryptionKey(Base):
 class Clipboard(Base):
     __tablename__ = "clipboard"
     id = Column(Integer, primary_key=True, index=True)
+    uid = Column(String, unique=True, index=True, nullable=False) # New UUID column
     user_id = Column(Integer, ForeignKey("users.id"))
     encrypted_data = Column(LargeBinary, nullable=False)
     nonce = Column(LargeBinary, nullable=False)

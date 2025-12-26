@@ -63,6 +63,7 @@ def upgrade() -> None:
     
     op.create_table('clipboard',
     sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('uid', sa.String(), nullable=False), # Add this
     sa.Column('user_id', sa.Integer(), nullable=True),
     sa.Column('encrypted_data', sa.LargeBinary(), nullable=False),
     sa.Column('nonce', sa.LargeBinary(), nullable=False),
@@ -71,6 +72,7 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_clipboard_id'), 'clipboard', ['id'], unique=False)
+    op.create_index(op.f('ix_clipboard_uid'), 'clipboard', ['uid'], unique=True) # Add index
     
     op.create_table('refresh_tokens',
     sa.Column('id', sa.Integer(), nullable=False),

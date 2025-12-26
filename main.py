@@ -249,6 +249,7 @@ def sync_clipboard(
     encrypted_data, nonce = encrypt_clipboard(data.text, key_entry.key)
 
     new_entry = Clipboard(
+        uid=str(uuid4()), # Generate UUID
         user_id=current_user.id,
         encrypted_data=encrypted_data,
         nonce=nonce
@@ -256,7 +257,7 @@ def sync_clipboard(
     db.add(new_entry)
     db.commit()
 
-    return {"status": "clipboard synced"}
+    return {"status": "clipboard synced", "id": new_entry.uid}
 
 @app.get("/clipboard", response_model=ClipboardOut)
 def get_clipboard(
@@ -279,6 +280,7 @@ def get_clipboard(
     try:
         text = decrypt_clipboard(entry.encrypted_data, key_entry.key)
         return {
+                "id": entry.uid, # Return UUID
                 "text": text,
                 "timestamp": entry.timestamp
                 }
@@ -315,6 +317,7 @@ def get_clipboard_history(
         try:
             text = decrypt_clipboard(entry.encrypted_data, key_entry.key)
             decrypted.append({
+                "id": entry.uid, # Return UUID
                 "text": text,
                 "timestamp": entry.timestamp
             })
@@ -491,7 +494,7 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
         return
 
     await websocket.accept()
-    await manager.connect(user.id, device_id, websocket) # Await the async connect
+    await manager.connect(user.id, device_id, websocket)
     
     # Use a context manager or ensure close is called
     db = SessionLocal()
@@ -538,6 +541,7 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
 
                 encrypted_data, nonce = encrypt_clipboard(text, key_entry.key)
                 new_entry = Clipboard(
+                    uid=str(uuid4()), # Generate UUID
                     user_id=user.id,
                     encrypted_data=encrypted_data,
                     nonce=nonce,
@@ -553,6 +557,7 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
             await manager.broadcast_to_user(
                 user_id=user.id,
                 message={
+                    "id": new_entry.uid, # Broadcast UUID
                     "text": text,
                     "timestamp": new_entry.timestamp.isoformat()
                 },
