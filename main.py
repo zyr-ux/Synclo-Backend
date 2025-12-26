@@ -19,7 +19,7 @@ from schemas import Token, UserRegisterWithDevice, UserLoginWithDevice, DeviceRe
 from auth import hash_password, verify_password, create_access_token, get_current_user, get_user_from_token_ws, SECRET_KEY, ALGORITHM
 from crypto_utils import encrypt_clipboard, decrypt_clipboard, hash_refresh_token
 from connection_manager import ConnectionManager
-from utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries
+from utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries, cleanup_expired_blacklisted_tokens # Ensure this is imported
 from logging_config import logger
 from config import Settings
 from uuid import uuid4
@@ -51,6 +51,22 @@ def get_db():
 async def startup():
     redis = Redis.from_url("redis://redis:6379", encoding="utf-8", decode_responses=True)
     await FastAPILimiter.init(redis)
+    
+    # Start background cleanup task
+    asyncio.create_task(periodic_cleanup())
+
+async def periodic_cleanup():
+    while True:
+        try:
+            # Run cleanup in a thread to avoid blocking event loop
+            db = SessionLocal()
+            await asyncio.to_thread(cleanup_expired_blacklisted_tokens, db)
+            db.close()
+        except Exception as e:
+            logger.error(f"Cleanup task failed: {e}")
+        
+        # Wait for 1 hour before next cleanup
+        await asyncio.sleep(3600)
 
 @app.exception_handler(Exception)
 async def internal_exception_handler(request: Request, exc: Exception):

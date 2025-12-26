@@ -48,8 +48,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         if email is None or exp is None:
             raise credentials_exception
 
-        # Cleanup expired blacklisted tokens
-        cleanup_expired_blacklisted_tokens(db)
+        # REMOVED: cleanup_expired_blacklisted_tokens(db) - Moved to background task
 
         # Check if token is blacklisted
         if db.query(BlacklistedToken).filter_by(token=token).first():
