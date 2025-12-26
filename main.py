@@ -21,7 +21,7 @@ from crypto_utils import encrypt_clipboard, decrypt_clipboard, hash_refresh_toke
 from connection_manager import ConnectionManager
 from utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries, cleanup_expired_blacklisted_tokens # Ensure this is imported
 from logging_config import logger
-from config import Settings
+from config import Settings, settings # Ensure settings instance is imported
 from uuid import uuid4
 
 ALLOW_AUTO_DEVICE_REGISTRATION = Settings.ALLOW_AUTO_DEVICE_REGISTRATION  #Turn this off in production!
@@ -49,7 +49,8 @@ def get_db():
 
 @app.on_event("startup")
 async def startup():
-    redis = Redis.from_url("redis://redis:6379", encoding="utf-8", decode_responses=True)
+    # Use configurable URL
+    redis = Redis.from_url(settings.REDIS_URL, encoding="utf-8", decode_responses=True)
     await FastAPILimiter.init(redis)
     
     # Start background cleanup task
