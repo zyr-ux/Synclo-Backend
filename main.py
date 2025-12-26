@@ -75,32 +75,39 @@ def health_check():
 
 @app.post("/register", response_model=Token,dependencies=[Depends(RateLimiter(times=3, seconds=60))])
 def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
+    # Check if email already registered
     if db.query(User).filter(User.email == user.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
     
+    # Check if device_id is already in use by another user
+    existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
+    if existing_device:
+        raise HTTPException(status_code=409, detail="Device ID already in use. Please use a unique device ID.")
+    
+    # Create new user
     new_user = User(email=user.email, hashed_password=hash_password(user.password))
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
 
-    existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
-    if not existing_device:
-        new_device = Device(
-            device_id=user.device_id,
-            device_name=user.device_name,
-            user_id=new_user.id
-        )
-        db.add(new_device)
-        db.commit()
+    # Create device for the new user
+    new_device = Device(
+        device_id=user.device_id,
+        device_name=user.device_name,
+        user_id=new_user.id
+    )
+    db.add(new_device)
+    db.commit()
 
+    # Create access token
     access_token = create_access_token(
         data={"sub": new_user.email, "device_id": user.device_id},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
 
+    # Create refresh token
     plain_refresh_token = token_urlsafe(64)
     hashed_refresh = hash_refresh_token(plain_refresh_token)
-
     refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
     db.add(RefreshToken(
