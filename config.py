@@ -13,8 +13,6 @@ class Settings:
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 30))
     # DB
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/clipboard.db")
-    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379") # Default to localhost for dev
+    REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379") # Default to docker service name; override for local
     # Features
     ALLOW_AUTO_DEVICE_REGISTRATION = os.getenv("ALLOW_AUTO_DEVICE_REGISTRATION", "true").lower() == "true"
-
-settings = Settings()

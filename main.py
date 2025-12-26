@@ -2,7 +2,6 @@ import asyncio
 import traceback
 from datetime import datetime, timedelta
 from secrets import token_urlsafe
-from collections import defaultdict
 from typing import List
 from fastapi import FastAPI, Depends, HTTPException, Body, Request, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordBearer
@@ -13,7 +12,7 @@ from sqlalchemy.orm import Session
 from redis.asyncio import Redis
 from Crypto.Random import get_random_bytes
 from jose import JWTError, jwt
-from database import SessionLocal, engine, Base
+from database import SessionLocal
 from models import User, Device, Clipboard, EncryptionKey, RefreshToken, BlacklistedToken
 from schemas import Token, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, ClipboardOutList, SessionInfo, RefreshTokenRequest # Import new schema
 from auth import hash_password, verify_password, create_access_token, get_current_user, get_user_from_token_ws, SECRET_KEY, ALGORITHM
@@ -21,20 +20,16 @@ from crypto_utils import encrypt_clipboard, decrypt_clipboard, hash_refresh_toke
 from connection_manager import ConnectionManager
 from utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries, cleanup_expired_blacklisted_tokens # Ensure this is imported
 from logging_config import logger
-from config import Settings, settings # Ensure settings instance is imported
+from config import Settings
 from uuid import uuid4
 
 ALLOW_AUTO_DEVICE_REGISTRATION = Settings.ALLOW_AUTO_DEVICE_REGISTRATION  #Turn this off in production!
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
-# In-memory store: user_id -> list of WebSockets
-active_connections = defaultdict(list)
-
 ACCESS_TOKEN_EXPIRE_MINUTES = Settings.ACCESS_TOKEN_EXPIRE_MINUTES
 REFRESH_TOKEN_EXPIRE_DAYS = Settings.REFRESH_TOKEN_EXPIRE_DAYS
 
-Base.metadata.create_all(bind=engine)
 app = FastAPI()
 
 manager = ConnectionManager()
@@ -50,19 +45,38 @@ def get_db():
 @app.on_event("startup")
 async def startup():
     # Use configurable URL
-    redis = Redis.from_url(settings.REDIS_URL, encoding="utf-8", decode_responses=True)
+    redis = Redis.from_url(Settings.REDIS_URL, encoding="utf-8", decode_responses=True)
+    app.state.redis = redis
     await FastAPILimiter.init(redis)
+    manager.set_redis(redis)
+    await manager.start_listener()
     
     # Start background cleanup task
     asyncio.create_task(periodic_cleanup())
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await manager.stop_listener()
+    redis = getattr(app.state, "redis", None)
+    if redis:
+        try:
+            await redis.close()
+        except Exception as e:
+            logger.warning(f"Redis close failed: {e}")
 
 async def periodic_cleanup():
     while True:
         try:
             # Run cleanup in a thread to avoid blocking event loop
-            db = SessionLocal()
-            await asyncio.to_thread(cleanup_expired_blacklisted_tokens, db)
-            db.close()
+            def run_cleanup():
+                db = SessionLocal()
+                try:
+                    cleanup_expired_blacklisted_tokens(db)
+                finally:
+                    db.close()
+
+            await asyncio.to_thread(run_cleanup)
         except Exception as e:
             logger.error(f"Cleanup task failed: {e}")
         
@@ -213,6 +227,8 @@ def register_device(
 ):
     existing = db.query(Device).filter(Device.device_id == device.device_id).first()
     if existing:
+        if existing.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Device ID belongs to another user")
         return existing
     new_device = Device(
         device_id=device.device_id,
@@ -340,7 +356,7 @@ def logout(
 
         db.add(BlacklistedToken(token=access_token, expiry=datetime.utcfromtimestamp(exp)))
 
-    except jwt.JWTError:
+    except JWTError:
         raise HTTPException(status_code=401, detail="Invalid access token")
 
     hashed_refresh = hash_refresh_token(request.refresh_token) # Access via .refresh_token
@@ -413,7 +429,7 @@ def refresh_token(
     }
 
 @app.delete("/delete")
-def delete_account(
+async def delete_account(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -435,7 +451,7 @@ def delete_account(
     db.commit()
 
     # Disconnect all the websockets for this user
-    asyncio.run(manager.disconnect_user(current_user.id))
+    await manager.disconnect_user(current_user.id)
 
     return {"message": "Your account and all associated data have been deleted."}
 
@@ -496,9 +512,6 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
     await websocket.accept()
     await manager.connect(user.id, device_id, websocket)
     
-    # Use a context manager or ensure close is called
-    db = SessionLocal()
-
     try:
         while True:
             # Expiry check
@@ -531,25 +544,28 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
 
             # Run blocking DB operations in a separate thread
             def save_clipboard_entry():
-                # Re-check DB session state if needed, but here we just use the open one
-                key_entry = db.query(EncryptionKey).filter_by(user_id=user.id).first()
-                if not key_entry:
-                    key_entry = EncryptionKey(user_id=user.id, key=get_random_bytes(32))
-                    db.add(key_entry)
-                    db.commit()
-                    db.refresh(key_entry)
+                session = SessionLocal()
+                try:
+                    key_entry = session.query(EncryptionKey).filter_by(user_id=user.id).first()
+                    if not key_entry:
+                        key_entry = EncryptionKey(user_id=user.id, key=get_random_bytes(32))
+                        session.add(key_entry)
+                        session.commit()
+                        session.refresh(key_entry)
 
-                encrypted_data, nonce = encrypt_clipboard(text, key_entry.key)
-                new_entry = Clipboard(
-                    uid=str(uuid4()), # Generate UUID
-                    user_id=user.id,
-                    encrypted_data=encrypted_data,
-                    nonce=nonce,
-                    timestamp=datetime.utcnow()
-                )
-                db.add(new_entry)
-                db.commit()
-                return new_entry
+                    encrypted_data, nonce = encrypt_clipboard(text, key_entry.key)
+                    new_entry = Clipboard(
+                        uid=str(uuid4()), # Generate UUID
+                        user_id=user.id,
+                        encrypted_data=encrypted_data,
+                        nonce=nonce,
+                        timestamp=datetime.utcnow()
+                    )
+                    session.add(new_entry)
+                    session.commit()
+                    return new_entry
+                finally:
+                    session.close()
 
             # Execute in thread pool to avoid blocking event loop
             new_entry = await asyncio.to_thread(save_clipboard_entry)
@@ -572,7 +588,6 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
         await websocket.close(code=1011) # Internal Error
     finally:
         manager.disconnect(user.id, device_id)
-        db.close()
 
 
 @app.get("/sessions", response_model=List[SessionInfo])
