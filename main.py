@@ -71,6 +71,7 @@ async def periodic_cleanup():
                 db = SessionLocal()
                 try:
                     cleanup_expired_blacklisted_tokens(db)
+                    cleanup_expired_refresh_tokens(db)
                 finally:
                     db.close()
 
