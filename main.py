@@ -23,8 +23,6 @@ from logging_config import logger
 from config import Settings
 from uuid import uuid4
 
-ALLOW_AUTO_DEVICE_REGISTRATION = Settings.ALLOW_AUTO_DEVICE_REGISTRATION  #Turn this off in production!
-
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 ACCESS_TOKEN_EXPIRE_MINUTES = Settings.ACCESS_TOKEN_EXPIRE_MINUTES
@@ -173,17 +171,15 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
 
     device = db.query(Device).filter_by(device_id=user.device_id, user_id=db_user.id).first()
     if not device:
-        if ALLOW_AUTO_DEVICE_REGISTRATION:
-            device = Device(
-                device_id=user.device_id,
-                device_name=user.device_name or "Dev Device",
-                user_id=db_user.id
-            )
-            db.add(device)
-            db.commit()
-            db.refresh(device)
-        else:
-            raise HTTPException(status_code=403, detail="Unregistered device")
+        # Auto-register new devices for seamless multi-device support
+        device = Device(
+            device_id=user.device_id,
+            device_name=user.device_name or "Dev Device",
+            user_id=db_user.id
+        )
+        db.add(device)
+        db.commit()
+        db.refresh(device)
 
     access_token = create_access_token(
         data={"sub": user.email, "device_id": device.device_id},

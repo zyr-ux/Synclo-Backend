@@ -14,5 +14,3 @@ class Settings:
     # DB
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/clipboard.db")
     REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379") # Default to docker service name; override for local
-    # Features
-    ALLOW_AUTO_DEVICE_REGISTRATION = os.getenv("ALLOW_AUTO_DEVICE_REGISTRATION", "true").lower() == "true"
