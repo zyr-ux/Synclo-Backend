@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, ForeignKey, LargeBinary, DateTime
+from sqlalchemy import Column, Integer, String, ForeignKey, LargeBinary, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -30,6 +30,7 @@ class EncryptionKey(Base):
 class Clipboard(Base):
     __tablename__ = "clipboard"
     id = Column(Integer, primary_key=True, index=True)
+    uid = Column(String, unique=True, index=True, nullable=False) # New UUID column
     user_id = Column(Integer, ForeignKey("users.id"))
     encrypted_data = Column(LargeBinary, nullable=False)
     nonce = Column(LargeBinary, nullable=False)
@@ -44,6 +45,10 @@ class RefreshToken(Base):
     token = Column(String, unique=True, index=True)
     expiry = Column(DateTime, index=True)
     device_id = Column(String, nullable=False)
+    
+    # New fields for rotation & reuse detection
+    family_id = Column(String, index=True, nullable=False)
+    is_revoked = Column(Boolean, default=False)
 
     user = relationship("User")
 
@@ -52,6 +57,6 @@ class BlacklistedToken(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     token = Column(String, unique=True, nullable=False)
-    expiry = Column(DateTime, nullable=False)
+    expiry = Column(DateTime, nullable=False, index=True)
 
 

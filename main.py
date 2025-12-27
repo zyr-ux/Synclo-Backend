@@ -2,7 +2,6 @@ import asyncio
 import traceback
 from datetime import datetime, timedelta
 from secrets import token_urlsafe
-from collections import defaultdict
 from typing import List
 from fastapi import FastAPI, Depends, HTTPException, Body, Request, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordBearer
@@ -13,27 +12,22 @@ from sqlalchemy.orm import Session
 from redis.asyncio import Redis
 from Crypto.Random import get_random_bytes
 from jose import JWTError, jwt
-from database import SessionLocal, engine, Base
+from database import SessionLocal
 from models import User, Device, Clipboard, EncryptionKey, RefreshToken, BlacklistedToken
-from schemas import Token, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, ClipboardOutList, SessionInfo
+from schemas import Token, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, ClipboardOutList, SessionInfo, RefreshTokenRequest # Import new schema
 from auth import hash_password, verify_password, create_access_token, get_current_user, get_user_from_token_ws, SECRET_KEY, ALGORITHM
 from crypto_utils import encrypt_clipboard, decrypt_clipboard, hash_refresh_token
 from connection_manager import ConnectionManager
-from utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries
+from utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries, cleanup_expired_blacklisted_tokens # Ensure this is imported
 from logging_config import logger
 from config import Settings
-
-ALLOW_AUTO_DEVICE_REGISTRATION = Settings.ALLOW_AUTO_DEVICE_REGISTRATION  #Turn this off in production!
+from uuid import uuid4
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
-
-# In-memory store: user_id -> list of WebSockets
-active_connections = defaultdict(list)
 
 ACCESS_TOKEN_EXPIRE_MINUTES = Settings.ACCESS_TOKEN_EXPIRE_MINUTES
 REFRESH_TOKEN_EXPIRE_DAYS = Settings.REFRESH_TOKEN_EXPIRE_DAYS
 
-Base.metadata.create_all(bind=engine)
 app = FastAPI()
 
 manager = ConnectionManager()
@@ -48,8 +42,56 @@ def get_db():
 
 @app.on_event("startup")
 async def startup():
-    redis = Redis.from_url("redis://redis:6379", encoding="utf-8", decode_responses=True)
+    # Use configurable URL
+    redis = Redis.from_url(Settings.REDIS_URL, encoding="utf-8", decode_responses=True)
+    app.state.redis = redis
     await FastAPILimiter.init(redis)
+    manager.set_redis(redis)
+    await manager.start_listener()
+    
+    # Start background cleanup task and keep a handle for shutdown
+    app.state.cleanup_task = asyncio.create_task(periodic_cleanup())
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await manager.stop_listener()
+    redis = getattr(app.state, "redis", None)
+    if redis:
+        try:
+            await redis.close()
+        except Exception as e:
+            logger.warning(f"Redis close failed: {e}")
+    # Cancel background cleanup task cleanly
+    cleanup_task = getattr(app.state, "cleanup_task", None)
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+
+async def periodic_cleanup():
+    while True:
+        try:
+            # Run cleanup in a thread to avoid blocking event loop
+            def run_cleanup():
+                db = SessionLocal()
+                try:
+                    cleanup_expired_blacklisted_tokens(db)
+                    cleanup_expired_refresh_tokens(db)
+                finally:
+                    db.close()
+
+            await asyncio.to_thread(run_cleanup)
+        except asyncio.CancelledError:
+            # Task cancelled during shutdown
+            break
+        except Exception as e:
+            logger.error(f"Cleanup task failed: {e}")
+        
+        # Wait for 1 hour before next cleanup
+        await asyncio.sleep(3600)
 
 @app.exception_handler(Exception)
 async def internal_exception_handler(request: Request, exc: Exception):
@@ -75,39 +117,51 @@ def health_check():
 
 @app.post("/register", response_model=Token,dependencies=[Depends(RateLimiter(times=3, seconds=60))])
 def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
+    # Check if email already registered
     if db.query(User).filter(User.email == user.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
     
+    # Check if device_id is already in use by another user
+    existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
+    if existing_device:
+        raise HTTPException(status_code=409, detail="Device ID already in use. Please use a unique device ID.")
+    
+    # Create new user
     new_user = User(email=user.email, hashed_password=hash_password(user.password))
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
 
-    existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
-    if not existing_device:
-        new_device = Device(
-            device_id=user.device_id,
-            device_name=user.device_name,
-            user_id=new_user.id
-        )
-        db.add(new_device)
-        db.commit()
+    # Create device for the new user
+    new_device = Device(
+        device_id=user.device_id,
+        device_name=user.device_name,
+        user_id=new_user.id
+    )
+    db.add(new_device)
+    db.commit()
 
+    # Create access token
     access_token = create_access_token(
         data={"sub": new_user.email, "device_id": user.device_id},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
 
+    # Create refresh token
     plain_refresh_token = token_urlsafe(64)
     hashed_refresh = hash_refresh_token(plain_refresh_token)
-
     refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    
+    # Generate family ID
+    family_id = str(uuid4())
 
     db.add(RefreshToken(
         user_id=new_user.id,
         token=hashed_refresh,
         expiry=refresh_expiry,
-        device_id=user.device_id
+        device_id=user.device_id,
+        family_id=family_id,
+        is_revoked=False
     ))
     db.commit()
 
@@ -128,17 +182,20 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
 
     device = db.query(Device).filter_by(device_id=user.device_id, user_id=db_user.id).first()
     if not device:
-        if ALLOW_AUTO_DEVICE_REGISTRATION:
-            device = Device(
-                device_id=user.device_id,
-                device_name=user.device_name or "Dev Device",
-                user_id=db_user.id
-            )
-            db.add(device)
-            db.commit()
-            db.refresh(device)
-        else:
-            raise HTTPException(status_code=403, detail="Unregistered device")
+        # Prevent collision with another user's device_id to avoid unique constraint errors
+        existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
+        if existing_device and existing_device.user_id != db_user.id:
+            raise HTTPException(status_code=403, detail="Device ID belongs to another user")
+
+        # Auto-register new devices for seamless multi-device support
+        device = Device(
+            device_id=user.device_id,
+            device_name=user.device_name or "Dev Device",
+            user_id=db_user.id
+        )
+        db.add(device)
+        db.commit()
+        db.refresh(device)
 
     access_token = create_access_token(
         data={"sub": user.email, "device_id": device.device_id},
@@ -147,20 +204,24 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
 
     plain_refresh_token = token_urlsafe(64)
     hashed_refresh = hash_refresh_token(plain_refresh_token)
-
     refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    
+    # Generate a new family ID for this login session
+    family_id = str(uuid4())
 
+    # Remove any existing tokens for this device to start fresh
     db.query(RefreshToken).filter_by(
-    user_id=db_user.id,
-    device_id=user.device_id
+        user_id=db_user.id,
+        device_id=user.device_id
     ).delete()
-
 
     db.add(RefreshToken(
         user_id=db_user.id,
         token=hashed_refresh,
         expiry=refresh_expiry,
-        device_id=user.device_id
+        device_id=user.device_id,
+        family_id=family_id,  # Start new family
+        is_revoked=False
     ))
     db.commit()
 
@@ -170,7 +231,7 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
         "token_type": "bearer"
     }
 
-@app.post("/devices/register", response_model=DeviceOut)
+@app.post("/devices/register", response_model=DeviceOut, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
 def register_device(
     device: DeviceRegister,
     db: Session = Depends(get_db),
@@ -178,6 +239,8 @@ def register_device(
 ):
     existing = db.query(Device).filter(Device.device_id == device.device_id).first()
     if existing:
+        if existing.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Device ID belongs to another user")
         return existing
     new_device = Device(
         device_id=device.device_id,
@@ -189,7 +252,7 @@ def register_device(
     db.refresh(new_device)
     return new_device
 
-@app.get("/devices", response_model=List[DeviceOut])
+@app.get("/devices", response_model=List[DeviceOut], dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_devices(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -197,7 +260,7 @@ def get_devices(
     return db.query(Device).filter(Device.user_id == current_user.id).all()
 
 
-@app.post("/clipboard")
+@app.post("/clipboard", dependencies=[Depends(RateLimiter(times=30, seconds=60))])
 def sync_clipboard(
     data: ClipboardIn,
     db: Session = Depends(get_db),
@@ -214,6 +277,7 @@ def sync_clipboard(
     encrypted_data, nonce = encrypt_clipboard(data.text, key_entry.key)
 
     new_entry = Clipboard(
+        uid=str(uuid4()), # Generate UUID
         user_id=current_user.id,
         encrypted_data=encrypted_data,
         nonce=nonce
@@ -221,9 +285,9 @@ def sync_clipboard(
     db.add(new_entry)
     db.commit()
 
-    return {"status": "clipboard synced"}
+    return {"status": "clipboard synced", "id": new_entry.uid}
 
-@app.get("/clipboard", response_model=ClipboardOut)
+@app.get("/clipboard", response_model=ClipboardOut, dependencies=[Depends(RateLimiter(times=30, seconds=60))])
 def get_clipboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -244,13 +308,14 @@ def get_clipboard(
     try:
         text = decrypt_clipboard(entry.encrypted_data, key_entry.key)
         return {
+                "id": entry.uid, # Return UUID
                 "text": text,
                 "timestamp": entry.timestamp
                 }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Decryption error: {str(e)}")
 
-@app.get("/clipboard/all", response_model=ClipboardOutList)
+@app.get("/clipboard/all", response_model=ClipboardOutList, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_clipboard_history(
     page: int = 1,
     limit: int = 50,
@@ -280,6 +345,7 @@ def get_clipboard_history(
         try:
             text = decrypt_clipboard(entry.encrypted_data, key_entry.key)
             decrypted.append({
+                "id": entry.uid, # Return UUID
                 "text": text,
                 "timestamp": entry.timestamp
             })
@@ -288,37 +354,56 @@ def get_clipboard_history(
 
     return {"history": decrypted}
 
-@app.post("/logout")
-def logout(refresh_token: str = Body(...),access_token: str = Depends(oauth2_scheme),db: Session = Depends(get_db)):
+@app.post("/logout", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+def logout(
+    request: RefreshTokenRequest, # Use Pydantic model
+    access_token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
     try:
         payload = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM])
         exp = payload.get("exp")
         if not exp:
             raise HTTPException(status_code=400, detail="Invalid access token")
 
-        db.add(BlacklistedToken(token=access_token, expiry=datetime.utcfromtimestamp(exp)))
+        # Avoid unique constraint errors on repeated logout calls
+        if not db.query(BlacklistedToken).filter(BlacklistedToken.token == access_token).first():
+            db.add(BlacklistedToken(token=access_token, expiry=datetime.utcfromtimestamp(exp)))
 
-    except jwt.JWTError:
+    except JWTError:
         raise HTTPException(status_code=401, detail="Invalid access token")
 
-    hashed_refresh = hash_refresh_token(refresh_token)
+    hashed_refresh = hash_refresh_token(request.refresh_token) # Access via .refresh_token
     db.query(RefreshToken).filter(RefreshToken.token == hashed_refresh).delete()
 
     db.commit()
     return {"message": "Logged out successfully"}
 
 @app.post("/refresh", response_model=Token, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
-def refresh_token(refresh_token: str = Body(...,embed=True), db: Session = Depends(get_db)):
-    print(f"DEBUG: raw_token_value: {refresh_token}")
-    print(f"DEBUG: hashed_value: {hash_refresh_token(refresh_token)}")
-    hashed_input = hash_refresh_token(refresh_token)
+def refresh_token(
+    request: RefreshTokenRequest, # Use Pydantic model instead of Body(..., embed=True)
+    db: Session = Depends(get_db)
+):
+    hashed_input = hash_refresh_token(request.refresh_token) # Access via .refresh_token
 
     token_entry = db.query(RefreshToken).filter(
         RefreshToken.token == hashed_input
     ).first()
 
-    if not token_entry or token_entry.expiry < datetime.utcnow():
-        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    # 1. Check if token exists
+    if not token_entry:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    # 2. REUSE DETECTION: If token is already revoked, it's a theft attempt!
+    if token_entry.is_revoked:
+        # Security Alert: Delete the ENTIRE family to lock out the attacker
+        db.query(RefreshToken).filter(RefreshToken.family_id == token_entry.family_id).delete()
+        db.commit()
+        raise HTTPException(status_code=401, detail="Refresh token reused. Security alert: Session terminated.")
+
+    # 3. Check expiry
+    if token_entry.expiry < datetime.utcnow():
+        raise HTTPException(status_code=401, detail="Expired refresh token")
 
     user_id = token_entry.user_id
     device_id = token_entry.device_id
@@ -327,6 +412,7 @@ def refresh_token(refresh_token: str = Body(...,embed=True), db: Session = Depen
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # 4. ROTATION: Issue new tokens
     access_token = create_access_token(
         data={"sub": user.email, "device_id": device_id},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -334,15 +420,19 @@ def refresh_token(refresh_token: str = Body(...,embed=True), db: Session = Depen
 
     new_refresh_plain = token_urlsafe(64)
     new_refresh_hashed = hash_refresh_token(new_refresh_plain)
-
     new_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
-    db.delete(token_entry)
+    # Revoke the old token (don't delete it yet, keep it to detect reuse)
+    token_entry.is_revoked = True
+    
+    # Create new token in the SAME family
     db.add(RefreshToken(
         user_id=user.id,
         token=new_refresh_hashed,
         expiry=new_expiry,
-        device_id=device_id
+        device_id=device_id,
+        family_id=token_entry.family_id, # Maintain the chain
+        is_revoked=False
     ))
     db.commit()
 
@@ -352,8 +442,8 @@ def refresh_token(refresh_token: str = Body(...,embed=True), db: Session = Depen
         "token_type": "bearer"
     }
 
-@app.delete("/delete")
-def delete_account(
+@app.delete("/delete", dependencies=[Depends(RateLimiter(times=2, seconds=60))])
+async def delete_account(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -375,12 +465,12 @@ def delete_account(
     db.commit()
 
     # Disconnect all the websockets for this user
-    asyncio.run(manager.disconnect_user(current_user.id))
+    await manager.disconnect_user(current_user.id)
 
     return {"message": "Your account and all associated data have been deleted."}
 
-@app.delete("/devices/{device_id}")
-def delete_device(
+@app.delete("/devices/{device_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+async def delete_device(
     device_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -391,12 +481,20 @@ def delete_device(
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
+    # 1. Delete the device record
     db.delete(device)
+
+    # 2. Revoke all refresh tokens for this device
+    db.query(RefreshToken).filter_by(user_id=current_user.id, device_id=device_id).delete()
+    
     db.commit()
+
+    # 3. Disconnect active WebSocket for this device
+    await manager.disconnect_device(current_user.id, device_id)
 
     return {"message": f"Device '{device.device_name}' deleted successfully"}
 
-@app.delete("/clipboard")
+@app.delete("/clipboard", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
 def delete_clipboard_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -426,9 +524,8 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
         return
 
     await websocket.accept()
-    manager.connect(user.id, device_id, websocket)
-    db = SessionLocal()
-
+    await manager.connect(user.id, device_id, websocket)
+    
     try:
         while True:
             # Expiry check
@@ -446,7 +543,8 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
                     if pong.get("type") != "pong":
                         raise ValueError("Invalid pong")
                     continue
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"WebSocket ping/pong failed: {e}")
                     await websocket.close(code=4002)
                     break
 
@@ -458,27 +556,38 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
             if not text:
                 continue
 
-            # Store encrypted clipboard
-            key_entry = db.query(EncryptionKey).filter_by(user_id=user.id).first()
-            if not key_entry:
-                key_entry = EncryptionKey(user_id=user.id, key=get_random_bytes(32))
-                db.add(key_entry)
-                db.commit()
-                db.refresh(key_entry)
+            # Run blocking DB operations in a separate thread
+            def save_clipboard_entry():
+                session = SessionLocal()
+                try:
+                    key_entry = session.query(EncryptionKey).filter_by(user_id=user.id).first()
+                    if not key_entry:
+                        key_entry = EncryptionKey(user_id=user.id, key=get_random_bytes(32))
+                        session.add(key_entry)
+                        session.commit()
+                        session.refresh(key_entry)
 
-            encrypted_data, nonce = encrypt_clipboard(text, key_entry.key)
-            new_entry = Clipboard(
-                user_id=user.id,
-                encrypted_data=encrypted_data,
-                nonce=nonce,
-                timestamp=datetime.utcnow()
-            )
-            db.add(new_entry)
-            db.commit()
+                    encrypted_data, nonce = encrypt_clipboard(text, key_entry.key)
+                    new_entry = Clipboard(
+                        uid=str(uuid4()), # Generate UUID
+                        user_id=user.id,
+                        encrypted_data=encrypted_data,
+                        nonce=nonce,
+                        timestamp=datetime.utcnow()
+                    )
+                    session.add(new_entry)
+                    session.commit()
+                    return new_entry
+                finally:
+                    session.close()
+
+            # Execute in thread pool to avoid blocking event loop
+            new_entry = await asyncio.to_thread(save_clipboard_entry)
 
             await manager.broadcast_to_user(
                 user_id=user.id,
                 message={
+                    "id": new_entry.uid, # Broadcast UUID
                     "text": text,
                     "timestamp": new_entry.timestamp.isoformat()
                 },
@@ -487,14 +596,21 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
 
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        logger.error(traceback.format_exc())
+        await websocket.close(code=1011) # Internal Error
     finally:
         manager.disconnect(user.id, device_id)
-        db.close()
 
 
-@app.get("/sessions", response_model=List[SessionInfo])
+@app.get("/sessions", response_model=List[SessionInfo], dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_active_sessions(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    sessions = db.query(RefreshToken).filter(RefreshToken.user_id == current_user.id).all()
+    sessions = db.query(RefreshToken).filter(
+        RefreshToken.user_id == current_user.id,
+        RefreshToken.is_revoked == False,
+        RefreshToken.expiry >= datetime.utcnow()
+    ).all()
     return [
         {
             "device_id": session.device_id,
@@ -503,7 +619,7 @@ def get_active_sessions(current_user: User = Depends(get_current_user), db: Sess
         for session in sessions
     ]
 
-@app.delete("/sessions/{device_id}")
+@app.delete("/sessions/{device_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
 def revoke_session(device_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     deleted = db.query(RefreshToken).filter_by(user_id=current_user.id, device_id=device_id).delete()
     db.commit()

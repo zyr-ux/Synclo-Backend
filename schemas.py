@@ -10,10 +10,6 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-
 class DeviceRegister(BaseModel):
     device_id: str
     device_name: str
@@ -29,9 +25,7 @@ class ClipboardIn(BaseModel):
     text: str
 
 class ClipboardOut(BaseModel):
-    text: str
-
-class ClipboardOut(BaseModel):
+    id: str # New field
     text: str
     timestamp: datetime
 
@@ -42,6 +36,9 @@ class Token(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 class UserLoginWithDevice(UserLogin):
     device_id: str

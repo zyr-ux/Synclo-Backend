@@ -14,9 +14,17 @@ SECRET_KEY = Settings.SECRET_KEY
 ALGORITHM = Settings.ALGORITHM
 ACCESS_TOKEN_EXPIRE_MINUTES = Settings.ACCESS_TOKEN_EXPIRE_MINUTES
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt"])
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 def hash_password(password: str):
     return pwd_context.hash(password)
@@ -31,7 +39,7 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(lambda: SessionLocal())):
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired token",
@@ -48,8 +56,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         if email is None or exp is None:
             raise credentials_exception
 
-        # Cleanup expired blacklisted tokens
-        cleanup_expired_blacklisted_tokens(db)
+        # REMOVED: cleanup_expired_blacklisted_tokens(db) - Moved to background task
 
         # Check if token is blacklisted
         if db.query(BlacklistedToken).filter_by(token=token).first():
@@ -69,6 +76,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
 
 def get_user_from_token_ws(token: str):
+    db = SessionLocal()
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
@@ -77,16 +85,17 @@ def get_user_from_token_ws(token: str):
         if email is None or device_id is None:
             return None
 
-        db = SessionLocal()
+        # Check if token is blacklisted
+        if db.query(BlacklistedToken).filter_by(token=token).first():
+            return None
+
         user = db.query(User).filter(User.email == email).first()
         if not user:
-            db.close()
             return None
 
         # Check if device belongs to this user
         device = db.query(Device).filter_by(user_id=user.id, device_id=device_id).first()
-        db.close()
-
+        
         if device is None:
             return None
 
@@ -94,3 +103,5 @@ def get_user_from_token_ws(token: str):
 
     except JWTError:
         return None
+    finally:
+        db.close()

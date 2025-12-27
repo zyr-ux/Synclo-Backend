@@ -1,5 +1,5 @@
 services:
-  backend:
+  api:
     build: .
     container_name: Synclo-Backend
     env_file:
