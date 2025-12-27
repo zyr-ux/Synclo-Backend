@@ -172,6 +172,11 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
 
     device = db.query(Device).filter_by(device_id=user.device_id, user_id=db_user.id).first()
     if not device:
+        # Prevent collision with another user's device_id to avoid unique constraint errors
+        existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
+        if existing_device and existing_device.user_id != db_user.id:
+            raise HTTPException(status_code=403, detail="Device ID belongs to another user")
+
         # Auto-register new devices for seamless multi-device support
         device = Device(
             device_id=user.device_id,
