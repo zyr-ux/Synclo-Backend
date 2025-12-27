@@ -6,7 +6,10 @@ load_dotenv()  # Loads from .env file
 
 class Settings:
     # JWT
-    SECRET_KEY = os.getenv("SECRET_KEY", os.urandom(32))
+    SECRET_KEY = os.getenv("SECRET_KEY")
+    if not SECRET_KEY:
+        raise RuntimeError("SECRET_KEY environment variable is required for token signing")
+
     ALGORITHM = os.getenv("ALGORITHM", "HS256")
     ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 15))
     REFRESH_TOKEN_HASH_KEY = os.getenv("REFRESH_TOKEN_HASH_KEY", "default-crypt-key").encode('utf-8').ljust(32, b'\0')
