@@ -49,8 +49,8 @@ async def startup():
     manager.set_redis(redis)
     await manager.start_listener()
     
-    # Start background cleanup task
-    asyncio.create_task(periodic_cleanup())
+    # Start background cleanup task and keep a handle for shutdown
+    app.state.cleanup_task = asyncio.create_task(periodic_cleanup())
 
 
 @app.on_event("shutdown")
@@ -62,6 +62,14 @@ async def shutdown():
             await redis.close()
         except Exception as e:
             logger.warning(f"Redis close failed: {e}")
+    # Cancel background cleanup task cleanly
+    cleanup_task = getattr(app.state, "cleanup_task", None)
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 async def periodic_cleanup():
     while True:
@@ -76,6 +84,9 @@ async def periodic_cleanup():
                     db.close()
 
             await asyncio.to_thread(run_cleanup)
+        except asyncio.CancelledError:
+            # Task cancelled during shutdown
+            break
         except Exception as e:
             logger.error(f"Cleanup task failed: {e}")
         
@@ -142,7 +153,6 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     
     # Generate family ID
-    from uuid import uuid4
     family_id = str(uuid4())
 
     db.add(RefreshToken(
@@ -356,7 +366,9 @@ def logout(
         if not exp:
             raise HTTPException(status_code=400, detail="Invalid access token")
 
-        db.add(BlacklistedToken(token=access_token, expiry=datetime.utcfromtimestamp(exp)))
+        # Avoid unique constraint errors on repeated logout calls
+        if not db.query(BlacklistedToken).filter(BlacklistedToken.token == access_token).first():
+            db.add(BlacklistedToken(token=access_token, expiry=datetime.utcfromtimestamp(exp)))
 
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid access token")
@@ -594,7 +606,11 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
 
 @app.get("/sessions", response_model=List[SessionInfo], dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_active_sessions(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    sessions = db.query(RefreshToken).filter(RefreshToken.user_id == current_user.id).all()
+    sessions = db.query(RefreshToken).filter(
+        RefreshToken.user_id == current_user.id,
+        RefreshToken.is_revoked == False,
+        RefreshToken.expiry >= datetime.utcnow()
+    ).all()
     return [
         {
             "device_id": session.device_id,

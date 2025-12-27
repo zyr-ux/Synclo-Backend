@@ -57,6 +57,6 @@ class BlacklistedToken(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     token = Column(String, unique=True, nullable=False)
-    expiry = Column(DateTime, nullable=False)
+    expiry = Column(DateTime, nullable=False, index=True)
 
 
