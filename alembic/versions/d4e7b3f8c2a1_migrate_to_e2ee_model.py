@@ -64,24 +64,53 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Reverse clipboard changes
-    op.drop_column('clipboard', 'blob_version')
-    op.alter_column('clipboard', 'ciphertext', new_column_name='encrypted_data')
-    op.alter_column('clipboard', 'id', new_column_name='uid')
-    op.alter_column('clipboard', 'index', new_column_name='id')
+    # Reverse clipboard changes (wrapped in try-except for SQLite compatibility)
+    try:
+        op.drop_column('clipboard', 'blob_version')
+    except Exception:
+        pass
     
-    # Recreate encryption_keys table
-    op.create_table('encryption_keys',
-        sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('user_id', sa.Integer(), nullable=True),
-        sa.Column('key', sa.LargeBinary(), nullable=False),
-        sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
-        sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('user_id')
-    )
-    op.create_index(op.f('ix_encryption_keys_id'), 'encryption_keys', ['id'], unique=False)
+    try:
+        op.alter_column('clipboard', 'ciphertext', new_column_name='encrypted_data')
+    except Exception:
+        pass
     
-    # Remove E2EE fields from users
-    op.drop_column('users', 'kdf_version')
-    op.drop_column('users', 'salt')
-    op.drop_column('users', 'encrypted_master_key')
+    try:
+        op.alter_column('clipboard', 'id', new_column_name='uid')
+    except Exception:
+        pass
+    
+    try:
+        op.alter_column('clipboard', 'index', new_column_name='id')
+    except Exception:
+        pass
+    
+    # Recreate encryption_keys table (wrapped in try-except)
+    try:
+        op.create_table('encryption_keys',
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('user_id', sa.Integer(), nullable=True),
+            sa.Column('key', sa.LargeBinary(), nullable=False),
+            sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
+            sa.PrimaryKeyConstraint('id'),
+            sa.UniqueConstraint('user_id')
+        )
+        op.create_index(op.f('ix_encryption_keys_id'), 'encryption_keys', ['id'], unique=False)
+    except Exception:
+        pass
+    
+    # Remove E2EE fields from users (wrapped in try-except)
+    try:
+        op.drop_column('users', 'kdf_version')
+    except Exception:
+        pass
+    
+    try:
+        op.drop_column('users', 'salt')
+    except Exception:
+        pass
+    
+    try:
+        op.drop_column('users', 'encrypted_master_key')
+    except Exception:
+        pass

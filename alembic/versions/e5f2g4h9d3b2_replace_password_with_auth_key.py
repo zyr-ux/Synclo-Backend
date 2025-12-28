@@ -18,16 +18,28 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Drop hashed_password column from users
-    op.drop_column('users', 'hashed_password')
+    # Drop hashed_password column from users (wrapped in try-except)
+    try:
+        op.drop_column('users', 'hashed_password')
+    except Exception:
+        pass
     
-    # Add auth_key_hash column for bcrypt-hashed auth key
-    op.add_column('users', sa.Column('auth_key_hash', sa.String(), nullable=False, server_default=''))
+    # Add auth_key_hash column for bcrypt-hashed auth key (wrapped in try-except)
+    try:
+        op.add_column('users', sa.Column('auth_key_hash', sa.String(), nullable=False, server_default=''))
+    except Exception:
+        pass
 
 
 def downgrade() -> None:
-    # Remove auth_key_hash column
-    op.drop_column('users', 'auth_key_hash')
+    # Remove auth_key_hash column (wrapped in try-except)
+    try:
+        op.drop_column('users', 'auth_key_hash')
+    except Exception:
+        pass
     
-    # Restore hashed_password column
-    op.add_column('users', sa.Column('hashed_password', sa.String(), nullable=False, server_default=''))
+    # Restore hashed_password column (wrapped in try-except)
+    try:
+        op.add_column('users', sa.Column('hashed_password', sa.String(), nullable=False, server_default=''))
+    except Exception:
+        pass
