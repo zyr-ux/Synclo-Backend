@@ -292,10 +292,20 @@ def register_device(
         device_name=device.device_name,
         user_id=current_user.id
     )
-    db.add(new_device)
-    db.commit()
-    db.refresh(new_device)
-    return new_device
+    try:
+        db.add(new_device)
+        db.commit()
+        db.refresh(new_device)
+        return new_device
+    except Exception as e:
+        db.rollback()
+        # Handle race condition where device was inserted by another request
+        existing = db.query(Device).filter(Device.device_id == device.device_id).first()
+        if existing:
+            if existing.user_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Device ID belongs to another user")
+            return existing
+        raise HTTPException(status_code=400, detail="Failed to register device")
 
 @app.get("/devices", response_model=List[DeviceOut], dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_devices(
@@ -519,7 +529,8 @@ def change_password(
         new_auth_key_bytes = base64.b64decode(data.new_auth_key)
         new_encrypted_mk_bytes = base64.b64decode(data.new_encrypted_master_key)
         new_salt_bytes = base64.b64decode(data.new_salt)
-    except Exception:
+    except (ValueError, TypeError) as e:
+        logger.error(f"Base64 decoding failed in password change: {e}")
         raise HTTPException(status_code=400, detail="Invalid base64 encoding")
     
     # Hash new auth_key
@@ -594,8 +605,8 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
     
     try:
         while True:
-            # Expiry check
-            if datetime.utcnow().timestamp() > exp:
+            # Expiry check - compare Unix timestamps correctly
+            if datetime.utcnow().timestamp() >= exp:
                 await websocket.send_json({"type": "error", "message": "Token expired"})
                 await websocket.close(code=4001)
                 break
