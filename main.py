@@ -5,7 +5,7 @@ from secrets import token_urlsafe
 from typing import List
 import base64
 import bcrypt
-from fastapi import FastAPI, Depends, HTTPException, Body, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordBearer
 from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter
@@ -371,6 +371,12 @@ def get_clipboard_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # Validate pagination parameters
+    if page < 1:
+        raise HTTPException(status_code=400, detail="Page must be >= 1")
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="Limit must be between 1 and 500")
+    
     cleanup_old_clipboard_entries(current_user.id, db)
 
     # Calculate offset for pagination
@@ -412,6 +418,7 @@ def logout(
         # Avoid unique constraint errors on repeated logout calls
         if not db.query(BlacklistedToken).filter(BlacklistedToken.token == access_token).first():
             db.add(BlacklistedToken(token=access_token, expiry=datetime.utcfromtimestamp(exp)))
+        db.commit()  # Commit after adding blacklisted token
 
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid access token")

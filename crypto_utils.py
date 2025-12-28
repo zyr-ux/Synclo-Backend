@@ -1,7 +1,6 @@
 import hmac
 import hashlib
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
 import base64
 from config import Settings
 
@@ -21,6 +20,20 @@ def decrypt_clipboard(encrypted_blob: bytes, key: bytes) -> str:
     return cipher.decrypt_and_verify(ciphertext, tag).decode()
 
 def hash_refresh_token(token: str) -> str:
+    """Hash a refresh token using HMAC-SHA256.
+    
+    Args:
+        token: The refresh token string to hash
+        
+    Returns:
+        Hexadecimal digest of the HMAC
+        
+    Raises:
+        ValueError: If token is empty or not a string
+    """
+    if not isinstance(token, str) or not token:
+        raise ValueError("Token must be a non-empty string")
+    
     return hmac.new(
         REFRESH_SECRET_KEY,
         token.encode(),

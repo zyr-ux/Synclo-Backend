@@ -59,8 +59,14 @@ class ConnectionManager:
             if device_id != exclude_device:
                 try:
                     await ws.send_json(message)
-                except Exception:
-                    # If sending fails, assume connection is dead and remove it
+                except (RuntimeError, ConnectionError) as e:
+                    # WebSocket connection is closed or broken, remove it
+                    self.disconnect(user_id, device_id)
+                except Exception as e:
+                    # Unexpected error - log it and disconnect
+                    import logging
+                    logger = logging.getLogger("clipboard_sync")
+                    logger.error(f"Unexpected error broadcasting to device {device_id}: {e}")
                     self.disconnect(user_id, device_id)
 
     def set_redis(self, redis_client):
