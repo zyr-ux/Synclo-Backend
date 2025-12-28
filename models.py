@@ -7,7 +7,10 @@ class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
+    auth_key_hash = Column(String, nullable=False)  # bcrypt hash of client-derived auth key
+    encrypted_master_key = Column(LargeBinary, nullable=False)
+    salt = Column(LargeBinary, nullable=False)
+    kdf_version = Column(Integer, nullable=False, default=1)
     devices = relationship("Device", back_populates="owner")
 
 class Device(Base):
@@ -19,21 +22,14 @@ class Device(Base):
 
     owner = relationship("User", back_populates="devices")
 
-class EncryptionKey(Base):
-    __tablename__ = "encryption_keys"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), unique=True)
-    key = Column(LargeBinary, nullable=False)
-
-    owner = relationship("User")
-
 class Clipboard(Base):
     __tablename__ = "clipboard"
-    id = Column(Integer, primary_key=True, index=True)
-    uid = Column(String, unique=True, index=True, nullable=False) # New UUID column
+    index = Column(Integer, primary_key=True, index=True)  # Auto-increment index; id is the business identifier
+    id = Column(String, unique=True, index=True, nullable=False) # UUID business identifier
     user_id = Column(Integer, ForeignKey("users.id"))
-    encrypted_data = Column(LargeBinary, nullable=False)
+    ciphertext = Column(LargeBinary, nullable=False)
     nonce = Column(LargeBinary, nullable=False)
+    blob_version = Column(Integer, nullable=False, default=1)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     owner = relationship("User")

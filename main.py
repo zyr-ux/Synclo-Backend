@@ -3,6 +3,8 @@ import traceback
 from datetime import datetime, timedelta
 from secrets import token_urlsafe
 from typing import List
+import base64
+import bcrypt
 from fastapi import FastAPI, Depends, HTTPException, Body, Request, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordBearer
 from fastapi_limiter import FastAPILimiter
@@ -10,13 +12,12 @@ from fastapi_limiter.depends import RateLimiter
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from redis.asyncio import Redis
-from Crypto.Random import get_random_bytes
 from jose import JWTError, jwt
 from database import SessionLocal
-from models import User, Device, Clipboard, EncryptionKey, RefreshToken, BlacklistedToken
-from schemas import Token, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, ClipboardOutList, SessionInfo, RefreshTokenRequest # Import new schema
-from auth import hash_password, verify_password, create_access_token, get_current_user, get_user_from_token_ws, SECRET_KEY, ALGORITHM
-from crypto_utils import encrypt_clipboard, decrypt_clipboard, hash_refresh_token
+from models import User, Device, Clipboard, RefreshToken, BlacklistedToken
+from schemas import Token, TokenWithE2EE, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, ClipboardOutList, SessionInfo, RefreshTokenRequest, PasswordChange, SaltResponse
+from auth import create_access_token, get_current_user, get_user_from_token_ws, SECRET_KEY, ALGORITHM
+from crypto_utils import hash_refresh_token
 from connection_manager import ConnectionManager
 from utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries, cleanup_expired_blacklisted_tokens # Ensure this is imported
 from logging_config import logger
@@ -115,6 +116,21 @@ def health_check():
     logger.info("Health check pinged")
     return {"status": "ok"}
 
+@app.get("/auth/salt", response_model=SaltResponse, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+def get_salt_for_email(email: str, db: Session = Depends(get_db)):
+    """
+    Public endpoint to retrieve salt for client KDF derivation.
+    Returns 404 if email not found (prevents email enumeration).
+    """
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Email not found")
+    
+    return {
+        "salt": base64.b64encode(user.salt).decode('utf-8'),
+        "kdf_version": user.kdf_version
+    }
+
 @app.post("/register", response_model=Token,dependencies=[Depends(RateLimiter(times=3, seconds=60))])
 def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     # Check if email already registered
@@ -126,8 +142,25 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     if existing_device:
         raise HTTPException(status_code=409, detail="Device ID already in use. Please use a unique device ID.")
     
-    # Create new user
-    new_user = User(email=user.email, hashed_password=hash_password(user.password))
+    # Decode base64 E2EE material
+    try:
+        encrypted_mk_bytes = base64.b64decode(user.encrypted_master_key)
+        salt_bytes = base64.b64decode(user.salt)
+        auth_key_bytes = base64.b64decode(user.auth_key)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 encoding for key material")
+    
+    # Hash auth_key with bcrypt
+    auth_key_hash = bcrypt.hashpw(auth_key_bytes, bcrypt.gensalt()).decode('utf-8')
+    
+    # Create new user with E2EE key material
+    new_user = User(
+        email=user.email,
+        auth_key_hash=auth_key_hash,
+        encrypted_master_key=encrypted_mk_bytes,
+        salt=salt_bytes,
+        kdf_version=user.kdf_version
+    )
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
@@ -172,10 +205,19 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     }
 
 # Login route
-@app.post("/login", response_model=Token, dependencies=[Depends(RateLimiter(times=5, seconds=60))])
+@app.post("/login", response_model=TokenWithE2EE, dependencies=[Depends(RateLimiter(times=5, seconds=60))])
 def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
-    if not db_user or not verify_password(user.password, db_user.hashed_password):
+    if not db_user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    # Verify auth_key against bcrypt hash
+    try:
+        auth_key_bytes = base64.b64decode(user.auth_key)
+        if not bcrypt.checkpw(auth_key_bytes, db_user.auth_key_hash.encode('utf-8')):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    except Exception as e:
+        logger.error(f"Auth key verification failed: {e}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     cleanup_expired_refresh_tokens(db)
@@ -228,7 +270,10 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
     return {
         "access_token": access_token,
         "refresh_token": plain_refresh_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "encrypted_master_key": base64.b64encode(db_user.encrypted_master_key).decode('utf-8'),
+        "salt": base64.b64encode(db_user.salt).decode('utf-8'),
+        "kdf_version": db_user.kdf_version
     }
 
 @app.post("/devices/register", response_model=DeviceOut, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
@@ -266,26 +311,24 @@ def sync_clipboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    key_entry = db.query(EncryptionKey).filter_by(user_id=current_user.id).first()
-    if not key_entry:
-        from Crypto.Random import get_random_bytes
-        key_entry = EncryptionKey(user_id=current_user.id, key=get_random_bytes(32))
-        db.add(key_entry)
-        db.commit()
-        db.refresh(key_entry)
-
-    encrypted_data, nonce = encrypt_clipboard(data.text, key_entry.key)
-
+    # Decode base64 binary data
+    try:
+        ciphertext_bytes = base64.b64decode(data.ciphertext)
+        nonce_bytes = base64.b64decode(data.nonce)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 encoding")
+    
     new_entry = Clipboard(
-        uid=str(uuid4()), # Generate UUID
+        id=str(uuid4()), # Generate UUID business identifier
         user_id=current_user.id,
-        encrypted_data=encrypted_data,
-        nonce=nonce
+        ciphertext=ciphertext_bytes,
+        nonce=nonce_bytes,
+        blob_version=data.blob_version
     )
     db.add(new_entry)
     db.commit()
 
-    return {"status": "clipboard synced", "id": new_entry.uid}
+    return {"status": "clipboard synced", "id": new_entry.id}
 
 @app.get("/clipboard", response_model=ClipboardOut, dependencies=[Depends(RateLimiter(times=30, seconds=60))])
 def get_clipboard(
@@ -300,20 +343,16 @@ def get_clipboard(
         .order_by(Clipboard.timestamp.desc())
         .first()
     )
-    key_entry = db.query(EncryptionKey).filter_by(user_id=current_user.id).first()
-
-    if not entry or not key_entry:
+    if not entry:
         raise HTTPException(status_code=404, detail="No clipboard found")
 
-    try:
-        text = decrypt_clipboard(entry.encrypted_data, key_entry.key)
-        return {
-                "id": entry.uid, # Return UUID
-                "text": text,
-                "timestamp": entry.timestamp
-                }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Decryption error: {str(e)}")
+    return {
+            "id": entry.id,
+            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8'),
+            "nonce": base64.b64encode(entry.nonce).decode('utf-8'),
+            "blob_version": entry.blob_version,
+            "timestamp": entry.timestamp
+            }
 
 @app.get("/clipboard/all", response_model=ClipboardOutList, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_clipboard_history(
@@ -323,10 +362,6 @@ def get_clipboard_history(
     current_user: User = Depends(get_current_user)
 ):
     cleanup_old_clipboard_entries(current_user.id, db)
-
-    key_entry = db.query(EncryptionKey).filter_by(user_id=current_user.id).first()
-    if not key_entry:
-        raise HTTPException(status_code=404, detail="Encryption key not found")
 
     # Calculate offset for pagination
     offset = (page - 1) * limit
@@ -340,19 +375,17 @@ def get_clipboard_history(
         .all()
     )
 
-    decrypted = []
+    serialized = []
     for entry in entries:
-        try:
-            text = decrypt_clipboard(entry.encrypted_data, key_entry.key)
-            decrypted.append({
-                "id": entry.uid, # Return UUID
-                "text": text,
-                "timestamp": entry.timestamp
-            })
-        except Exception:
-            continue  # skip corrupted entries
+        serialized.append({
+            "id": entry.id,
+            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8'),
+            "nonce": base64.b64encode(entry.nonce).decode('utf-8'),
+            "blob_version": entry.blob_version,
+            "timestamp": entry.timestamp
+        })
 
-    return {"history": decrypted}
+    return {"history": serialized}
 
 @app.post("/logout", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
 def logout(
@@ -453,9 +486,6 @@ async def delete_account(
     # Delete user's devices
     db.query(Device).filter_by(user_id=current_user.id).delete()
 
-    # Delete user's encryption key
-    db.query(EncryptionKey).filter_by(user_id=current_user.id).delete()
-
     # Delete all refresh tokens
     db.query(RefreshToken).filter_by(user_id=current_user.id).delete()
 
@@ -468,6 +498,42 @@ async def delete_account(
     await manager.disconnect_user(current_user.id)
 
     return {"message": "Your account and all associated data have been deleted."}
+
+@app.post("/password/change", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
+def change_password(
+    data: PasswordChange,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # Verify old auth_key
+    try:
+        old_auth_key_bytes = base64.b64decode(data.old_auth_key)
+        if not bcrypt.checkpw(old_auth_key_bytes, current_user.auth_key_hash.encode('utf-8')):
+            raise HTTPException(status_code=401, detail="Incorrect authentication key")
+    except Exception as e:
+        logger.error(f"Auth key verification failed: {e}")
+        raise HTTPException(status_code=401, detail="Incorrect authentication key")
+    
+    # Decode new E2EE material
+    try:
+        new_auth_key_bytes = base64.b64decode(data.new_auth_key)
+        new_encrypted_mk_bytes = base64.b64decode(data.new_encrypted_master_key)
+        new_salt_bytes = base64.b64decode(data.new_salt)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 encoding")
+    
+    # Hash new auth_key
+    new_auth_key_hash = bcrypt.hashpw(new_auth_key_bytes, bcrypt.gensalt()).decode('utf-8')
+    
+    # Update auth_key and re-wrapped MK
+    current_user.auth_key_hash = new_auth_key_hash
+    current_user.encrypted_master_key = new_encrypted_mk_bytes
+    current_user.salt = new_salt_bytes
+    current_user.kdf_version = data.new_kdf_version
+    
+    db.commit()
+    
+    return {"message": "Password changed successfully. Master key re-wrapped."}
 
 @app.delete("/devices/{device_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
 async def delete_device(
@@ -552,27 +618,30 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
                 await websocket.send_json({"type": "pong"})
                 continue
 
-            text = data.get("text")
-            if not text:
+            ciphertext = data.get("ciphertext")
+            nonce = data.get("nonce")
+            blob_version = data.get("blob_version", 1)
+            if not ciphertext or not nonce:
+                continue
+            
+            # Decode base64 from WebSocket
+            try:
+                ciphertext_bytes = base64.b64decode(ciphertext)
+                nonce_bytes = base64.b64decode(nonce)
+            except Exception:
+                await websocket.send_json({"type": "error", "message": "Invalid base64 encoding"})
                 continue
 
             # Run blocking DB operations in a separate thread
             def save_clipboard_entry():
                 session = SessionLocal()
                 try:
-                    key_entry = session.query(EncryptionKey).filter_by(user_id=user.id).first()
-                    if not key_entry:
-                        key_entry = EncryptionKey(user_id=user.id, key=get_random_bytes(32))
-                        session.add(key_entry)
-                        session.commit()
-                        session.refresh(key_entry)
-
-                    encrypted_data, nonce = encrypt_clipboard(text, key_entry.key)
                     new_entry = Clipboard(
-                        uid=str(uuid4()), # Generate UUID
+                        id=str(uuid4()), # Generate UUID
                         user_id=user.id,
-                        encrypted_data=encrypted_data,
-                        nonce=nonce,
+                        ciphertext=ciphertext_bytes,
+                        nonce=nonce_bytes,
+                        blob_version=blob_version,
                         timestamp=datetime.utcnow()
                     )
                     session.add(new_entry)
@@ -587,8 +656,10 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
             await manager.broadcast_to_user(
                 user_id=user.id,
                 message={
-                    "id": new_entry.uid, # Broadcast UUID
-                    "text": text,
+                    "id": new_entry.id,
+                    "ciphertext": ciphertext,
+                    "nonce": nonce,
+                    "blob_version": blob_version,
                     "timestamp": new_entry.timestamp.isoformat()
                 },
                 exclude_device=device_id
