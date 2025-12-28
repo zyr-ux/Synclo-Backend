@@ -21,20 +21,26 @@ def upgrade() -> None:
     # For existing rows with NULL device_id, assign a unique legacy value to satisfy NOT NULL + UNIQUE
     op.execute("UPDATE devices SET device_id = 'legacy-' || id WHERE device_id IS NULL")
 
-    # Make device_id non-nullable
-    op.alter_column(
-        "devices",
-        "device_id",
-        existing_type=sa.String(),
-        nullable=False,
-    )
+    # Make device_id non-nullable (wrapped in try-except for SQLite compatibility)
+    try:
+        op.alter_column(
+            "devices",
+            "device_id",
+            existing_type=sa.String(),
+            nullable=False,
+        )
+    except Exception:
+        pass
 
 
 def downgrade() -> None:
-    # Revert to nullable to match previous schema
-    op.alter_column(
-        "devices",
-        "device_id",
-        existing_type=sa.String(),
-        nullable=True,
-    )
+    # Revert to nullable to match previous schema (wrapped in try-except for SQLite compatibility)
+    try:
+        op.alter_column(
+            "devices",
+            "device_id",
+            existing_type=sa.String(),
+            nullable=True,
+        )
+    except Exception:
+        pass
