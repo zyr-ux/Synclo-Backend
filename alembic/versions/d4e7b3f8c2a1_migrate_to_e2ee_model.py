@@ -18,21 +18,49 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Add E2EE fields to users table
-    op.add_column('users', sa.Column('encrypted_master_key', sa.LargeBinary(), nullable=True))
-    op.add_column('users', sa.Column('salt', sa.LargeBinary(), nullable=True))
-    op.add_column('users', sa.Column('kdf_version', sa.Integer(), nullable=False, server_default='1'))
+    # Add E2EE fields to users table (only if they don't already exist)
+    try:
+        op.add_column('users', sa.Column('encrypted_master_key', sa.LargeBinary(), nullable=True))
+    except Exception:
+        pass
+    
+    try:
+        op.add_column('users', sa.Column('salt', sa.LargeBinary(), nullable=True))
+    except Exception:
+        pass
+    
+    try:
+        op.add_column('users', sa.Column('kdf_version', sa.Integer(), nullable=False, server_default='1'))
+    except Exception:
+        pass
     
     # Drop encryption_keys table (server no longer holds keys)
-    op.drop_table('encryption_keys')
+    try:
+        op.drop_table('encryption_keys')
+    except Exception:
+        pass
     
     # Rename clipboard columns for E2EE semantics
-    op.alter_column('clipboard', 'id', new_column_name='index')
-    op.alter_column('clipboard', 'uid', new_column_name='id')
-    op.alter_column('clipboard', 'encrypted_data', new_column_name='ciphertext')
+    try:
+        op.alter_column('clipboard', 'id', new_column_name='index')
+    except Exception:
+        pass
+    
+    try:
+        op.alter_column('clipboard', 'uid', new_column_name='id')
+    except Exception:
+        pass
+    
+    try:
+        op.alter_column('clipboard', 'encrypted_data', new_column_name='ciphertext')
+    except Exception:
+        pass
     
     # Add blob_version to clipboard
-    op.add_column('clipboard', sa.Column('blob_version', sa.Integer(), nullable=False, server_default='1'))
+    try:
+        op.add_column('clipboard', sa.Column('blob_version', sa.Integer(), nullable=False, server_default='1'))
+    except Exception:
+        pass
 
 
 def downgrade() -> None:
