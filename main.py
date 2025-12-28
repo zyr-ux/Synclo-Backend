@@ -11,6 +11,7 @@ from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from redis.asyncio import Redis
 from jose import JWTError, jwt
 from database import SessionLocal
@@ -137,7 +138,7 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == user.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    # Check if device_id is already in use by another user
+    # Check if device_id is already in use by another user (best-effort; still guard for race on commit)
     existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
     if existing_device:
         raise HTTPException(status_code=409, detail="Device ID already in use. Please use a unique device ID.")
@@ -152,51 +153,64 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     
     # Hash auth_key with bcrypt
     auth_key_hash = bcrypt.hashpw(auth_key_bytes, bcrypt.gensalt()).decode('utf-8')
-    
-    # Create new user with E2EE key material
-    new_user = User(
-        email=user.email,
-        auth_key_hash=auth_key_hash,
-        encrypted_master_key=encrypted_mk_bytes,
-        salt=salt_bytes,
-        kdf_version=user.kdf_version
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
 
-    # Create device for the new user
-    new_device = Device(
-        device_id=user.device_id,
-        device_name=user.device_name,
-        user_id=new_user.id
-    )
-    db.add(new_device)
-    db.commit()
+    try:
+        # Create new user with E2EE key material
+        new_user = User(
+            email=user.email,
+            auth_key_hash=auth_key_hash,
+            encrypted_master_key=encrypted_mk_bytes,
+            salt=salt_bytes,
+            kdf_version=user.kdf_version
+        )
+        db.add(new_user)
+        db.flush()  # Get user.id without committing
 
-    # Create access token
-    access_token = create_access_token(
-        data={"sub": new_user.email, "device_id": user.device_id},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
+        # Create device for the new user
+        new_device = Device(
+            device_id=user.device_id,
+            device_name=user.device_name,
+            user_id=new_user.id
+        )
+        db.add(new_device)
+        db.flush()
 
-    # Create refresh token
-    plain_refresh_token = token_urlsafe(64)
-    hashed_refresh = hash_refresh_token(plain_refresh_token)
-    refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    
-    # Generate family ID
-    family_id = str(uuid4())
+        # Create access token
+        access_token = create_access_token(
+            data={"sub": new_user.email, "device_id": user.device_id},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
 
-    db.add(RefreshToken(
-        user_id=new_user.id,
-        token=hashed_refresh,
-        expiry=refresh_expiry,
-        device_id=user.device_id,
-        family_id=family_id,
-        is_revoked=False
-    ))
-    db.commit()
+        # Create refresh token
+        plain_refresh_token = token_urlsafe(64)
+        hashed_refresh = hash_refresh_token(plain_refresh_token)
+        refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        
+        # Generate family ID
+        family_id = str(uuid4())
+
+        db.add(RefreshToken(
+            user_id=new_user.id,
+            token=hashed_refresh,
+            expiry=refresh_expiry,
+            device_id=user.device_id,
+            family_id=family_id,
+            is_revoked=False
+        ))
+
+        db.commit()
+
+    except IntegrityError:
+        db.rollback()
+        # Handle race where the same device_id or email slipped in between checks
+        if db.query(Device).filter(Device.device_id == user.device_id).first():
+            raise HTTPException(status_code=409, detail="Device ID already in use. Please use a unique device ID.")
+        if db.query(User).filter(User.email == user.email).first():
+            raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(status_code=400, detail="Registration failed")
+    except Exception:
+        db.rollback()
+        raise
 
     return {
         "access_token": access_token,
@@ -235,9 +249,23 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
             device_name=user.device_name or "Dev Device",
             user_id=db_user.id
         )
-        db.add(device)
-        db.commit()
-        db.refresh(device)
+        try:
+            db.add(device)
+            db.commit()
+            db.refresh(device)
+        except IntegrityError:
+            db.rollback()
+            # Re-check ownership after rollback to surface proper error
+            existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
+            if existing_device and existing_device.user_id != db_user.id:
+                raise HTTPException(status_code=403, detail="Device ID belongs to another user")
+            if existing_device:
+                device = existing_device
+            else:
+                raise HTTPException(status_code=400, detail="Device registration failed")
+        except Exception:
+            db.rollback()
+            raise
 
     access_token = create_access_token(
         data={"sub": user.email, "device_id": device.device_id},
@@ -321,6 +349,9 @@ def sync_clipboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # Clean old entries even on write to avoid unbounded growth if user never reads
+    cleanup_old_clipboard_entries(current_user.id, db)
+
     # Decode base64 binary data
     try:
         ciphertext_bytes = base64.b64decode(data.ciphertext)
@@ -423,7 +454,11 @@ def logout(
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid access token")
 
-    hashed_refresh = hash_refresh_token(request.refresh_token) # Access via .refresh_token
+    try:
+        hashed_refresh = hash_refresh_token(request.refresh_token) # Access via .refresh_token
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid refresh token")
+
     db.query(RefreshToken).filter(RefreshToken.token == hashed_refresh).delete()
 
     db.commit()
@@ -434,7 +469,10 @@ def refresh_token(
     request: RefreshTokenRequest, # Use Pydantic model instead of Body(..., embed=True)
     db: Session = Depends(get_db)
 ):
-    hashed_input = hash_refresh_token(request.refresh_token) # Access via .refresh_token
+    try:
+        hashed_input = hash_refresh_token(request.refresh_token) # Access via .refresh_token
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid refresh token")
 
     token_entry = db.query(RefreshToken).filter(
         RefreshToken.token == hashed_input
@@ -601,9 +639,11 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
         device_id = payload.get("device_id")
 
         if not exp or not device_id:
+            logger.warning("WebSocket token missing exp or device_id")
             await websocket.close(code=1008)
             return
-    except JWTError:
+    except JWTError as e:
+        logger.warning(f"WebSocket token validation failed: {e}")
         await websocket.close(code=1008)
         return
 

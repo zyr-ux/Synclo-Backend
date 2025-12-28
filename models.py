@@ -16,7 +16,7 @@ class User(Base):
 class Device(Base):
     __tablename__ = "devices"
     id = Column(Integer, primary_key=True, index=True)
-    device_id = Column(String, unique=True, index=True)
+    device_id = Column(String, unique=True, index=True, nullable=False)
     device_name = Column(String)
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
 
