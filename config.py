@@ -16,6 +16,9 @@ class Settings:
     REFRESH_TOKEN_HASH_KEY = os.getenv("REFRESH_TOKEN_HASH_KEY")
     if not REFRESH_TOKEN_HASH_KEY:
         raise RuntimeError("REFRESH_TOKEN_HASH_KEY environment variable is required for refresh token HMAC")
+    # Enforce minimum length to avoid weak HMAC keys
+    if len(REFRESH_TOKEN_HASH_KEY) < 16:
+        raise RuntimeError("REFRESH_TOKEN_HASH_KEY must be at least 16 characters long")
     REFRESH_TOKEN_HASH_KEY = REFRESH_TOKEN_HASH_KEY.encode("utf-8")
 
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 30))

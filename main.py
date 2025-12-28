@@ -30,6 +30,21 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 ACCESS_TOKEN_EXPIRE_MINUTES = Settings.ACCESS_TOKEN_EXPIRE_MINUTES
 REFRESH_TOKEN_EXPIRE_DAYS = Settings.REFRESH_TOKEN_EXPIRE_DAYS
 
+# Validation bounds
+MIN_DEVICE_ID_LEN = 3
+MAX_DEVICE_ID_LEN = 128
+MIN_AUTH_KEY_LEN = 16
+MAX_AUTH_KEY_LEN = 256
+MIN_SALT_LEN = 16
+MAX_SALT_LEN = 256
+MIN_MK_LEN = 16
+MAX_MK_LEN = 8192
+MAX_CIPHERTEXT_LEN = 65536  # 64 KB
+MAX_NONCE_LEN = 64
+MIN_NONCE_LEN = 8
+ALLOWED_BLOB_VERSIONS = {1}
+ALLOWED_KDF_VERSIONS = {1}
+
 app = FastAPI()
 
 manager = ConnectionManager()
@@ -134,6 +149,13 @@ def get_salt_for_email(email: str, db: Session = Depends(get_db)):
 
 @app.post("/register", response_model=Token,dependencies=[Depends(RateLimiter(times=3, seconds=60))])
 def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
+    # Validate device_id length/format
+    if not (MIN_DEVICE_ID_LEN <= len(user.device_id) <= MAX_DEVICE_ID_LEN):
+        raise HTTPException(status_code=400, detail="device_id length out of bounds")
+
+    if user.kdf_version not in ALLOWED_KDF_VERSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported kdf_version")
+
     # Check if email already registered
     if db.query(User).filter(User.email == user.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -150,6 +172,14 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
         auth_key_bytes = base64.b64decode(user.auth_key)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid base64 encoding for key material")
+
+    # Validate E2EE material sizes
+    if not (MIN_AUTH_KEY_LEN <= len(auth_key_bytes) <= MAX_AUTH_KEY_LEN):
+        raise HTTPException(status_code=400, detail="auth_key length out of bounds")
+    if not (MIN_SALT_LEN <= len(salt_bytes) <= MAX_SALT_LEN):
+        raise HTTPException(status_code=400, detail="salt length out of bounds")
+    if not (MIN_MK_LEN <= len(encrypted_mk_bytes) <= MAX_MK_LEN):
+        raise HTTPException(status_code=400, detail="encrypted_master_key length out of bounds")
     
     # Hash auth_key with bcrypt
     auth_key_hash = bcrypt.hashpw(auth_key_bytes, bcrypt.gensalt()).decode('utf-8')
@@ -224,10 +254,15 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
     if not db_user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not (MIN_DEVICE_ID_LEN <= len(user.device_id) <= MAX_DEVICE_ID_LEN):
+        raise HTTPException(status_code=400, detail="device_id length out of bounds")
     
     # Verify auth_key against bcrypt hash
     try:
         auth_key_bytes = base64.b64decode(user.auth_key)
+        if not (MIN_AUTH_KEY_LEN <= len(auth_key_bytes) <= MAX_AUTH_KEY_LEN):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
         if not bcrypt.checkpw(auth_key_bytes, db_user.auth_key_hash.encode('utf-8')):
             raise HTTPException(status_code=401, detail="Invalid credentials")
     except Exception as e:
@@ -310,6 +345,8 @@ def register_device(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    if not (MIN_DEVICE_ID_LEN <= len(device.device_id) <= MAX_DEVICE_ID_LEN):
+        raise HTTPException(status_code=400, detail="device_id length out of bounds")
     existing = db.query(Device).filter(Device.device_id == device.device_id).first()
     if existing:
         if existing.user_id != current_user.id:
@@ -358,6 +395,13 @@ def sync_clipboard(
         nonce_bytes = base64.b64decode(data.nonce)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid base64 encoding")
+
+    if data.blob_version not in ALLOWED_BLOB_VERSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported blob_version")
+    if not (MIN_NONCE_LEN <= len(nonce_bytes) <= MAX_NONCE_LEN):
+        raise HTTPException(status_code=400, detail="nonce length out of bounds")
+    if len(ciphertext_bytes) > MAX_CIPHERTEXT_LEN:
+        raise HTTPException(status_code=400, detail="ciphertext too large")
     
     new_entry = Clipboard(
         id=str(uuid4()), # Generate UUID business identifier
@@ -577,6 +621,15 @@ def change_password(
     except (ValueError, TypeError) as e:
         logger.error(f"Base64 decoding failed in password change: {e}")
         raise HTTPException(status_code=400, detail="Invalid base64 encoding")
+
+    if data.new_kdf_version not in ALLOWED_KDF_VERSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported kdf_version")
+    if not (MIN_AUTH_KEY_LEN <= len(new_auth_key_bytes) <= MAX_AUTH_KEY_LEN):
+        raise HTTPException(status_code=400, detail="auth_key length out of bounds")
+    if not (MIN_SALT_LEN <= len(new_salt_bytes) <= MAX_SALT_LEN):
+        raise HTTPException(status_code=400, detail="salt length out of bounds")
+    if not (MIN_MK_LEN <= len(new_encrypted_mk_bytes) <= MAX_MK_LEN):
+        raise HTTPException(status_code=400, detail="encrypted_master_key length out of bounds")
     
     # Hash new auth_key
     new_auth_key_hash = bcrypt.hashpw(new_auth_key_bytes, bcrypt.gensalt()).decode('utf-8')
@@ -688,6 +741,16 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
                 nonce_bytes = base64.b64decode(nonce)
             except Exception:
                 await websocket.send_json({"type": "error", "message": "Invalid base64 encoding"})
+                continue
+
+            if blob_version not in ALLOWED_BLOB_VERSIONS:
+                await websocket.send_json({"type": "error", "message": "Unsupported blob_version"})
+                continue
+            if not (MIN_NONCE_LEN <= len(nonce_bytes) <= MAX_NONCE_LEN):
+                await websocket.send_json({"type": "error", "message": "nonce length out of bounds"})
+                continue
+            if len(ciphertext_bytes) > MAX_CIPHERTEXT_LEN:
+                await websocket.send_json({"type": "error", "message": "ciphertext too large"})
                 continue
 
             # Run blocking DB operations in a separate thread
