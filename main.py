@@ -723,9 +723,17 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
                     if pong.get("type") != "pong":
                         raise ValueError("Invalid pong")
                     continue
+                except WebSocketDisconnect:
+                    # Connection already closed by client, don't try to close again
+                    logger.warning("Client disconnected during ping/pong")
+                    break
                 except Exception as e:
                     logger.warning(f"WebSocket ping/pong failed: {e}")
-                    await websocket.close(code=4002)
+                    try:
+                        await websocket.close(code=4002)
+                    except RuntimeError:
+                        # Connection already closed, skip
+                        pass
                     break
 
             if data.get("type") == "ping":
@@ -794,7 +802,11 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         logger.error(traceback.format_exc())
-        await websocket.close(code=1011) # Internal Error
+        try:
+            await websocket.close(code=1011) # Internal Error
+        except RuntimeError:
+            # Connection already closed, skip
+            pass
     finally:
         manager.disconnect(user.id, device_id)
 
