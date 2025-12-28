@@ -33,12 +33,6 @@ def upgrade() -> None:
     
     # Add blob_version to clipboard
     op.add_column('clipboard', sa.Column('blob_version', sa.Integer(), nullable=False, server_default='1'))
-    
-    # Make E2EE fields required after migration (assuming data migration completed separately if needed)
-    # In production, you'd want to ensure all users have E2EE material before making non-nullable
-    # For fresh deployment, this is fine
-    op.alter_column('users', 'encrypted_master_key', nullable=False)
-    op.alter_column('users', 'salt', nullable=False)
 
 
 def downgrade() -> None:
