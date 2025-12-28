@@ -142,6 +142,9 @@ def get_salt_for_email(email: str, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="Email not found")
     
+    if not user.salt:
+        raise HTTPException(status_code=400, detail="User salt not initialized")
+    
     return {
         "salt": base64.b64encode(user.salt).decode('utf-8'),
         "kdf_version": user.kdf_version
