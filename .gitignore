@@ -4,3 +4,4 @@ venv/
 logs/
 data/
 temp.py
+Migration-Guide.md
