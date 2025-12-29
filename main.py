@@ -161,7 +161,7 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
 
     # Check if email already registered
     if db.query(User).filter(User.email == user.email).first():
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(status_code=409, detail="Email already registered")
     
     # Check if device_id is already in use by another user (best-effort; still guard for race on commit)
     existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
@@ -239,7 +239,7 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
         if db.query(Device).filter(Device.device_id == user.device_id).first():
             raise HTTPException(status_code=409, detail="Device ID already in use. Please use a unique device ID.")
         if db.query(User).filter(User.email == user.email).first():
-            raise HTTPException(status_code=400, detail="Email already registered")
+            raise HTTPException(status_code=409, detail="Email already registered")
         raise HTTPException(status_code=400, detail="Registration failed")
     except Exception:
         db.rollback()
