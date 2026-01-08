@@ -5,3 +5,4 @@ logs/
 data/
 temp.py
 Migration-Guide.md
+Client-Password-Change-Implementation.md

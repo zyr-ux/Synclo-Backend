@@ -638,12 +638,14 @@ def change_password(
     new_auth_key_hash = bcrypt.hashpw(new_auth_key_bytes, bcrypt.gensalt()).decode('utf-8')
     
     # Update auth_key and re-wrapped MK
-    current_user.auth_key_hash = new_auth_key_hash
-    current_user.encrypted_master_key = new_encrypted_mk_bytes
-    current_user.salt = new_salt_bytes
-    current_user.kdf_version = data.new_kdf_version
+    db_user = db.query(User).filter_by(id=current_user.id).first()
+    db_user.auth_key_hash = new_auth_key_hash
+    db_user.encrypted_master_key = new_encrypted_mk_bytes
+    db_user.salt = new_salt_bytes
+    db_user.kdf_version = data.new_kdf_version
     
     db.commit()
+    db.refresh(db_user)
     
     return {"message": "Password changed successfully. Master key re-wrapped."}
 
