@@ -674,6 +674,20 @@ async def delete_device(
 
     return {"message": f"Device '{device.device_name}' deleted successfully"}
 
+@app.delete("/clipboard/{clipboard_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+def delete_clipboard_entry(
+    clipboard_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    entry = db.query(Clipboard).filter_by(id=clipboard_id, user_id=current_user.id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Clipboard entry not found")
+    
+    db.delete(entry)
+    db.commit()
+    return {"message": "Clipboard entry deleted"}
+
 @app.delete("/clipboard", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
 def delete_clipboard_history(
     db: Session = Depends(get_db),
@@ -811,27 +825,3 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
             pass
     finally:
         manager.disconnect(user.id, device_id)
-
-
-@app.get("/sessions", response_model=List[SessionInfo], dependencies=[Depends(RateLimiter(times=20, seconds=60))])
-def get_active_sessions(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    sessions = db.query(RefreshToken).filter(
-        RefreshToken.user_id == current_user.id,
-        RefreshToken.is_revoked == False,
-        RefreshToken.expiry >= datetime.utcnow()
-    ).all()
-    return [
-        {
-            "device_id": session.device_id,
-            "expiry": session.expiry
-        }
-        for session in sessions
-    ]
-
-@app.delete("/sessions/{device_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
-def revoke_session(device_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    deleted = db.query(RefreshToken).filter_by(user_id=current_user.id, device_id=device_id).delete()
-    db.commit()
-    if deleted:
-        return {"message": "Session revoked"}
-    raise HTTPException(status_code=404, detail="Session not found")
