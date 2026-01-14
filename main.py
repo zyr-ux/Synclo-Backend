@@ -794,21 +794,25 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
                     )
                     session.add(new_entry)
                     session.commit()
-                    return new_entry
+                    # Extract values before closing session to avoid DetachedInstanceError
+                    return {
+                        "id": new_entry.id,
+                        "timestamp": new_entry.timestamp
+                    }
                 finally:
                     session.close()
 
             # Execute in thread pool to avoid blocking event loop
-            new_entry = await asyncio.to_thread(save_clipboard_entry)
+            entry_data = await asyncio.to_thread(save_clipboard_entry)
 
             await manager.broadcast_to_user(
                 user_id=user.id,
                 message={
-                    "id": new_entry.id,
+                    "id": entry_data["id"],
                     "ciphertext": ciphertext,
                     "nonce": nonce,
                     "blob_version": blob_version,
-                    "timestamp": new_entry.timestamp.isoformat()
+                    "timestamp": entry_data["timestamp"].isoformat()
                 },
                 exclude_device=device_id
             )
