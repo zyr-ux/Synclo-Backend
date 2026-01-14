@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from redis.asyncio import Redis
 from jose import JWTError, jwt
-from database import SessionLocal
+from database import SessionLocal, engine, Base
 from models import User, Device, Clipboard, RefreshToken, BlacklistedToken
 from schemas import Token, TokenWithE2EE, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, ClipboardOutList, SessionInfo, RefreshTokenRequest, PasswordChange, SaltResponse
 from auth import create_access_token, get_current_user, get_user_from_token_ws, SECRET_KEY, ALGORITHM
@@ -59,6 +59,9 @@ def get_db():
 
 @app.on_event("startup")
 async def startup():
+    # Ensure database tables exist
+    Base.metadata.create_all(bind=engine)
+
     # Use configurable URL
     redis = Redis.from_url(Settings.REDIS_URL, encoding="utf-8", decode_responses=True)
     app.state.redis = redis
