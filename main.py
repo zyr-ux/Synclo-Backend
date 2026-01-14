@@ -406,17 +406,33 @@ def sync_clipboard(
     if len(ciphertext_bytes) > MAX_CIPHERTEXT_LEN:
         raise HTTPException(status_code=400, detail="ciphertext too large")
     
-    new_entry = Clipboard(
-        id=str(uuid4()), # Generate UUID business identifier
-        user_id=current_user.id,
-        ciphertext=ciphertext_bytes,
-        nonce=nonce_bytes,
-        blob_version=data.blob_version
-    )
-    db.add(new_entry)
-    db.commit()
+    new_timestamp = data.timestamp.replace(tzinfo=None) # Ensure naive for DB comparison if needed
 
-    return {"status": "clipboard synced", "id": new_entry.id}
+    # Upsert Logic: Check if ID exists
+    existing_entry = db.query(Clipboard).filter_by(id=data.id, user_id=current_user.id).first()
+    
+    if existing_entry:
+        # Update existing
+        existing_entry.ciphertext = ciphertext_bytes
+        existing_entry.nonce = nonce_bytes
+        existing_entry.blob_version = data.blob_version
+        existing_entry.timestamp = new_timestamp
+        db.commit()
+        return {"status": "clipboard updated", "id": existing_entry.id}
+    else:
+        # Insert new
+        new_entry = Clipboard(
+            id=data.id, # Use Client ID
+            user_id=current_user.id,
+            ciphertext=ciphertext_bytes,
+            nonce=nonce_bytes,
+            blob_version=data.blob_version,
+            timestamp=new_timestamp # Use Client Timestamp
+        )
+        db.add(new_entry)
+        db.commit()
+
+        return {"status": "clipboard synced", "id": new_entry.id}
 
 @app.get("/clipboard", response_model=ClipboardOut, dependencies=[Depends(RateLimiter(times=30, seconds=60))])
 def get_clipboard(
@@ -756,10 +772,20 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
                 await websocket.send_json({"type": "pong"})
                 continue
 
+            msg_id = data.get("id")
+            msg_ts_str = data.get("timestamp")
             ciphertext = data.get("ciphertext")
             nonce = data.get("nonce")
             blob_version = data.get("blob_version", 1)
-            if not ciphertext or not nonce:
+            
+            if not msg_id or not msg_ts_str or not ciphertext or not nonce:
+                await websocket.send_json({"type": "error", "message": "Missing required fields (id, timestamp, ciphertext, nonce)"})
+                continue
+            
+            try:
+                msg_ts = datetime.fromisoformat(msg_ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
+            except ValueError:
+                await websocket.send_json({"type": "error", "message": "Invalid timestamp format (ISO8601 required)"})
                 continue
             
             # Decode base64 from WebSocket
@@ -784,21 +810,35 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
             def save_clipboard_entry():
                 session = SessionLocal()
                 try:
-                    new_entry = Clipboard(
-                        id=str(uuid4()), # Generate UUID
-                        user_id=user.id,
-                        ciphertext=ciphertext_bytes,
-                        nonce=nonce_bytes,
-                        blob_version=blob_version,
-                        timestamp=datetime.utcnow()
-                    )
-                    session.add(new_entry)
-                    session.commit()
-                    # Extract values before closing session to avoid DetachedInstanceError
-                    return {
-                        "id": new_entry.id,
-                        "timestamp": new_entry.timestamp
-                    }
+                    # Upsert Logic
+                    existing = session.query(Clipboard).filter_by(id=msg_id, user_id=user.id).first()
+                    
+                    if existing:
+                        existing.ciphertext = ciphertext_bytes
+                        existing.nonce = nonce_bytes
+                        existing.blob_version = blob_version
+                        existing.timestamp = msg_ts
+                        session.commit()
+                        return {
+                            "id": existing.id,
+                            "timestamp": existing.timestamp
+                        }
+                    else:
+                        new_entry = Clipboard(
+                            id=msg_id, # Client ID
+                            user_id=user.id,
+                            ciphertext=ciphertext_bytes,
+                            nonce=nonce_bytes,
+                            blob_version=blob_version,
+                            timestamp=msg_ts # Client Timestamp
+                        )
+                        session.add(new_entry)
+                        session.commit()
+                        # Extract values before closing
+                        return {
+                            "id": new_entry.id,
+                            "timestamp": new_entry.timestamp
+                        }
                 finally:
                     session.close()
 

@@ -14,9 +14,11 @@ class DeviceOut(BaseModel):
         from_attributes = True
 
 class ClipboardIn(BaseModel):
+    id: str  # Client-generated UUID
     ciphertext: str  # base64 encoded
     nonce: str  # base64 encoded
     blob_version: int = 1
+    timestamp: datetime  # Client-generated timestamp (ISO 8601)
 
 class ClipboardOut(BaseModel):
     id: str
