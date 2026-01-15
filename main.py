@@ -717,8 +717,21 @@ def delete_clipboard_history(
     return {"message": f"{deleted_count} clipboard entries deleted."}
 
 @app.websocket("/ws/clipboard")
-async def websocket_clipboard(websocket: WebSocket, token: str):
-    # First, decode and validate the token to extract user info
+async def websocket_clipboard(websocket: WebSocket):
+    # Accept the connection first - we MUST do this before any close operations
+    await websocket.accept()
+    
+    # Extract token from Authorization header
+    auth_header = websocket.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        logger.warning("WebSocket connection attempted without Bearer token")
+        await websocket.send_json({"type": "error", "message": "Missing or invalid Authorization header"})
+        await websocket.close(code=1008)
+        return
+    
+    token = auth_header[7:]  # Remove "Bearer " prefix
+    
+    # Now decode and validate the token to extract user info
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email = payload.get("sub")
@@ -727,25 +740,29 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
 
         if not email or not exp or not device_id:
             logger.warning(f"WebSocket token missing required fields: email={email}, exp={exp}, device_id={device_id}")
+            await websocket.send_json({"type": "error", "message": "Invalid token: missing required fields"})
             await websocket.close(code=1008)
             return
     except JWTError as e:
         logger.warning(f"WebSocket token validation failed: {e}")
+        await websocket.send_json({"type": "error", "message": "Invalid token"})
         await websocket.close(code=1008)
         return
     
-    # Now validate the user exists and device is authorized
+    # Validate the user exists and device is authorized
     db = SessionLocal()
     try:
         # Check if token is blacklisted
         if db.query(BlacklistedToken).filter_by(token=token).first():
             logger.warning(f"WebSocket connection attempted with blacklisted token for {email}")
+            await websocket.send_json({"type": "error", "message": "Token has been revoked"})
             await websocket.close(code=1008)
             return
 
         user = db.query(User).filter(User.email == email).first()
         if not user:
             logger.warning(f"WebSocket connection attempted for non-existent user: {email}")
+            await websocket.send_json({"type": "error", "message": "User not found"})
             await websocket.close(code=1008)
             return
 
@@ -753,6 +770,7 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
         device = db.query(Device).filter_by(user_id=user.id, device_id=device_id).first()
         if not device:
             logger.warning(f"WebSocket connection attempted with unauthorized device {device_id} for user {email}")
+            await websocket.send_json({"type": "error", "message": "Unauthorized device"})
             await websocket.close(code=1008)
             return
         
@@ -761,9 +779,8 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
     finally:
         db.close()
 
-    # Accept the connection only after validation succeeds
+    # Connection validated successfully
     logger.info(f"WebSocket connection accepted for user_id={user_id}, device_id={device_id}")
-    await websocket.accept()
     await manager.connect(user_id, device_id, websocket)
     
     try:
