@@ -718,28 +718,53 @@ def delete_clipboard_history(
 
 @app.websocket("/ws/clipboard")
 async def websocket_clipboard(websocket: WebSocket, token: str):
-    # Validate user + device
-    user = get_user_from_token_ws(token)
-    if not user:
-        await websocket.close(code=1008)
-        return
-
+    # First, decode and validate the token to extract user info
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email = payload.get("sub")
         exp = payload.get("exp")
         device_id = payload.get("device_id")
 
-        if not exp or not device_id:
-            logger.warning("WebSocket token missing exp or device_id")
+        if not email or not exp or not device_id:
+            logger.warning(f"WebSocket token missing required fields: email={email}, exp={exp}, device_id={device_id}")
             await websocket.close(code=1008)
             return
     except JWTError as e:
         logger.warning(f"WebSocket token validation failed: {e}")
         await websocket.close(code=1008)
         return
+    
+    # Now validate the user exists and device is authorized
+    db = SessionLocal()
+    try:
+        # Check if token is blacklisted
+        if db.query(BlacklistedToken).filter_by(token=token).first():
+            logger.warning(f"WebSocket connection attempted with blacklisted token for {email}")
+            await websocket.close(code=1008)
+            return
 
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            logger.warning(f"WebSocket connection attempted for non-existent user: {email}")
+            await websocket.close(code=1008)
+            return
+
+        # Check if device belongs to this user
+        device = db.query(Device).filter_by(user_id=user.id, device_id=device_id).first()
+        if not device:
+            logger.warning(f"WebSocket connection attempted with unauthorized device {device_id} for user {email}")
+            await websocket.close(code=1008)
+            return
+        
+        # Store user_id for use in the connection
+        user_id = user.id
+    finally:
+        db.close()
+
+    # Accept the connection only after validation succeeds
+    logger.info(f"WebSocket connection accepted for user_id={user_id}, device_id={device_id}")
     await websocket.accept()
-    await manager.connect(user.id, device_id, websocket)
+    await manager.connect(user_id, device_id, websocket)
     
     try:
         while True:
@@ -814,7 +839,7 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
                 session = SessionLocal()
                 try:
                     # Upsert Logic
-                    existing = session.query(Clipboard).filter_by(id=msg_id, user_id=user.id).first()
+                    existing = session.query(Clipboard).filter_by(id=msg_id, user_id=user_id).first()
                     
                     if existing:
                         existing.ciphertext = ciphertext_bytes
@@ -829,7 +854,7 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
                     else:
                         new_entry = Clipboard(
                             id=msg_id, # Client ID
-                            user_id=user.id,
+                            user_id=user_id,
                             ciphertext=ciphertext_bytes,
                             nonce=nonce_bytes,
                             blob_version=blob_version,
@@ -849,7 +874,7 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
             entry_data = await asyncio.to_thread(save_clipboard_entry)
 
             await manager.broadcast_to_user(
-                user_id=user.id,
+                user_id=user_id,
                 message={
                     "id": entry_data["id"],
                     "ciphertext": ciphertext,
@@ -871,4 +896,4 @@ async def websocket_clipboard(websocket: WebSocket, token: str):
             # Connection already closed, skip
             pass
     finally:
-        manager.disconnect(user.id, device_id)
+        manager.disconnect(user_id, device_id)
