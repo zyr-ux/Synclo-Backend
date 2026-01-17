@@ -890,6 +890,7 @@ async def websocket_clipboard(websocket: WebSocket):
             # Execute in thread pool to avoid blocking event loop
             entry_data = await asyncio.to_thread(save_clipboard_entry)
 
+            # Broadcast to other devices (excluding sender)
             await manager.broadcast_to_user(
                 user_id=user_id,
                 message={
@@ -901,6 +902,13 @@ async def websocket_clipboard(websocket: WebSocket):
                 },
                 exclude_device=device_id
             )
+
+            # Send acknowledgment back to the sender
+            await websocket.send_json({
+                "type": "ack",
+                "id": entry_data["id"],
+                "timestamp": entry_data["timestamp"].isoformat()
+            })
 
     except WebSocketDisconnect:
         pass
