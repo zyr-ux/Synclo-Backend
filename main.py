@@ -906,8 +906,7 @@ async def websocket_clipboard(websocket: WebSocket):
             # Send acknowledgment back to the sender
             await websocket.send_json({
                 "type": "ack",
-                "id": entry_data["id"],
-                "timestamp": entry_data["timestamp"].isoformat()
+                "id": entry_data["id"]
             })
 
     except WebSocketDisconnect:
