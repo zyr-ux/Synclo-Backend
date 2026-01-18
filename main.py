@@ -59,8 +59,21 @@ def get_db():
 
 @app.on_event("startup")
 async def startup():
-    # Ensure database tables exist
-    Base.metadata.create_all(bind=engine)
+    # Run Alembic migrations programmatically
+    # This prevents the need for manual migration commands
+    try:
+        from alembic.config import Config
+        from alembic import command
+        
+        # Create Alembic configuration object
+        alembic_cfg = Config("alembic.ini")
+        # Run the upgrade command
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Database migrations applied successfully.")
+    except Exception as e:
+        logger.error(f"Failed to apply migrations: {e}")
+        # Stop startup if migrations fail to prevent data inconsistency
+        raise RuntimeError(f"Database migration failed: {e}") from e
 
     # Use configurable URL
     redis = Redis.from_url(Settings.REDIS_URL, encoding="utf-8", decode_responses=True)
