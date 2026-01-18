@@ -71,6 +71,11 @@ async def startup():
         command.upgrade(alembic_cfg, "head")
         logger.info("Database migrations applied successfully.")
     except Exception as e:
+        # Fallback logging in case logger is messed up by alembic
+        import sys
+        print(f"CRITICAL STARTUP ERROR: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+
         logger.error(f"Failed to apply migrations: {e}")
         # Stop startup if migrations fail to prevent data inconsistency
         raise RuntimeError(f"Database migration failed: {e}") from e
