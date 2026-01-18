@@ -27,8 +27,8 @@ class Clipboard(Base):
     index = Column(Integer, primary_key=True, index=True)  # Auto-increment index; id is the business identifier
     id = Column(String, unique=True, index=True, nullable=False) # UUID business identifier
     user_id = Column(Integer, ForeignKey("users.id"))
-    ciphertext = Column(LargeBinary, nullable=False)
-    nonce = Column(LargeBinary, nullable=False)
+    ciphertext = Column(LargeBinary, nullable=True)
+    nonce = Column(LargeBinary, nullable=True)
     blob_version = Column(Integer, nullable=False, default=1)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_deleted = Column(Boolean, default=False, index=True)

@@ -471,10 +471,11 @@ def get_clipboard(
 
     return {
             "id": entry.id,
-            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8'),
-            "nonce": base64.b64encode(entry.nonce).decode('utf-8'),
+            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8') if entry.ciphertext else None,
+            "nonce": base64.b64encode(entry.nonce).decode('utf-8') if entry.nonce else None,
             "blob_version": entry.blob_version,
-            "timestamp": entry.timestamp
+            "timestamp": entry.timestamp,
+            "is_deleted": entry.is_deleted
             }
 
 @app.get("/clipboard/all", response_model=ClipboardOutList, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
@@ -514,8 +515,8 @@ def get_clipboard_history(
     for entry in entries:
         serialized.append({
             "id": entry.id,
-            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8'),
-            "nonce": base64.b64encode(entry.nonce).decode('utf-8'),
+            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8') if entry.ciphertext else None,
+            "nonce": base64.b64encode(entry.nonce).decode('utf-8') if entry.nonce else None,
             "blob_version": entry.blob_version,
             "timestamp": entry.timestamp,
             "is_deleted": entry.is_deleted,
@@ -745,10 +746,12 @@ async def delete_clipboard_entry(
     await manager.broadcast_to_user(
         user_id=current_user.id,
         message={
-            "type": "delete",
             "id": clipboard_id,
             "is_deleted": True,
-            "deleted_at": entry.deleted_at.isoformat() + "Z"
+            "timestamp": entry.deleted_at.isoformat() + "Z",
+            "ciphertext": None,
+            "nonce": None,
+            "blob_version": entry.blob_version
         }
         # We don't have exclude_device here because REST API doesn't carry device_id in context easily
         # unless added to request state. But implementation plan says exclude originating device.
@@ -790,10 +793,12 @@ async def delete_clipboard_history(
         await manager.broadcast_to_user(
             user_id=current_user.id,
             message={
-                "type": "delete",
                 "id": clipboard_id,
                 "is_deleted": True,
-                "deleted_at": now.isoformat() + "Z"
+                "timestamp": now.isoformat() + "Z",
+                "ciphertext": None,
+                "nonce": None,
+                "blob_version": 1
             }
         )
     
@@ -900,68 +905,31 @@ async def websocket_clipboard(websocket: WebSocket):
                 await websocket.send_json({"type": "pong"})
                 continue
             
-            # Handle delete messages
-            if data.get("type") == "delete":
-                delete_id = data.get("id")
-                if not delete_id:
-                    await websocket.send_json({"type": "error", "message": "Missing id for delete operation"})
-                    continue
-                
-                # Delete from database in a separate thread (Soft Delete)
-                def delete_clipboard_entry():
-                    session = SessionLocal()
-                    try:
-                        entry = session.query(Clipboard).filter_by(id=delete_id, user_id=user_id).first()
-                        if entry:
-                            # If already deleted, we can still Ack but maybe skip broadcast?
-                            # For robustness, we'll update timestamp and broadcast again to ensure sync
-                            entry.is_deleted = True
-                            entry.deleted_at = datetime.now(timezone.utc)
-                            session.commit()
-                            return {
-                                "success": True, 
-                                "deleted_at": entry.deleted_at
-                            }
-                        return {"success": False}
-                    finally:
-                        session.close()
-                
-                result = await asyncio.to_thread(delete_clipboard_entry)
-                
-                if result["success"]:
-                    # Broadcast deletion to other devices (EXCLUDING Sender)
-                    await manager.broadcast_to_user(
-                        user_id=user_id,
-                        message={
-                            "type": "delete",
-                            "id": delete_id,
-                            "is_deleted": True,
-                            "deleted_at": result["deleted_at"].isoformat() + "Z"
-                        },
-                        exclude_device=device_id # Exclude the sender
-                    )
-                    
-                    # Send acknowledgment back to sender
-                    await websocket.send_json({
-                        "type": "delete_ack",
-                        "id": delete_id
-                    })
-                else:
-                    # Idempotency: count as success if not found
-                    await websocket.send_json({
-                        "type": "delete_ack",
-                        "id": delete_id
-                    })
-
+            # Unified Message Handling (Upsert & Delete)
+            # We no longer separate "type": "delete". Everything is an event.
+            
             msg_id = data.get("id")
+            # Client determines deletion status
+            is_deleted = data.get("is_deleted", False)
+            
             msg_ts_str = data.get("timestamp")
             ciphertext = data.get("ciphertext")
             nonce = data.get("nonce")
             blob_version = data.get("blob_version", 1)
             
-            if not msg_id or not msg_ts_str or not ciphertext or not nonce:
-                await websocket.send_json({"type": "error", "message": "Missing required fields (id, timestamp, ciphertext, nonce)"})
+            if not msg_id or not msg_ts_str:
+                await websocket.send_json({"type": "error", "message": "Missing required fields (id, timestamp)"})
                 continue
+
+            # Validation based on is_deleted status
+            if not is_deleted:
+                if not ciphertext or not nonce:
+                    await websocket.send_json({"type": "error", "message": "Missing ciphertext/nonce for active entry"})
+                    continue
+            else:
+                # If deleted, we enforce nulls for data privacy/storage optimization
+                ciphertext = None
+                nonce = None
             
             try:
                 msg_ts = datetime.fromisoformat(msg_ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
@@ -969,23 +937,26 @@ async def websocket_clipboard(websocket: WebSocket):
                 await websocket.send_json({"type": "error", "message": "Invalid timestamp format (ISO8601 required)"})
                 continue
             
-            # Decode base64 from WebSocket
-            try:
-                ciphertext_bytes = base64.b64decode(ciphertext)
-                nonce_bytes = base64.b64decode(nonce)
-            except Exception:
-                await websocket.send_json({"type": "error", "message": "Invalid base64 encoding"})
-                continue
+            ciphertext_bytes = None
+            nonce_bytes = None
 
-            if blob_version not in ALLOWED_BLOB_VERSIONS:
-                await websocket.send_json({"type": "error", "message": "Unsupported blob_version"})
-                continue
-            if not (MIN_NONCE_LEN <= len(nonce_bytes) <= MAX_NONCE_LEN):
-                await websocket.send_json({"type": "error", "message": "nonce length out of bounds"})
-                continue
-            if len(ciphertext_bytes) > MAX_CIPHERTEXT_LEN:
-                await websocket.send_json({"type": "error", "message": "ciphertext too large"})
-                continue
+            if not is_deleted:
+                try:
+                    ciphertext_bytes = base64.b64decode(ciphertext)
+                    nonce_bytes = base64.b64decode(nonce)
+                except Exception:
+                    await websocket.send_json({"type": "error", "message": "Invalid base64 encoding"})
+                    continue
+
+                if blob_version not in ALLOWED_BLOB_VERSIONS:
+                    await websocket.send_json({"type": "error", "message": "Unsupported blob_version"})
+                    continue
+                if not (MIN_NONCE_LEN <= len(nonce_bytes) <= MAX_NONCE_LEN):
+                    await websocket.send_json({"type": "error", "message": "nonce length out of bounds"})
+                    continue
+                if len(ciphertext_bytes) > MAX_CIPHERTEXT_LEN:
+                    await websocket.send_json({"type": "error", "message": "ciphertext too large"})
+                    continue
 
             # Run blocking DB operations in a separate thread
             def save_clipboard_entry():
@@ -994,18 +965,29 @@ async def websocket_clipboard(websocket: WebSocket):
                     existing = session.query(Clipboard).filter_by(id=msg_id, user_id=user_id).first()
                     
                     if existing:
-                        # Prevent resurrecting deleted items unless explicitly handled (usually we don't)
-                        if existing.is_deleted:
-                            return {"error": "Cannot update deleted item"}
-
-                        existing.ciphertext = ciphertext_bytes
-                        existing.nonce = nonce_bytes
-                        existing.blob_version = blob_version
+                        # Conflict Resolution / Idempotency
+                        # Use valid timestamps to determine winner if needed, but usually last-write-wins or server-accepts-all
+                        # For now simplistically update. 
+                        
+                        existing.is_deleted = is_deleted
                         existing.timestamp = msg_ts
+                        existing.blob_version = blob_version
+                        
+                        if is_deleted:
+                            existing.ciphertext = None
+                            existing.nonce = None
+                            existing.deleted_at = msg_ts # Use client timestamp as deleted_at
+                        else:
+                            existing.ciphertext = ciphertext_bytes
+                            existing.nonce = nonce_bytes
+                            existing.deleted_at = None # Resurrect if previously deleted
+                            
                         session.commit()
                         return {
                             "id": existing.id,
-                            "timestamp": existing.timestamp
+                            "timestamp": existing.timestamp,
+                            "is_deleted": existing.is_deleted,
+                            "blob_version": existing.blob_version
                         }
                     else:
                         new_entry = Clipboard(
@@ -1014,15 +996,21 @@ async def websocket_clipboard(websocket: WebSocket):
                             ciphertext=ciphertext_bytes,
                             nonce=nonce_bytes,
                             blob_version=blob_version,
-                            timestamp=msg_ts # Client Timestamp
+                            timestamp=msg_ts, # Client Timestamp
+                            is_deleted=is_deleted,
+                            deleted_at=msg_ts if is_deleted else None
                         )
                         session.add(new_entry)
                         session.commit()
-                        # Extract values before closing
                         return {
                             "id": new_entry.id,
-                            "timestamp": new_entry.timestamp
+                            "timestamp": new_entry.timestamp,
+                            "is_deleted": new_entry.is_deleted,
+                            "blob_version": new_entry.blob_version
                         }
+                except Exception as e:
+                    session.rollback()
+                    return {"error": str(e)}
                 finally:
                     session.close()
 
@@ -1030,19 +1018,29 @@ async def websocket_clipboard(websocket: WebSocket):
             entry_data = await asyncio.to_thread(save_clipboard_entry)
 
             if "error" in entry_data:
-                 await websocket.send_json({"type": "error", "message": entry_data["error"]})
+                 logger.error(f"DB Error processing clipboard item: {entry_data['error']}")
+                 # await websocket.send_json({"type": "error", "message": "Database error"}) 
+                 # Often better to not break connection on one item error, just skip ack.
                  continue
 
             # Broadcast to other devices (excluding sender)
+            broadcast_payload = {
+                "id": entry_data["id"],
+                "timestamp": entry_data["timestamp"].isoformat(),
+                "is_deleted": entry_data["is_deleted"],
+                "blob_version": entry_data["blob_version"]
+            }
+            
+            if not entry_data["is_deleted"]:
+                broadcast_payload["ciphertext"] = ciphertext
+                broadcast_payload["nonce"] = nonce
+            else:
+                broadcast_payload["ciphertext"] = None
+                broadcast_payload["nonce"] = None
+
             await manager.broadcast_to_user(
                 user_id=user_id,
-                message={
-                    "id": entry_data["id"],
-                    "ciphertext": ciphertext,
-                    "nonce": nonce,
-                    "blob_version": blob_version,
-                    "timestamp": entry_data["timestamp"].isoformat()
-                },
+                message=broadcast_payload,
                 exclude_device=device_id
             )
 

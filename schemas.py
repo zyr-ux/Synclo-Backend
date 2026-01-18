@@ -15,10 +15,11 @@ class DeviceOut(BaseModel):
 
 class ClipboardIn(BaseModel):
     id: str  # Client-generated UUID
-    ciphertext: str  # base64 encoded
-    nonce: str  # base64 encoded
+    ciphertext: Optional[str] = None # base64 encoded
+    nonce: Optional[str] = None # base64 encoded
     blob_version: int = 1
     timestamp: datetime  # Client-generated timestamp (ISO 8601)
+    is_deleted: bool = False
 
 class ClipboardOut(BaseModel):
     id: str
