@@ -694,7 +694,7 @@ async def delete_device(
     return {"message": f"Device '{device.device_name}' deleted successfully"}
 
 @app.delete("/clipboard/{clipboard_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
-def delete_clipboard_entry(
+async def delete_clipboard_entry(
     clipboard_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -705,15 +705,39 @@ def delete_clipboard_entry(
     
     db.delete(entry)
     db.commit()
+    
+    # Broadcast deletion to all connected devices
+    await manager.broadcast_to_user(
+        user_id=current_user.id,
+        message={
+            "type": "delete",
+            "id": clipboard_id
+        }
+    )
+    
     return {"message": "Clipboard entry deleted"}
 
 @app.delete("/clipboard", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
-def delete_clipboard_history(
+async def delete_clipboard_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # Get all clipboard IDs before deletion for broadcasting
+    clipboard_ids = [entry.id for entry in db.query(Clipboard).filter_by(user_id=current_user.id).all()]
+    
     deleted_count = db.query(Clipboard).filter_by(user_id=current_user.id).delete()
     db.commit()
+    
+    # Broadcast deletion of all entries to connected devices
+    for clipboard_id in clipboard_ids:
+        await manager.broadcast_to_user(
+            user_id=current_user.id,
+            message={
+                "type": "delete",
+                "id": clipboard_id
+            }
+        )
+    
     return {"message": f"{deleted_count} clipboard entries deleted."}
 
 @app.websocket("/ws/clipboard")
@@ -815,6 +839,52 @@ async def websocket_clipboard(websocket: WebSocket):
 
             if data.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
+                continue
+            
+            # Handle delete messages
+            if data.get("type") == "delete":
+                delete_id = data.get("id")
+                if not delete_id:
+                    await websocket.send_json({"type": "error", "message": "Missing id for delete operation"})
+                    continue
+                
+                # Delete from database in a separate thread
+                def delete_clipboard_entry():
+                    session = SessionLocal()
+                    try:
+                        entry = session.query(Clipboard).filter_by(id=delete_id, user_id=user_id).first()
+                        if entry:
+                            session.delete(entry)
+                            session.commit()
+                            return True
+                        return False
+                    finally:
+                        session.close()
+                
+                deleted = await asyncio.to_thread(delete_clipboard_entry)
+                
+                if deleted:
+                    # Broadcast deletion to other devices
+                    await manager.broadcast_to_user(
+                        user_id=user_id,
+                        message={
+                            "type": "delete",
+                            "id": delete_id
+                        },
+                        exclude_device=device_id
+                    )
+                    
+                    # Send acknowledgment back to sender
+                    await websocket.send_json({
+                        "type": "delete_ack",
+                        "id": delete_id
+                    })
+                else:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Clipboard entry not found"
+                    })
+                
                 continue
 
             msg_id = data.get("id")
