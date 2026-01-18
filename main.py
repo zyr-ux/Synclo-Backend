@@ -586,7 +586,10 @@ def refresh_token(
         raise HTTPException(status_code=401, detail="Refresh token reused. Security alert: Session terminated.")
 
     # 3. Check expiry
-    if token_entry.expiry < datetime.now(timezone.utc):
+    # Ensure token_entry.expiry is treated as UTC if it's naive (SQLAlchemy default)
+    expiry_utc = token_entry.expiry.replace(tzinfo=timezone.utc) if token_entry.expiry.tzinfo is None else token_entry.expiry
+
+    if expiry_utc < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="Expired refresh token")
 
     user_id = token_entry.user_id
