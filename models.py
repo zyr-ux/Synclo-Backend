@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, ForeignKey, LargeBinary, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from database import Base
@@ -30,7 +30,7 @@ class Clipboard(Base):
     ciphertext = Column(LargeBinary, nullable=False)
     nonce = Column(LargeBinary, nullable=False)
     blob_version = Column(Integer, nullable=False, default=1)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_deleted = Column(Boolean, default=False, index=True)
     deleted_at = Column(DateTime, nullable=True, index=True)
 

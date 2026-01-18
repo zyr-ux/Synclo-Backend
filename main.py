@@ -1,6 +1,6 @@
 import asyncio
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from secrets import token_urlsafe
 from typing import List
 import base64
@@ -236,7 +236,7 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
         # Create refresh token
         plain_refresh_token = token_urlsafe(64)
         hashed_refresh = hash_refresh_token(plain_refresh_token)
-        refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        refresh_expiry = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
         
         # Generate family ID
         family_id = str(uuid4())
@@ -331,7 +331,7 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
 
     plain_refresh_token = token_urlsafe(64)
     hashed_refresh = hash_refresh_token(plain_refresh_token)
-    refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    refresh_expiry = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     
     # Generate a new family ID for this login session
     family_id = str(uuid4())
@@ -580,7 +580,7 @@ def refresh_token(
         raise HTTPException(status_code=401, detail="Refresh token reused. Security alert: Session terminated.")
 
     # 3. Check expiry
-    if token_entry.expiry < datetime.utcnow():
+    if token_entry.expiry < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="Expired refresh token")
 
     user_id = token_entry.user_id
@@ -598,7 +598,7 @@ def refresh_token(
 
     new_refresh_plain = token_urlsafe(64)
     new_refresh_hashed = hash_refresh_token(new_refresh_plain)
-    new_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    new_expiry = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
     # Revoke the old token (don't delete it yet, keep it to detect reuse)
     token_entry.is_revoked = True
@@ -737,7 +737,7 @@ async def delete_clipboard_entry(
     
     # Soft Delete
     entry.is_deleted = True
-    entry.deleted_at = datetime.utcnow()
+    entry.deleted_at = datetime.now(timezone.utc)
     db.commit()
     
     # Broadcast deletion to all connected devices EXCLUDING origin
@@ -772,7 +772,7 @@ async def delete_clipboard_history(
     if not active_entries:
         return {"message": "No clipboard entries to delete."}
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     clipboard_ids = []
     
     for entry in active_entries:
@@ -869,7 +869,7 @@ async def websocket_clipboard(websocket: WebSocket):
     try:
         while True:
             # Expiry check - compare Unix timestamps correctly
-            if datetime.utcnow().timestamp() >= exp:
+            if datetime.now(timezone.utc).timestamp() >= exp:
                 await websocket.send_json({"type": "error", "message": "Token expired"})
                 await websocket.close(code=4001)
                 break
@@ -916,7 +916,7 @@ async def websocket_clipboard(websocket: WebSocket):
                             # If already deleted, we can still Ack but maybe skip broadcast?
                             # For robustness, we'll update timestamp and broadcast again to ensure sync
                             entry.is_deleted = True
-                            entry.deleted_at = datetime.utcnow()
+                            entry.deleted_at = datetime.now(timezone.utc)
                             session.commit()
                             return {
                                 "success": True, 
