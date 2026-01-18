@@ -12,7 +12,20 @@ The Synclo Backend is a FastAPI-based application using SQLite (via SQLAlchemy) 
 - **Real-time:** WebSockets (managed by [ConnectionManager](file:///e:/Files/Code-Stuff/Projects/Synclo-Backend/connection_manager.py#6-111), scalable via Redis)
 - **Security:** OAuth2 (JWT), Bcrypt (Auth Key Hashing)
 
-## 2. Authentication & Security
+## 2. Data Lifecycle & Soft Deletion
+
+Synclo uses a **Soft Delete** strategy with Tombstones to ensure reliable offline synchronization.
+
+### Tombstones
+- **Active Items**: `is_deleted = false`
+- **Deleted Items**: `is_deleted = true`, `deleted_at = <server_timestamp>`
+
+When an item is deleted, it is NOT removed from the database immediately. Instead, it is marked as a "tombstone". This allows clients that were offline to receive the deletion event during their next sync.
+
+- **Retention**: Tombstones are permanently purged after **30 days** (configurable via `TOMBSTONE_RETENTION_DAYS`).
+- **Timestamps**: The `deleted_at` field is server-generated and used for cleanup. The original `timestamp` (client-generated) remains the authority for sync conflict resolution.
+
+## 3. Authentication & Security
 
 Synclo separates authentication from data encryption.
 
@@ -102,7 +115,23 @@ Server sends error messages in this format:
 - `4002`: Ping/Pong timeout.
 - `1011`: Internal server error.
 
-## 4. REST API Reference
+- `1011`: Internal server error.
+
+### Deletion Broadcasts
+When an item is deleted, the server broadcasts a specific delete message. The format includes tombstone metadata.
+
+**Server -> Client (Delete Event):**
+```json
+{
+  "type": "delete",
+  "id": "uuid_string",
+  "is_deleted": true,
+  "deleted_at": "ISO8601_server_timestamp"
+}
+```
+*Note: The originating client (who sent the delete) does NOT receive this broadcast.*
+
+## 5. REST API Reference
 
 All protected endpoints require `Authorization: Bearer <token>` header.
 
@@ -199,13 +228,39 @@ Push a new clipboard entry.
 
 #### `GET /clipboard/all`
 Get clipboard history with pagination.
-- **Query**: `page=1`, `limit=50`.
+- **Query Params**:
+    - `page`: Page number (default 1)
+    - `limit`: Items per page (default 50)
+    - `include_deleted`: (bool) If `true`, response includes deleted items (tombstones). Default `false`.
+- **Response Example** (with `include_deleted=true`):
+    ```json
+    {
+      "history": [
+        {
+          "id": "uuid_1",
+          "ciphertext": "...",
+          "timestamp": "2026-01-18T10:00:00",
+          "is_deleted": false,
+          "deleted_at": null
+        },
+        {
+          "id": "uuid_deleted",
+          "ciphertext": "...", 
+          "timestamp": "2026-01-17T10:00:00",
+          "is_deleted": true,
+          "deleted_at": "2026-01-18T12:00:00"
+        }
+      ]
+    }
+    ```
 
 #### `DELETE /clipboard/{clipboard_id}`
-Delete a specific entry.
+Soft deletes a specific entry.
+- **Idempotent**: Returns 200 OK even if item is already deleted or doesn't exist.
+- **Side Effect**: Broadcasts delete event via WebSocket.
 
 #### `DELETE /clipboard`
-Clear all history.
+Soft deletes ALL entries for the user.
 
 ### User Account
 
