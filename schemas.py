@@ -23,8 +23,8 @@ class ClipboardIn(BaseModel):
 
 class ClipboardOut(BaseModel):
     id: str
-    ciphertext: str  # base64 encoded
-    nonce: str  # base64 encoded
+    ciphertext: Optional[str] = None # base64 encoded
+    nonce: Optional[str] = None # base64 encoded
     blob_version: int
     timestamp: datetime
     is_deleted: bool = False
