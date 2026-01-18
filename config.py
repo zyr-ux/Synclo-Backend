@@ -22,6 +22,7 @@ class Settings:
     REFRESH_TOKEN_HASH_KEY = REFRESH_TOKEN_HASH_KEY.encode("utf-8")
 
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 30))
+    TOMBSTONE_RETENTION_DAYS = int(os.getenv("TOMBSTONE_RETENTION_DAYS", "30"))
     # DB
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/clipboard.db")
     REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379") # Default to docker service name; override for local

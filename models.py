@@ -31,6 +31,8 @@ class Clipboard(Base):
     nonce = Column(LargeBinary, nullable=False)
     blob_version = Column(Integer, nullable=False, default=1)
     timestamp = Column(DateTime, default=datetime.utcnow)
+    is_deleted = Column(Boolean, default=False, index=True)
+    deleted_at = Column(DateTime, nullable=True, index=True)
 
     owner = relationship("User")
 

@@ -26,6 +26,8 @@ class ClipboardOut(BaseModel):
     nonce: str  # base64 encoded
     blob_version: int
     timestamp: datetime
+    is_deleted: bool = False
+    deleted_at: Optional[datetime] = None
 
 class ClipboardOutList(BaseModel):
     history: List[ClipboardOut]

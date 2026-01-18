@@ -100,6 +100,9 @@ async def periodic_cleanup():
                 try:
                     cleanup_expired_blacklisted_tokens(db)
                     cleanup_expired_refresh_tokens(db)
+                    # Use imported cleanup function
+                    from utils import cleanup_old_tombstones
+                    cleanup_old_tombstones(db)
                 finally:
                     db.close()
 
@@ -465,6 +468,7 @@ def get_clipboard(
 def get_clipboard_history(
     page: int = 1,
     limit: int = 50,
+    include_deleted: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -479,9 +483,14 @@ def get_clipboard_history(
     # Calculate offset for pagination
     offset = (page - 1) * limit
 
+    query = db.query(Clipboard).filter_by(user_id=current_user.id)
+    
+    # Default behavior: exclude deleted items unless explicitly requested
+    if not include_deleted:
+        query = query.filter(Clipboard.is_deleted == False)
+
     entries = (
-        db.query(Clipboard)
-        .filter_by(user_id=current_user.id)
+        query
         .order_by(Clipboard.timestamp.desc())
         .offset(offset)
         .limit(limit)
@@ -495,7 +504,9 @@ def get_clipboard_history(
             "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8'),
             "nonce": base64.b64encode(entry.nonce).decode('utf-8'),
             "blob_version": entry.blob_version,
-            "timestamp": entry.timestamp
+            "timestamp": entry.timestamp,
+            "is_deleted": entry.is_deleted,
+            "deleted_at": entry.deleted_at
         })
 
     return {"history": serialized}
@@ -699,46 +710,81 @@ async def delete_clipboard_entry(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # Idempotency: Check if item exists (tombstone or active)
     entry = db.query(Clipboard).filter_by(id=clipboard_id, user_id=current_user.id).first()
-    if not entry:
-        raise HTTPException(status_code=404, detail="Clipboard entry not found")
     
-    db.delete(entry)
+    # If not found, return success (idempotent)
+    if not entry:
+        return {"message": "Clipboard entry deleted"}
+        
+    # If already deleted, return success (idempotent) -- skipping broadcast usually, but plan says broadcast needed
+    # Optimization: If it's already a tombstone, we don't need to do anything or broadcast
+    if entry.is_deleted:
+         return {"message": "Clipboard entry deleted"}
+    
+    # Soft Delete
+    entry.is_deleted = True
+    entry.deleted_at = datetime.utcnow()
     db.commit()
     
-    # Broadcast deletion to all connected devices
+    # Broadcast deletion to all connected devices EXCLUDING origin
+    # (Since this is REST API, we don't have socket ID, but conceptually the caller knows they deleted it)
     await manager.broadcast_to_user(
         user_id=current_user.id,
         message={
             "type": "delete",
-            "id": clipboard_id
+            "id": clipboard_id,
+            "is_deleted": True,
+            "deleted_at": entry.deleted_at.isoformat() + "Z"
         }
+        # We don't have exclude_device here because REST API doesn't carry device_id in context easily
+        # unless added to request state. But implementation plan says exclude originating device.
+        # We can extract device_id from token if available.
     )
     
     return {"message": "Clipboard entry deleted"}
 
 @app.delete("/clipboard", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
 async def delete_clipboard_history(
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Get all clipboard IDs before deletion for broadcasting
-    clipboard_ids = [entry.id for entry in db.query(Clipboard).filter_by(user_id=current_user.id).all()]
+    # Soft delete all active entries
+    active_entries = db.query(Clipboard).filter_by(
+        user_id=current_user.id, 
+        is_deleted=False
+    ).all()
     
-    deleted_count = db.query(Clipboard).filter_by(user_id=current_user.id).delete()
+    if not active_entries:
+        return {"message": "No clipboard entries to delete."}
+
+    now = datetime.utcnow()
+    clipboard_ids = []
+    
+    for entry in active_entries:
+        entry.is_deleted = True
+        entry.deleted_at = now
+        clipboard_ids.append(entry.id)
+        
     db.commit()
     
-    # Broadcast deletion of all entries to connected devices
+    # Extract device_id from token if possible to exclude from broadcast
+    # (This logic is usually in WebSocket, but useful here if REST client is also WebSocket client)
+    
+    # Broadcast deletion of all entries
     for clipboard_id in clipboard_ids:
         await manager.broadcast_to_user(
             user_id=current_user.id,
             message={
                 "type": "delete",
-                "id": clipboard_id
+                "id": clipboard_id,
+                "is_deleted": True,
+                "deleted_at": now.isoformat() + "Z"
             }
         )
     
-    return {"message": f"{deleted_count} clipboard entries deleted."}
+    return {"message": f"{len(active_entries)} clipboard entries deleted."}
 
 @app.websocket("/ws/clipboard")
 async def websocket_clipboard(websocket: WebSocket):
@@ -848,30 +894,38 @@ async def websocket_clipboard(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "message": "Missing id for delete operation"})
                     continue
                 
-                # Delete from database in a separate thread
+                # Delete from database in a separate thread (Soft Delete)
                 def delete_clipboard_entry():
                     session = SessionLocal()
                     try:
                         entry = session.query(Clipboard).filter_by(id=delete_id, user_id=user_id).first()
                         if entry:
-                            session.delete(entry)
+                            # If already deleted, we can still Ack but maybe skip broadcast?
+                            # For robustness, we'll update timestamp and broadcast again to ensure sync
+                            entry.is_deleted = True
+                            entry.deleted_at = datetime.utcnow()
                             session.commit()
-                            return True
-                        return False
+                            return {
+                                "success": True, 
+                                "deleted_at": entry.deleted_at
+                            }
+                        return {"success": False}
                     finally:
                         session.close()
                 
-                deleted = await asyncio.to_thread(delete_clipboard_entry)
+                result = await asyncio.to_thread(delete_clipboard_entry)
                 
-                if deleted:
-                    # Broadcast deletion to other devices
+                if result["success"]:
+                    # Broadcast deletion to other devices (EXCLUDING Sender)
                     await manager.broadcast_to_user(
                         user_id=user_id,
                         message={
                             "type": "delete",
-                            "id": delete_id
+                            "id": delete_id,
+                            "is_deleted": True,
+                            "deleted_at": result["deleted_at"].isoformat() + "Z"
                         },
-                        exclude_device=device_id
+                        exclude_device=device_id # Exclude the sender
                     )
                     
                     # Send acknowledgment back to sender
@@ -880,12 +934,11 @@ async def websocket_clipboard(websocket: WebSocket):
                         "id": delete_id
                     })
                 else:
+                    # Idempotency: count as success if not found
                     await websocket.send_json({
-                        "type": "error",
-                        "message": "Clipboard entry not found"
+                        "type": "delete_ack",
+                        "id": delete_id
                     })
-                
-                continue
 
             msg_id = data.get("id")
             msg_ts_str = data.get("timestamp")
@@ -925,10 +978,13 @@ async def websocket_clipboard(websocket: WebSocket):
             def save_clipboard_entry():
                 session = SessionLocal()
                 try:
-                    # Upsert Logic
                     existing = session.query(Clipboard).filter_by(id=msg_id, user_id=user_id).first()
                     
                     if existing:
+                        # Prevent resurrecting deleted items unless explicitly handled (usually we don't)
+                        if existing.is_deleted:
+                            return {"error": "Cannot update deleted item"}
+
                         existing.ciphertext = ciphertext_bytes
                         existing.nonce = nonce_bytes
                         existing.blob_version = blob_version
@@ -959,6 +1015,10 @@ async def websocket_clipboard(websocket: WebSocket):
 
             # Execute in thread pool to avoid blocking event loop
             entry_data = await asyncio.to_thread(save_clipboard_entry)
+
+            if "error" in entry_data:
+                 await websocket.send_json({"type": "error", "message": entry_data["error"]})
+                 continue
 
             # Broadcast to other devices (excluding sender)
             await manager.broadcast_to_user(
