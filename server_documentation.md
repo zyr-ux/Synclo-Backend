@@ -95,11 +95,33 @@ Server sends error messages in this format:
   "message": "Error description"
 }
 ```
+
+### Server-Initiated Messages
+
+The server can send special notifications to clients for important events.
+
+#### Device Deleted Notification
+When a device is removed from the account by another device, the server sends:
+```json
+{
+  "type": "device_deleted",
+  "message": "This device has been removed from your account"
+}
+```
+Immediately after this message, the WebSocket will close with code `4003`.
+
+**Client Action Required:** The client should:
+1. Clear all local session data
+2. Logout the user
+3. Redirect to login screen
+4. Optionally show a notification to the user
+
 **Close Codes:**
 - `1000`: Normal closure.
 - `1008`: Policy violation (auth failed).
 - `4001`: Token expired.
 - `4002`: Ping/Pong timeout.
+- `4003`: Device deleted remotely.
 - `1011`: Internal server error.
 
 ## 4. REST API Reference
