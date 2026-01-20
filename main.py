@@ -1,6 +1,6 @@
 import asyncio
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from secrets import token_urlsafe
 from typing import List
 import base64
@@ -59,8 +59,26 @@ def get_db():
 
 @app.on_event("startup")
 async def startup():
-    # Ensure database tables exist
-    Base.metadata.create_all(bind=engine)
+    # Run Alembic migrations programmatically
+    # This prevents the need for manual migration commands
+    try:
+        from alembic.config import Config
+        from alembic import command
+        
+        # Create Alembic configuration object
+        alembic_cfg = Config("alembic.ini")
+        # Run the upgrade command
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Database migrations applied successfully.")
+    except Exception as e:
+        # Fallback logging in case logger is messed up by alembic
+        import sys
+        print(f"CRITICAL STARTUP ERROR: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+
+        logger.error(f"Failed to apply migrations: {e}")
+        # Stop startup if migrations fail to prevent data inconsistency
+        raise RuntimeError(f"Database migration failed: {e}") from e
 
     # Use configurable URL
     redis = Redis.from_url(Settings.REDIS_URL, encoding="utf-8", decode_responses=True)
@@ -100,6 +118,9 @@ async def periodic_cleanup():
                 try:
                     cleanup_expired_blacklisted_tokens(db)
                     cleanup_expired_refresh_tokens(db)
+                    # Use imported cleanup function
+                    from utils import cleanup_old_tombstones
+                    cleanup_old_tombstones(db)
                 finally:
                     db.close()
 
@@ -220,7 +241,7 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
         # Create refresh token
         plain_refresh_token = token_urlsafe(64)
         hashed_refresh = hash_refresh_token(plain_refresh_token)
-        refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        refresh_expiry = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
         
         # Generate family ID
         family_id = str(uuid4())
@@ -315,7 +336,7 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
 
     plain_refresh_token = token_urlsafe(64)
     hashed_refresh = hash_refresh_token(plain_refresh_token)
-    refresh_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    refresh_expiry = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     
     # Generate a new family ID for this login session
     family_id = str(uuid4())
@@ -455,16 +476,18 @@ def get_clipboard(
 
     return {
             "id": entry.id,
-            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8'),
-            "nonce": base64.b64encode(entry.nonce).decode('utf-8'),
+            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8') if entry.ciphertext else None,
+            "nonce": base64.b64encode(entry.nonce).decode('utf-8') if entry.nonce else None,
             "blob_version": entry.blob_version,
-            "timestamp": entry.timestamp
+            "timestamp": entry.timestamp,
+            "is_deleted": entry.is_deleted
             }
 
 @app.get("/clipboard/all", response_model=ClipboardOutList, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_clipboard_history(
     page: int = 1,
     limit: int = 50,
+    include_deleted: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -479,9 +502,14 @@ def get_clipboard_history(
     # Calculate offset for pagination
     offset = (page - 1) * limit
 
+    query = db.query(Clipboard).filter_by(user_id=current_user.id)
+    
+    # Default behavior: exclude deleted items unless explicitly requested
+    if not include_deleted:
+        query = query.filter(Clipboard.is_deleted == False)
+
     entries = (
-        db.query(Clipboard)
-        .filter_by(user_id=current_user.id)
+        query
         .order_by(Clipboard.timestamp.desc())
         .offset(offset)
         .limit(limit)
@@ -492,10 +520,12 @@ def get_clipboard_history(
     for entry in entries:
         serialized.append({
             "id": entry.id,
-            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8'),
-            "nonce": base64.b64encode(entry.nonce).decode('utf-8'),
+            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8') if entry.ciphertext else None,
+            "nonce": base64.b64encode(entry.nonce).decode('utf-8') if entry.nonce else None,
             "blob_version": entry.blob_version,
-            "timestamp": entry.timestamp
+            "timestamp": entry.timestamp,
+            "is_deleted": entry.is_deleted,
+            "deleted_at": entry.deleted_at
         })
 
     return {"history": serialized}
@@ -556,7 +586,10 @@ def refresh_token(
         raise HTTPException(status_code=401, detail="Refresh token reused. Security alert: Session terminated.")
 
     # 3. Check expiry
-    if token_entry.expiry < datetime.utcnow():
+    # Ensure token_entry.expiry is treated as UTC if it's naive (SQLAlchemy default)
+    expiry_utc = token_entry.expiry.replace(tzinfo=timezone.utc) if token_entry.expiry.tzinfo is None else token_entry.expiry
+
+    if expiry_utc < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="Expired refresh token")
 
     user_id = token_entry.user_id
@@ -574,7 +607,7 @@ def refresh_token(
 
     new_refresh_plain = token_urlsafe(64)
     new_refresh_hashed = hash_refresh_token(new_refresh_plain)
-    new_expiry = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    new_expiry = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
     # Revoke the old token (don't delete it yet, keep it to detect reuse)
     token_entry.is_revoked = True
@@ -694,27 +727,90 @@ async def delete_device(
     return {"message": f"Device '{device.device_name}' deleted successfully"}
 
 @app.delete("/clipboard/{clipboard_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
-def delete_clipboard_entry(
+async def delete_clipboard_entry(
     clipboard_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # Idempotency: Check if item exists (tombstone or active)
     entry = db.query(Clipboard).filter_by(id=clipboard_id, user_id=current_user.id).first()
-    if not entry:
-        raise HTTPException(status_code=404, detail="Clipboard entry not found")
     
-    db.delete(entry)
+    # If not found, return success (idempotent)
+    if not entry:
+        return {"message": "Clipboard entry deleted"}
+        
+    # If already deleted, return success (idempotent) -- skipping broadcast usually, but plan says broadcast needed
+    # Optimization: If it's already a tombstone, we don't need to do anything or broadcast
+    if entry.is_deleted:
+         return {"message": "Clipboard entry deleted"}
+    
+    # Soft Delete
+    entry.is_deleted = True
+    entry.deleted_at = datetime.now(timezone.utc)
     db.commit()
+    
+    # Broadcast deletion to all connected devices EXCLUDING origin
+    # (Since this is REST API, we don't have socket ID, but conceptually the caller knows they deleted it)
+    await manager.broadcast_to_user(
+        user_id=current_user.id,
+        message={
+            "id": clipboard_id,
+            "is_deleted": True,
+            "timestamp": entry.deleted_at.isoformat() + "Z",
+            "ciphertext": None,
+            "nonce": None,
+            "blob_version": entry.blob_version
+        }
+        # We don't have exclude_device here because REST API doesn't carry device_id in context easily
+        # unless added to request state. But implementation plan says exclude originating device.
+        # We can extract device_id from token if available.
+    )
+    
     return {"message": "Clipboard entry deleted"}
 
 @app.delete("/clipboard", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
-def delete_clipboard_history(
+async def delete_clipboard_history(
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    deleted_count = db.query(Clipboard).filter_by(user_id=current_user.id).delete()
+    # Soft delete all active entries
+    active_entries = db.query(Clipboard).filter_by(
+        user_id=current_user.id, 
+        is_deleted=False
+    ).all()
+    
+    if not active_entries:
+        return {"message": "No clipboard entries to delete."}
+
+    now = datetime.now(timezone.utc)
+    clipboard_ids = []
+    
+    for entry in active_entries:
+        entry.is_deleted = True
+        entry.deleted_at = now
+        clipboard_ids.append(entry.id)
+        
     db.commit()
-    return {"message": f"{deleted_count} clipboard entries deleted."}
+    
+    # Extract device_id from token if possible to exclude from broadcast
+    # (This logic is usually in WebSocket, but useful here if REST client is also WebSocket client)
+    
+    # Broadcast deletion of all entries
+    for clipboard_id in clipboard_ids:
+        await manager.broadcast_to_user(
+            user_id=current_user.id,
+            message={
+                "id": clipboard_id,
+                "is_deleted": True,
+                "timestamp": now.isoformat() + "Z",
+                "ciphertext": None,
+                "nonce": None,
+                "blob_version": 1
+            }
+        )
+    
+    return {"message": f"{len(active_entries)} clipboard entries deleted."}
 
 @app.websocket("/ws/clipboard")
 async def websocket_clipboard(websocket: WebSocket):
@@ -786,7 +882,7 @@ async def websocket_clipboard(websocket: WebSocket):
     try:
         while True:
             # Expiry check - compare Unix timestamps correctly
-            if datetime.utcnow().timestamp() >= exp:
+            if datetime.now(timezone.utc).timestamp() >= exp:
                 await websocket.send_json({"type": "error", "message": "Token expired"})
                 await websocket.close(code=4001)
                 break
@@ -816,16 +912,32 @@ async def websocket_clipboard(websocket: WebSocket):
             if data.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
                 continue
-
+            
+            # Unified Message Handling (Upsert & Delete)
+            # We no longer separate "type": "delete". Everything is an event.
+            
             msg_id = data.get("id")
+            # Client determines deletion status
+            is_deleted = data.get("is_deleted", False)
+            
             msg_ts_str = data.get("timestamp")
             ciphertext = data.get("ciphertext")
             nonce = data.get("nonce")
             blob_version = data.get("blob_version", 1)
             
-            if not msg_id or not msg_ts_str or not ciphertext or not nonce:
-                await websocket.send_json({"type": "error", "message": "Missing required fields (id, timestamp, ciphertext, nonce)"})
+            if not msg_id or not msg_ts_str:
+                await websocket.send_json({"type": "error", "message": "Missing required fields (id, timestamp)"})
                 continue
+
+            # Validation based on is_deleted status
+            if not is_deleted:
+                if not ciphertext or not nonce:
+                    await websocket.send_json({"type": "error", "message": "Missing ciphertext/nonce for active entry"})
+                    continue
+            else:
+                # If deleted, we enforce nulls for data privacy/storage optimization
+                ciphertext = None
+                nonce = None
             
             try:
                 msg_ts = datetime.fromisoformat(msg_ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
@@ -833,40 +945,57 @@ async def websocket_clipboard(websocket: WebSocket):
                 await websocket.send_json({"type": "error", "message": "Invalid timestamp format (ISO8601 required)"})
                 continue
             
-            # Decode base64 from WebSocket
-            try:
-                ciphertext_bytes = base64.b64decode(ciphertext)
-                nonce_bytes = base64.b64decode(nonce)
-            except Exception:
-                await websocket.send_json({"type": "error", "message": "Invalid base64 encoding"})
-                continue
+            ciphertext_bytes = None
+            nonce_bytes = None
 
-            if blob_version not in ALLOWED_BLOB_VERSIONS:
-                await websocket.send_json({"type": "error", "message": "Unsupported blob_version"})
-                continue
-            if not (MIN_NONCE_LEN <= len(nonce_bytes) <= MAX_NONCE_LEN):
-                await websocket.send_json({"type": "error", "message": "nonce length out of bounds"})
-                continue
-            if len(ciphertext_bytes) > MAX_CIPHERTEXT_LEN:
-                await websocket.send_json({"type": "error", "message": "ciphertext too large"})
-                continue
+            if not is_deleted:
+                try:
+                    ciphertext_bytes = base64.b64decode(ciphertext)
+                    nonce_bytes = base64.b64decode(nonce)
+                except Exception:
+                    await websocket.send_json({"type": "error", "message": "Invalid base64 encoding"})
+                    continue
+
+                if blob_version not in ALLOWED_BLOB_VERSIONS:
+                    await websocket.send_json({"type": "error", "message": "Unsupported blob_version"})
+                    continue
+                if not (MIN_NONCE_LEN <= len(nonce_bytes) <= MAX_NONCE_LEN):
+                    await websocket.send_json({"type": "error", "message": "nonce length out of bounds"})
+                    continue
+                if len(ciphertext_bytes) > MAX_CIPHERTEXT_LEN:
+                    await websocket.send_json({"type": "error", "message": "ciphertext too large"})
+                    continue
 
             # Run blocking DB operations in a separate thread
             def save_clipboard_entry():
                 session = SessionLocal()
                 try:
-                    # Upsert Logic
                     existing = session.query(Clipboard).filter_by(id=msg_id, user_id=user_id).first()
                     
                     if existing:
-                        existing.ciphertext = ciphertext_bytes
-                        existing.nonce = nonce_bytes
-                        existing.blob_version = blob_version
+                        # Conflict Resolution / Idempotency
+                        # Use valid timestamps to determine winner if needed, but usually last-write-wins or server-accepts-all
+                        # For now simplistically update. 
+                        
+                        existing.is_deleted = is_deleted
                         existing.timestamp = msg_ts
+                        existing.blob_version = blob_version
+                        
+                        if is_deleted:
+                            existing.ciphertext = None
+                            existing.nonce = None
+                            existing.deleted_at = msg_ts # Use client timestamp as deleted_at
+                        else:
+                            existing.ciphertext = ciphertext_bytes
+                            existing.nonce = nonce_bytes
+                            existing.deleted_at = None # Resurrect if previously deleted
+                            
                         session.commit()
                         return {
                             "id": existing.id,
-                            "timestamp": existing.timestamp
+                            "timestamp": existing.timestamp,
+                            "is_deleted": existing.is_deleted,
+                            "blob_version": existing.blob_version
                         }
                     else:
                         new_entry = Clipboard(
@@ -875,32 +1004,59 @@ async def websocket_clipboard(websocket: WebSocket):
                             ciphertext=ciphertext_bytes,
                             nonce=nonce_bytes,
                             blob_version=blob_version,
-                            timestamp=msg_ts # Client Timestamp
+                            timestamp=msg_ts, # Client Timestamp
+                            is_deleted=is_deleted,
+                            deleted_at=msg_ts if is_deleted else None
                         )
                         session.add(new_entry)
                         session.commit()
-                        # Extract values before closing
                         return {
                             "id": new_entry.id,
-                            "timestamp": new_entry.timestamp
+                            "timestamp": new_entry.timestamp,
+                            "is_deleted": new_entry.is_deleted,
+                            "blob_version": new_entry.blob_version
                         }
+                except Exception as e:
+                    session.rollback()
+                    return {"error": str(e)}
                 finally:
                     session.close()
 
             # Execute in thread pool to avoid blocking event loop
             entry_data = await asyncio.to_thread(save_clipboard_entry)
 
+            if "error" in entry_data:
+                 logger.error(f"DB Error processing clipboard item: {entry_data['error']}")
+                 # await websocket.send_json({"type": "error", "message": "Database error"}) 
+                 # Often better to not break connection on one item error, just skip ack.
+                 continue
+
+            # Broadcast to other devices (excluding sender)
+            broadcast_payload = {
+                "id": entry_data["id"],
+                "timestamp": entry_data["timestamp"].isoformat(),
+                "is_deleted": entry_data["is_deleted"],
+                "blob_version": entry_data["blob_version"]
+            }
+            
+            if not entry_data["is_deleted"]:
+                broadcast_payload["ciphertext"] = ciphertext
+                broadcast_payload["nonce"] = nonce
+            else:
+                broadcast_payload["ciphertext"] = None
+                broadcast_payload["nonce"] = None
+
             await manager.broadcast_to_user(
                 user_id=user_id,
-                message={
-                    "id": entry_data["id"],
-                    "ciphertext": ciphertext,
-                    "nonce": nonce,
-                    "blob_version": blob_version,
-                    "timestamp": entry_data["timestamp"].isoformat()
-                },
+                message=broadcast_payload,
                 exclude_device=device_id
             )
+
+            # Send acknowledgment back to the sender
+            await websocket.send_json({
+                "type": "ack",
+                "id": entry_data["id"]
+            })
 
     except WebSocketDisconnect:
         pass
