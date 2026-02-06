@@ -16,7 +16,7 @@ from redis.asyncio import Redis
 from jose import JWTError, jwt
 from database import SessionLocal, engine, Base
 from models import User, Device, Clipboard, RefreshToken, BlacklistedToken
-from schemas import Token, TokenWithE2EE, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, ClipboardOutList, SessionInfo, RefreshTokenRequest, PasswordChange, SaltResponse, ClipboardSyncResponse
+from schemas import Token, TokenWithE2EE, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, SessionInfo, RefreshTokenRequest, PasswordChange, SaltResponse, ClipboardSyncResponse
 from auth import create_access_token, get_current_user, get_user_from_token_ws, SECRET_KEY, ALGORITHM
 from crypto_utils import hash_refresh_token
 from connection_manager import ConnectionManager
@@ -483,52 +483,7 @@ def get_clipboard(
             "is_deleted": entry.is_deleted
             }
 
-@app.get("/clipboard/all", response_model=ClipboardOutList, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
-def get_clipboard_history(
-    page: int = 1,
-    limit: int = 50,
-    include_deleted: bool = False,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    # Validate pagination parameters
-    if page < 1:
-        raise HTTPException(status_code=400, detail="Page must be >= 1")
-    if limit < 1 or limit > 500:
-        raise HTTPException(status_code=400, detail="Limit must be between 1 and 500")
-    
-    cleanup_old_clipboard_entries(current_user.id, db)
 
-    # Calculate offset for pagination
-    offset = (page - 1) * limit
-
-    query = db.query(Clipboard).filter_by(user_id=current_user.id)
-    
-    # Default behavior: exclude deleted items unless explicitly requested
-    if not include_deleted:
-        query = query.filter(Clipboard.is_deleted == False)
-
-    entries = (
-        query
-        .order_by(Clipboard.timestamp.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
-
-    serialized = []
-    for entry in entries:
-        serialized.append({
-            "id": entry.id,
-            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8') if entry.ciphertext else None,
-            "nonce": base64.b64encode(entry.nonce).decode('utf-8') if entry.nonce else None,
-            "blob_version": entry.blob_version,
-            "timestamp": entry.timestamp,
-            "is_deleted": entry.is_deleted,
-            "deleted_at": entry.deleted_at
-        })
-
-    return {"history": serialized}
 
 @app.get("/clipboard/sync", response_model=ClipboardSyncResponse, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_clipboard_sync(

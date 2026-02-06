@@ -30,8 +30,7 @@ class ClipboardOut(BaseModel):
     is_deleted: bool = False
     deleted_at: Optional[datetime] = None
 
-class ClipboardOutList(BaseModel):
-    history: List[ClipboardOut]
+
 
 class Token(BaseModel):
     access_token: str
