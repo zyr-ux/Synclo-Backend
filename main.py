@@ -485,8 +485,8 @@ def get_clipboard(
 
 
 
-@app.get("/clipboard/sync", response_model=ClipboardSyncResponse, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
-def get_clipboard_sync(
+@app.get("/clipboard/all", response_model=ClipboardSyncResponse, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
+def get_clipboard_all(
     offset: int = 0,
     limit: int = 50,
     include_deleted: bool = False,

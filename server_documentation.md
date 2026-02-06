@@ -248,33 +248,24 @@ Push a new clipboard entry.
     }
     ```
 
+
 #### `GET /clipboard/all`
-Get clipboard history with pagination.
+**Recommended for Synchronization.**
+Get clipboard history using a monotonic offset cursor.
 - **Query Params**:
-    - `page`: Page number (default 1)
-    - `limit`: Items per page (default 50)
-    - `include_deleted`: (bool) If `true`, response includes deleted items (tombstones). Default `false`.
-- **Response Example** (with `include_deleted=true`):
+    - `offset`: Last synced offset (default 0).
+    - `limit`: Items per page (default 50).
+    - `include_deleted`: (bool) If `true`, returns tombstones.
+- **Response**:
     ```json
     {
-      "history": [
-        {
-          "id": "uuid_1",
-          "ciphertext": "...",
-          "timestamp": "2026-01-18T10:00:00",
-          "is_deleted": false,
-          "deleted_at": null
-        },
-        {
-          "id": "uuid_deleted",
-          "ciphertext": "...", 
-          "timestamp": "2026-01-17T10:00:00",
-          "is_deleted": true,
-          "deleted_at": "2026-01-18T12:00:00"
-        }
-      ]
+      "entries": [ ... ],
+      "next_offset": 123,
+      "has_more": true,
+      "total_count": 500
     }
     ```
+
 
 #### `DELETE /clipboard/{clipboard_id}`
 Soft deletes a specific entry.
