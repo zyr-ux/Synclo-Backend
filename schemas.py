@@ -75,3 +75,9 @@ class PasswordChange(BaseModel):
 class SaltResponse(BaseModel):
     salt: str  # base64 encoded
     kdf_version: int
+
+class ClipboardSyncResponse(BaseModel):
+    entries: List[ClipboardOut]
+    next_offset: int
+    has_more: bool
+    total_count: int
