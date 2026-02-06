@@ -23,12 +23,24 @@ class ConnectionManager:
                 self.active_connections.pop(user_id, None)
 
     async def disconnect_device(self, user_id: int, device_id: str):
-        #Forcefully disconnect a specific device.
+        """Forcefully disconnect a specific device (e.g., when deleted remotely)."""
         if user_id in self.active_connections:
             ws = self.active_connections[user_id].get(device_id)
             if ws:
-                await ws.close(code=4000) # Normal closure
-                self.disconnect(user_id, device_id)
+                try:
+                    # Send notification before closing
+                    await ws.send_json({
+                        "type": "device_deleted",
+                        "message": "This device has been removed from your account"
+                    })
+                    # Close with specific code for remote deletion
+                    await ws.close(code=4003)
+                except (RuntimeError, ConnectionError):
+                    # Connection already closed, ignore
+                    pass
+                finally:
+                    # Always clean up the connection
+                    self.disconnect(user_id, device_id)
 
     async def disconnect_user(self, user_id: int):
         #Forcefully disconnect all devices for a user.
