@@ -550,7 +550,7 @@ def get_clipboard_all(
         "total_count": total_count
     }
 
-@app.get("/sync", response_model=ClipboardSyncResponse, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
+@app.get("/clipboard/sync", response_model=ClipboardSyncResponse, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_sync_clipboard(
     since: Optional[datetime] = Query(None),
     limit: int = 1000,

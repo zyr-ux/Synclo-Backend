@@ -88,7 +88,7 @@ def test_delta_sync():
         print(f"Created user: {email}")
 
         # 1. Initial Sync (Since None) - Should be empty
-        resp = client.get("/sync", headers=headers)
+        resp = client.get("/clipboard/sync", headers=headers)
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["entries"]) == 0
@@ -113,7 +113,7 @@ def test_delta_sync():
         print("Added Item A: OK")
 
         # 3. Sync Since T0 -> Should get Item A
-        resp = client.get("/sync", params={"since": t0.isoformat()}, headers=headers)
+        resp = client.get("/clipboard/sync", params={"since": t0.isoformat()}, headers=headers)
         assert resp.status_code == 200, f"Sync failed: {resp.text}"
         data = resp.json()
         if "entries" not in data:
@@ -141,7 +141,7 @@ def test_delta_sync():
         print("Added Item B: OK")
 
         # 5. Sync Since T1 -> Should get Item B only
-        resp = client.get("/sync", params={"since": item_a_updated_at}, headers=headers)
+        resp = client.get("/clipboard/sync", params={"since": item_a_updated_at}, headers=headers)
         data = resp.json()
         assert len(data["entries"]) == 1
         assert data["entries"][0]["id"] == item_b_id
@@ -163,7 +163,7 @@ def test_delta_sync():
         print("Updated Item A: OK")
 
         # 7. Sync Since T2 -> Should get Item A (updated)
-        resp = client.get("/sync", params={"since": item_b_updated_at}, headers=headers)
+        resp = client.get("/clipboard/sync", params={"since": item_b_updated_at}, headers=headers)
         data = resp.json()
         assert len(data["entries"]) == 1
         assert data["entries"][0]["id"] == item_a_id
@@ -179,7 +179,7 @@ def test_delta_sync():
         print("Deleted Item B: OK")
 
         # 9. Sync Since T3 -> Should get Item B (deleted)
-        resp = client.get("/sync", params={"since": item_a_updated_at_2}, headers=headers)
+        resp = client.get("/clipboard/sync", params={"since": item_a_updated_at_2}, headers=headers)
         data = resp.json()
         assert len(data["entries"]) == 1
         assert data["entries"][0]["id"] == item_b_id
@@ -189,7 +189,7 @@ def test_delta_sync():
         # 10. Expired Sync -> Should return 410
         # Create a timestamp 31 days ago
         expired_ts = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=31)
-        resp = client.get("/sync", params={"since": expired_ts.isoformat()}, headers=headers)
+        resp = client.get("/clipboard/sync", params={"since": expired_ts.isoformat()}, headers=headers)
         assert resp.status_code == 410, f"Expired sync failed: {resp.status_code} {resp.text}"
         print("Expired sync returned 410: OK")
 
@@ -213,14 +213,14 @@ def test_delta_sync():
         # We want to test pagination on the WHOLE set.
         
         # Request limit=2 (should get 2 items)
-        resp = client.get("/sync", params={"limit": 2}, headers=headers)
+        resp = client.get("/clipboard/sync", params={"limit": 2}, headers=headers)
         data = resp.json()
         assert len(data["entries"]) == 2
         assert data["has_more"] == True
         print("Pagination limit=2 returned 2 items: OK")
         
         # Request offset=2 (should get the rest)
-        resp = client.get("/sync", params={"limit": 2, "offset": 2}, headers=headers)
+        resp = client.get("/clipboard/sync", params={"limit": 2, "offset": 2}, headers=headers)
         data = resp.json()
         assert len(data["entries"]) >= 1 # We added at least 3 new ones + previous ones
         print("Pagination offset=2 returned items: OK")
