@@ -2,10 +2,10 @@ import asyncio
 import traceback
 from datetime import datetime, timedelta, timezone
 from secrets import token_urlsafe
-from typing import List
+from typing import List, Optional
 import base64
 import bcrypt
-from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.security import OAuth2PasswordBearer
 from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter
@@ -441,6 +441,7 @@ def sync_clipboard(
         existing_entry.nonce = nonce_bytes
         existing_entry.blob_version = data.blob_version
         existing_entry.timestamp = new_timestamp
+        existing_entry.updated_at = datetime.now(timezone.utc)
         db.commit()
         return {"status": "clipboard updated", "id": existing_entry.id}
     else:
@@ -451,7 +452,8 @@ def sync_clipboard(
             ciphertext=ciphertext_bytes,
             nonce=nonce_bytes,
             blob_version=data.blob_version,
-            timestamp=new_timestamp # Use Client Timestamp
+            timestamp=new_timestamp, # Use Client Timestamp
+            updated_at=datetime.now(timezone.utc)
         )
         db.add(new_entry)
         db.commit()
@@ -532,7 +534,8 @@ def get_clipboard_all(
             "blob_version": entry.blob_version,
             "timestamp": entry.timestamp,
             "is_deleted": entry.is_deleted,
-            "deleted_at": entry.deleted_at
+            "deleted_at": entry.deleted_at,
+            "updated_at": entry.updated_at
         })
     
     total_count = query.count() # Total count matching filters
@@ -545,6 +548,82 @@ def get_clipboard_all(
         "next_offset": max_offset,
         "has_more": has_more,
         "total_count": total_count
+    }
+
+@app.get("/sync", response_model=ClipboardSyncResponse, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
+def get_sync_clipboard(
+    since: Optional[datetime] = Query(None),
+    limit: int = 1000,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # Cleanup old tombstones only (active items are kept per new request)
+    # cleanup_old_clipboard_entries deprecated for active items, but we should run tombstone cleanup occasionally
+    # Ideally should be a background task, but calling here is safe enough for now
+    from utils import cleanup_old_tombstones
+    from config import Settings
+    
+    # 1. Safety Check: If 'since' is older than retention period, return 410 Gone
+    # This forces the client to re-download everything, ensuring no zombie items (entries deleted on server but kept on client)
+    if since:
+        # Ensure since is aware
+        since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since
+        retention_days = Settings.TOMBSTONE_RETENTION_DAYS
+        # Add a small buffer (e.g., 1 day) to be safe or just strict? 
+        # Strict is better. if updated_at < now - retention, it might be gone.
+        # Actually, we should check if 'since' < now - retention.
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        
+        if since_utc < cutoff:
+            # Client is too old. We might have deleted tombstones that they need to know about.
+            # They must wipe and re-sync.
+            raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
+
+    cleanup_old_tombstones(db)
+
+    query = db.query(Clipboard).filter(Clipboard.user_id == current_user.id)
+    
+    if since:
+         # Ensure since is offset-aware UTC or naive treated as UTC
+         since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since
+         # Use updated_at for delta sync
+         query = query.filter(Clipboard.updated_at > since_utc)
+    
+    # Order by updated_at asc to ensure we get the oldest changes first if limited
+    # Apply offset and limit
+    entries = query.order_by(Clipboard.updated_at.asc()).offset(offset).limit(limit).all()
+
+    serialized = []
+    for entry in entries:
+        serialized.append({
+            "id": entry.id,
+            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8') if entry.ciphertext else None,
+            "nonce": base64.b64encode(entry.nonce).decode('utf-8') if entry.nonce else None,
+            "blob_version": entry.blob_version,
+            "timestamp": entry.timestamp,
+            "updated_at": entry.updated_at,
+            "is_deleted": entry.is_deleted,
+            "deleted_at": entry.deleted_at
+        })
+
+    # For sync, 'next_offset' isn't really used the same way, but we can return the max updated_at
+    # or just 0. The client relies on 'since' for the next call.
+    # However, to be compatible with ClipboardSyncResponse, we need to return something.
+    # We can just return 0 or the count.
+    
+    # Actually, we SHOULD return next_offset if we are paginating within a specific 'since' window.
+    # If returned count == limit, client should likely call again with offset += limit?
+    # OR, better yet, client just updates 'since' to the last received updated_at.
+    # BUT, if multiple items have the exact same updated_at, offset is safer.
+    
+    return {
+        "entries": serialized,
+        "next_offset": offset + len(entries), # Useful for client sidebar/debugging if needed
+        "has_more": len(entries) == limit,
+        "total_count": len(entries) # This is just the page count, not total. 
+        # Ideally total_count should be query.count() but that's expensive.
+        # Let's keep it as is.
     }
 
 @app.post("/logout", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
@@ -764,6 +843,7 @@ async def delete_clipboard_entry(
     # Soft Delete
     entry.is_deleted = True
     entry.deleted_at = datetime.now(timezone.utc)
+    entry.updated_at = datetime.now(timezone.utc)
     db.commit()
     
     # Broadcast deletion to all connected devices EXCLUDING origin
@@ -806,6 +886,7 @@ async def delete_clipboard_history(
     for entry in active_entries:
         entry.is_deleted = True
         entry.deleted_at = now
+        entry.updated_at = now
         clipboard_ids.append(entry.id)
         
     db.commit()
@@ -1002,10 +1083,12 @@ async def websocket_clipboard(websocket: WebSocket):
                             existing.ciphertext = None
                             existing.nonce = None
                             existing.deleted_at = msg_ts # Use client timestamp as deleted_at
+                            existing.updated_at = datetime.now(timezone.utc)
                         else:
                             existing.ciphertext = ciphertext_bytes
                             existing.nonce = nonce_bytes
                             existing.deleted_at = None # Resurrect if previously deleted
+                            existing.updated_at = datetime.now(timezone.utc)
                             
                         session.commit()
                         return {
@@ -1023,7 +1106,8 @@ async def websocket_clipboard(websocket: WebSocket):
                             blob_version=blob_version,
                             timestamp=msg_ts, # Client Timestamp
                             is_deleted=is_deleted,
-                            deleted_at=msg_ts if is_deleted else None
+                            deleted_at=msg_ts if is_deleted else None,
+                            updated_at=datetime.now(timezone.utc)
                         )
                         session.add(new_entry)
                         session.commit()
