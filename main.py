@@ -24,6 +24,7 @@ from utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries,
 from logging_config import logger
 from config import Settings
 from uuid import uuid4
+from utils import run_all_cleanup
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
@@ -109,6 +110,7 @@ async def shutdown():
         except asyncio.CancelledError:
             pass
 
+# Background task that runs cleanup operations every 24 hours.
 async def periodic_cleanup():
     while True:
         try:
@@ -116,11 +118,7 @@ async def periodic_cleanup():
             def run_cleanup():
                 db = SessionLocal()
                 try:
-                    cleanup_expired_blacklisted_tokens(db)
-                    cleanup_expired_refresh_tokens(db)
-                    # Use imported cleanup function
-                    from utils import cleanup_old_tombstones
-                    cleanup_old_tombstones(db)
+                    run_all_cleanup(db)
                 finally:
                     db.close()
 
@@ -131,8 +129,8 @@ async def periodic_cleanup():
         except Exception as e:
             logger.error(f"Cleanup task failed: {e}")
         
-        # Wait for 1 hour before next cleanup
-        await asyncio.sleep(3600)
+        # Wait for 24 hours before next cleanup
+        await asyncio.sleep(86400)
 
 @app.exception_handler(Exception)
 async def internal_exception_handler(request: Request, exc: Exception):
@@ -525,15 +523,10 @@ def get_sync_clipboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Cleanup old tombstones only (active items are kept per new request)
-    # cleanup_old_clipboard_entries deprecated for active items, but we should run tombstone cleanup occasionally
-    # Ideally should be a background task, but calling here is safe enough for now
-    from utils import cleanup_old_tombstones
-    from config import Settings
-    
-    # 1. Safety Check: If 'since' is older than retention period, return 410 Gone
+    # Safety Check: If 'since' is older than retention period, return 410 Gone
     # This forces the client to re-download everything, ensuring no zombie items (entries deleted on server but kept on client)
     if since:
+        from config import Settings
         # Ensure since is aware
         since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since
         retention_days = Settings.TOMBSTONE_RETENTION_DAYS
@@ -546,8 +539,6 @@ def get_sync_clipboard(
             # Client is too old. We might have deleted tombstones that they need to know about.
             # They must wipe and re-sync.
             raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
-
-    cleanup_old_tombstones(db)
 
     query = db.query(Clipboard).filter(Clipboard.user_id == current_user.id)
     

@@ -44,3 +44,14 @@ def cleanup_old_tombstones(db: Session):
     except Exception as e:
         db.rollback()
         pass
+
+def run_all_cleanup(db: Session):
+    """
+    Runs all cleanup operations:
+    - Expired blacklisted tokens
+    - Expired refresh tokens
+    - Old tombstones (deleted clipboard entries older than retention period)
+    """
+    cleanup_expired_blacklisted_tokens(db)
+    cleanup_expired_refresh_tokens(db)
+    cleanup_old_tombstones(db)
