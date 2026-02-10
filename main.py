@@ -487,68 +487,35 @@ def get_clipboard(
 
 
 
-@app.get("/clipboard/all", response_model=ClipboardSyncResponse, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
+@app.get("/clipboard/all", response_model=List[ClipboardOut], dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_clipboard_all(
-    offset: int = 0,
-    limit: int = 50,
     include_deleted: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Validate pagination parameters
-    if offset < 0:
-        raise HTTPException(status_code=400, detail="Offset must be >= 0")
-    if limit < 1 or limit > 500:
-        raise HTTPException(status_code=400, detail="Limit must be between 1 and 500")
-    
-    cleanup_old_clipboard_entries(current_user.id, db)
-
     query = db.query(Clipboard).filter_by(user_id=current_user.id)
     
     # Default behavior: exclude deleted items unless explicitly requested
     if not include_deleted:
         query = query.filter(Clipboard.is_deleted == False)
 
-    # Offset-based pagination using 'index' column (monotonic ID)
-    entries = (
-        query
-        .filter(Clipboard.index > offset)
-        .order_by(Clipboard.index.asc())
-        .limit(limit)
-        .all()
-    )
+    # Return all items, ordered by timestamp desc (newest first)
+    entries = query.order_by(Clipboard.timestamp.desc()).all()
 
     serialized = []
-    max_offset = offset
-    
     for entry in entries:
-        # Update max_offset to the current entry's index
-        # This becomes the next request's offset
-        if entry.index > max_offset:
-            max_offset = entry.index
-            
         serialized.append({
             "id": entry.id,
             "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8') if entry.ciphertext else None,
             "nonce": base64.b64encode(entry.nonce).decode('utf-8') if entry.nonce else None,
             "blob_version": entry.blob_version,
             "timestamp": entry.timestamp,
+            "updated_at": entry.updated_at,
             "is_deleted": entry.is_deleted,
-            "deleted_at": entry.deleted_at,
-            "updated_at": entry.updated_at
+            "deleted_at": entry.deleted_at
         })
     
-    total_count = query.count() # Total count matching filters
-    
-    # Check if there are more entries
-    has_more = len(entries) == limit
-    
-    return {
-        "entries": serialized,
-        "next_offset": max_offset,
-        "has_more": has_more,
-        "total_count": total_count
-    }
+    return serialized
 
 @app.get("/clipboard/sync", response_model=ClipboardSyncResponse, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_sync_clipboard(

@@ -250,20 +250,25 @@ Push a new clipboard entry.
 
 
 #### `GET /clipboard/all`
-**Recommended for Synchronization.**
-Get clipboard history using a monotonic offset cursor.
+**Debug Endpoint.**
+Retrieve all clipboard items for the user. No pagination.
 - **Query Params**:
-    - `offset`: Last synced offset (default 0).
-    - `limit`: Items per page (default 50).
     - `include_deleted`: (bool) If `true`, returns tombstones.
 - **Response**:
     ```json
-    {
-      "entries": [ ... ],
-      "next_offset": 123,
-      "has_more": true,
-      "total_count": 500
-    }
+    [
+      {
+        "id": "uuid_string",
+        "ciphertext": "base64...",
+        "nonce": "base64...",
+        "blob_version": 1,
+        "timestamp": "ISO8601",
+        "updated_at": "ISO8601",
+        "is_deleted": false,
+        "deleted_at": null
+      },
+      ...
+    ]
     ```
 
 
