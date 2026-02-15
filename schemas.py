@@ -5,10 +5,12 @@ from datetime import datetime
 class DeviceRegister(BaseModel):
     device_id: str
     device_name: str
+    os: Optional[str] = None
 
 class DeviceOut(BaseModel):
     device_id: str
     device_name: str
+    os: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -51,12 +53,14 @@ class UserLoginWithDevice(BaseModel):
     auth_key: str  # base64 encoded, client-derived HKDF-based authentication key
     device_id: str
     device_name: Optional[str] = None
+    os: Optional[str] = None
 
 class UserRegisterWithDevice(BaseModel):
     email: EmailStr
     auth_key: str  # base64 encoded, client-derived HKDF-based authentication key
     device_id: str
     device_name: Optional[str] = "Unnamed Device"
+    os: Optional[str] = None
     encrypted_master_key: str  # base64 encoded client-wrapped MK
     salt: str  # base64 encoded KDF salt
     kdf_version: int = 1  # Argon2 parameters version

@@ -225,6 +225,7 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
         new_device = Device(
             device_id=user.device_id,
             device_name=user.device_name,
+            os=user.os,
             user_id=new_user.id
         )
         db.add(new_device)
@@ -307,6 +308,7 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
         device = Device(
             device_id=user.device_id,
             device_name=user.device_name or "Dev Device",
+            os=user.os,
             user_id=db_user.id
         )
         try:
@@ -323,9 +325,12 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
                 device = existing_device
             else:
                 raise HTTPException(status_code=400, detail="Device registration failed")
-        except Exception:
-            db.rollback()
-            raise
+    
+    # Update OS if provided (whether newly created or existing)
+    if user.os and device.os != user.os:
+        device.os = user.os
+        db.commit()
+        db.refresh(device)
 
     access_token = create_access_token(
         data={"sub": user.email, "device_id": device.device_id},
@@ -380,6 +385,7 @@ def register_device(
     new_device = Device(
         device_id=device.device_id,
         device_name=device.device_name,
+        os=device.os,
         user_id=current_user.id
     )
     try:
