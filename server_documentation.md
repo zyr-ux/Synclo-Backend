@@ -9,7 +9,7 @@ The Synclo Backend is a FastAPI-based application using SQLite (via SQLAlchemy) 
 **Tech Stack:**
 - **Framework:** FastAPI (Python)
 - **Database:** SQLite
-- **Real-time:** WebSockets (managed by [ConnectionManager](file:///e:/Files/Code-Stuff/Projects/Synclo-Backend/connection_manager.py#6-111), scalable via Redis)
+- **Real-time:** WebSockets (managed by [ConnectionManager](file:///e:/Files/Code-Stuff/Projects/Synclo-Backend/app/websockets/connection_manager.py#6-111), scalable via Redis)
 - **Security:** OAuth2 (JWT), Bcrypt (Auth Key Hashing)
 
 ## 2. Data Lifecycle & Soft Deletion

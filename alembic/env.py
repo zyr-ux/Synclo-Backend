@@ -21,8 +21,8 @@ if config.config_file_name is not None:
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from config import Settings
-from database import Base  # This comes from your `database.py`
+from app.core.config import Settings
+from app.core.database import Base  # This comes from your `database.py`
 
 # Ensure Alembic uses the same database URL as the app
 config.set_main_option("sqlalchemy.url", Settings.DATABASE_URL)

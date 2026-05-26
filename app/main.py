@@ -14,17 +14,17 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from redis.asyncio import Redis
 from jose import JWTError, jwt
-from database import SessionLocal, engine, Base
-from models import User, Device, Clipboard, RefreshToken, BlacklistedToken
-from schemas import Token, TokenWithE2EE, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, SessionInfo, RefreshTokenRequest, PasswordChange, SaltResponse, ClipboardSyncResponse
-from auth import create_access_token, get_current_user, get_user_from_token_ws, SECRET_KEY, ALGORITHM
-from crypto_utils import hash_refresh_token
-from connection_manager import ConnectionManager
-from utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries, cleanup_expired_blacklisted_tokens # Ensure this is imported
-from logging_config import logger
-from config import Settings
+from app.core.database import SessionLocal, engine, Base
+from app.models.models import User, Device, Clipboard, RefreshToken, BlacklistedToken
+from app.schemas.schemas import Token, TokenWithE2EE, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, SessionInfo, RefreshTokenRequest, PasswordChange, SaltResponse, ClipboardSyncResponse
+from app.services.auth import create_access_token, get_current_user, get_user_from_token_ws, SECRET_KEY, ALGORITHM
+from app.services.crypto_utils import hash_refresh_token
+from app.websockets.connection_manager import ConnectionManager
+from app.services.utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries, cleanup_expired_blacklisted_tokens
+from app.core.logging_config import logger
+from app.core.config import Settings
 from uuid import uuid4
-from utils import run_all_cleanup
+from app.services.utils import run_all_cleanup
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 

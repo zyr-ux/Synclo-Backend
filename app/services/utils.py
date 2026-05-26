@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
-from models import BlacklistedToken, RefreshToken, Clipboard
+from app.models.models import BlacklistedToken, RefreshToken, Clipboard
 
 def cleanup_expired_blacklisted_tokens(db: Session):
     try:

@@ -4,10 +4,10 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-from database import SessionLocal
-from models import User, BlacklistedToken, Device
-from utils import cleanup_expired_blacklisted_tokens
-from config import Settings
+from app.core.database import SessionLocal
+from app.models.models import User, BlacklistedToken, Device
+from app.services.utils import cleanup_expired_blacklisted_tokens
+from app.core.config import Settings
 
 # Secret key (change this in production!)
 SECRET_KEY = Settings.SECRET_KEY

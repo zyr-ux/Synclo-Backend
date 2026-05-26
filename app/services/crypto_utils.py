@@ -1,6 +1,6 @@
 import hmac
 import hashlib
-from config import Settings
+from app.core.config import Settings
 
 # Server-side secret key (store this securely in prod)
 REFRESH_SECRET_KEY = Settings.REFRESH_TOKEN_HASH_KEY
