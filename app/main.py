@@ -14,19 +14,24 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from redis.asyncio import Redis
 from jose import JWTError, jwt
-from app.core.database import SessionLocal, engine, Base
+from app.core.database import SessionLocal
 from app.models.models import User, Device, Clipboard, RefreshToken, BlacklistedToken
-from app.schemas.schemas import Token, TokenWithE2EE, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, SessionInfo, RefreshTokenRequest, PasswordChange, SaltResponse, ClipboardSyncResponse
-from app.services.auth import create_access_token, get_current_user, get_user_from_token_ws, SECRET_KEY, ALGORITHM
+from app.schemas.schemas import Token, TokenWithE2EE, UserRegisterWithDevice, UserLoginWithDevice, DeviceRegister, DeviceOut, ClipboardIn, ClipboardOut, RefreshTokenRequest, PasswordChange, SaltResponse, ClipboardSyncResponse
+from app.services.auth import create_access_token, get_current_user, SECRET_KEY, ALGORITHM
 from app.services.crypto_utils import hash_refresh_token
 from app.websockets.connection_manager import ConnectionManager
-from app.services.utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries, cleanup_expired_blacklisted_tokens
+from app.services.utils import cleanup_expired_refresh_tokens, cleanup_old_clipboard_entries
+from app.services.serializers import user_to_e2ee_response, clipboard_to_response
+from typing import Any
 from app.core.logging_config import logger
 from app.core.config import Settings
 from uuid import uuid4
 from app.services.utils import run_all_cleanup
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+# SECRET_KEY is guaranteed non-None by Settings (raises RuntimeError at startup if missing)
+assert SECRET_KEY is not None, "SECRET_KEY must be set"
 
 ACCESS_TOKEN_EXPIRE_MINUTES = Settings.ACCESS_TOKEN_EXPIRE_MINUTES
 REFRESH_TOKEN_EXPIRE_DAYS = Settings.REFRESH_TOKEN_EXPIRE_DAYS
@@ -164,12 +169,13 @@ def get_salt_for_email(email: str, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="Email not found")
     
-    if not user.salt:
+    if user.salt is None:
         raise HTTPException(status_code=400, detail="User salt not initialized")
     
+    u: Any = user
     return {
-        "salt": base64.b64encode(user.salt).decode('utf-8'),
-        "kdf_version": user.kdf_version
+        "salt": base64.b64encode(u.salt).decode('utf-8'),
+        "kdf_version": u.kdf_version
     }
 
 @app.post("/register", response_model=Token,dependencies=[Depends(RateLimiter(times=3, seconds=60))])
@@ -241,7 +247,7 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
         plain_refresh_token = token_urlsafe(64)
         hashed_refresh = hash_refresh_token(plain_refresh_token)
         refresh_expiry = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-        
+
         # Generate family ID
         family_id = str(uuid4())
 
@@ -297,11 +303,15 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
 
     cleanup_expired_refresh_tokens(db)
 
-    device = db.query(Device).filter_by(device_id=user.device_id, user_id=db_user.id).first()
+    _db_user: Any = db_user
+    db_user_id: int = _db_user.id
+
+    device = db.query(Device).filter_by(device_id=user.device_id, user_id=db_user_id).first()
     if not device:
         # Prevent collision with another user's device_id to avoid unique constraint errors
         existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
-        if existing_device and existing_device.user_id != db_user.id:
+        _ed: Any = existing_device
+        if _ed and _ed.user_id != db_user_id:
             raise HTTPException(status_code=403, detail="Device ID belongs to another user")
 
         # Auto-register new devices for seamless multi-device support
@@ -309,7 +319,7 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
             device_id=user.device_id,
             device_name=user.device_name or "Dev Device",
             os=user.os,
-            user_id=db_user.id
+            user_id=db_user_id
         )
         try:
             db.add(device)
@@ -319,16 +329,18 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
             db.rollback()
             # Re-check ownership after rollback to surface proper error
             existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
-            if existing_device and existing_device.user_id != db_user.id:
+            _ed2: Any = existing_device
+            if _ed2 and _ed2.user_id != db_user_id:
                 raise HTTPException(status_code=403, detail="Device ID belongs to another user")
             if existing_device:
                 device = existing_device
             else:
                 raise HTTPException(status_code=400, detail="Device registration failed")
-    
+
     # Update OS if provided (whether newly created or existing)
-    if user.os and device.os != user.os:
-        device.os = user.os
+    _device: Any = device
+    if user.os and _device.os != user.os:
+        _device.os = user.os
         db.commit()
         db.refresh(device)
 
@@ -346,12 +358,12 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
 
     # Remove any existing tokens for this device to start fresh
     db.query(RefreshToken).filter_by(
-        user_id=db_user.id,
+        user_id=db_user_id,
         device_id=user.device_id
     ).delete()
 
     db.add(RefreshToken(
-        user_id=db_user.id,
+        user_id=db_user_id,
         token=hashed_refresh,
         expiry=refresh_expiry,
         device_id=user.device_id,
@@ -360,13 +372,13 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
     ))
     db.commit()
 
+    e2ee_data = user_to_e2ee_response(db_user)
+
     return {
         "access_token": access_token,
         "refresh_token": plain_refresh_token,
         "token_type": "bearer",
-        "encrypted_master_key": base64.b64encode(db_user.encrypted_master_key).decode('utf-8'),
-        "salt": base64.b64encode(db_user.salt).decode('utf-8'),
-        "kdf_version": db_user.kdf_version
+        **e2ee_data.model_dump()
     }
 
 @app.post("/devices/register", response_model=DeviceOut, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
@@ -377,28 +389,32 @@ def register_device(
 ):
     if not (MIN_DEVICE_ID_LEN <= len(device.device_id) <= MAX_DEVICE_ID_LEN):
         raise HTTPException(status_code=400, detail="device_id length out of bounds")
+    _cu: Any = current_user
+    current_user_id: int = _cu.id
     existing = db.query(Device).filter(Device.device_id == device.device_id).first()
+    _ex: Any = existing
     if existing:
-        if existing.user_id != current_user.id:
+        if _ex.user_id != current_user_id:
             raise HTTPException(status_code=403, detail="Device ID belongs to another user")
         return existing
     new_device = Device(
         device_id=device.device_id,
         device_name=device.device_name,
         os=device.os,
-        user_id=current_user.id
+        user_id=current_user_id
     )
     try:
         db.add(new_device)
         db.commit()
         db.refresh(new_device)
         return new_device
-    except Exception as e:
+    except Exception:
         db.rollback()
         # Handle race condition where device was inserted by another request
         existing = db.query(Device).filter(Device.device_id == device.device_id).first()
         if existing:
-            if existing.user_id != current_user.id:
+            _ex2: Any = existing
+            if _ex2.user_id != current_user_id:
                 raise HTTPException(status_code=403, detail="Device ID belongs to another user")
             return existing
         raise HTTPException(status_code=400, detail="Failed to register device")
@@ -417,8 +433,13 @@ def sync_clipboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    _cu: Any = current_user
+    user_id: int = _cu.id
     # Clean old entries even on write to avoid unbounded growth if user never reads
-    cleanup_old_clipboard_entries(current_user.id, db)
+    cleanup_old_clipboard_entries(user_id, db)
+
+    if data.ciphertext is None or data.nonce is None:
+        raise HTTPException(status_code=400, detail="ciphertext and nonce are required")
 
     # Decode base64 binary data
     try:
@@ -433,26 +454,27 @@ def sync_clipboard(
         raise HTTPException(status_code=400, detail="nonce length out of bounds")
     if len(ciphertext_bytes) > MAX_CIPHERTEXT_LEN:
         raise HTTPException(status_code=400, detail="ciphertext too large")
-    
+
     new_timestamp = data.timestamp.replace(tzinfo=None) # Ensure naive for DB comparison if needed
 
     # Upsert Logic: Check if ID exists
-    existing_entry = db.query(Clipboard).filter_by(id=data.id, user_id=current_user.id).first()
-    
+    existing_entry = db.query(Clipboard).filter_by(id=data.id, user_id=user_id).first()
+
     if existing_entry:
         # Update existing
-        existing_entry.ciphertext = ciphertext_bytes
-        existing_entry.nonce = nonce_bytes
-        existing_entry.blob_version = data.blob_version
-        existing_entry.timestamp = new_timestamp
-        existing_entry.updated_at = datetime.now(timezone.utc)
+        _e: Any = existing_entry
+        _e.ciphertext = ciphertext_bytes
+        _e.nonce = nonce_bytes
+        _e.blob_version = data.blob_version
+        _e.timestamp = new_timestamp
+        _e.updated_at = datetime.now(timezone.utc)
         db.commit()
-        return {"status": "clipboard updated", "id": existing_entry.id}
+        return {"status": "clipboard updated", "id": _e.id}
     else:
         # Insert new
         new_entry = Clipboard(
             id=data.id, # Use Client ID
-            user_id=current_user.id,
+            user_id=user_id,
             ciphertext=ciphertext_bytes,
             nonce=nonce_bytes,
             blob_version=data.blob_version,
@@ -462,32 +484,28 @@ def sync_clipboard(
         db.add(new_entry)
         db.commit()
 
-        return {"status": "clipboard synced", "id": new_entry.id}
+        _ne: Any = new_entry
+        return {"status": "clipboard synced", "id": _ne.id}
 
 @app.get("/clipboard", response_model=ClipboardOut, dependencies=[Depends(RateLimiter(times=30, seconds=60))])
 def get_clipboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    cleanup_old_clipboard_entries(current_user.id, db)
+    _cu: Any = current_user
+    user_id: int = _cu.id
+    cleanup_old_clipboard_entries(user_id, db)
 
     entry = (
         db.query(Clipboard)
-        .filter_by(user_id=current_user.id)
+        .filter_by(user_id=user_id)
         .order_by(Clipboard.timestamp.desc())
         .first()
     )
     if not entry:
         raise HTTPException(status_code=404, detail="No clipboard found")
 
-    return {
-            "id": entry.id,
-            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8') if entry.ciphertext else None,
-            "nonce": base64.b64encode(entry.nonce).decode('utf-8') if entry.nonce else None,
-            "blob_version": entry.blob_version,
-            "timestamp": entry.timestamp,
-            "is_deleted": entry.is_deleted
-            }
+    return clipboard_to_response(entry)
 
 
 
@@ -497,29 +515,18 @@ def get_clipboard_all(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    query = db.query(Clipboard).filter_by(user_id=current_user.id)
-    
+    _cu: Any = current_user
+    query = db.query(Clipboard).filter_by(user_id=_cu.id)
+
     # Default behavior: exclude deleted items unless explicitly requested
     if not include_deleted:
-        query = query.filter(Clipboard.is_deleted == False)
+        query = query.filter(Clipboard.is_deleted.is_(False))
 
-    # Return all items, ordered by timestamp desc (newest first)
-    entries = query.order_by(Clipboard.timestamp.desc()).all()
-
-    serialized = []
-    for entry in entries:
-        serialized.append({
-            "id": entry.id,
-            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8') if entry.ciphertext else None,
-            "nonce": base64.b64encode(entry.nonce).decode('utf-8') if entry.nonce else None,
-            "blob_version": entry.blob_version,
-            "timestamp": entry.timestamp,
-            "updated_at": entry.updated_at,
-            "is_deleted": entry.is_deleted,
-            "deleted_at": entry.deleted_at
-        })
+    query = query.order_by(Clipboard.timestamp.desc())
     
-    return serialized
+    entries = query.all()
+    
+    return [clipboard_to_response(entry) for entry in entries]
 
 @app.get("/clipboard/sync", response_model=ClipboardSyncResponse, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
 def get_sync_clipboard(
@@ -532,7 +539,6 @@ def get_sync_clipboard(
     # Safety Check: If 'since' is older than retention period, return 410 Gone
     # This forces the client to re-download everything, ensuring no zombie items (entries deleted on server but kept on client)
     if since:
-        from config import Settings
         # Ensure since is aware
         since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since
         retention_days = Settings.TOMBSTONE_RETENTION_DAYS
@@ -546,7 +552,8 @@ def get_sync_clipboard(
             # They must wipe and re-sync.
             raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
 
-    query = db.query(Clipboard).filter(Clipboard.user_id == current_user.id)
+    _cu: Any = current_user
+    query = db.query(Clipboard).filter(Clipboard.user_id == _cu.id)
     
     if since:
          # Ensure since is offset-aware UTC or naive treated as UTC
@@ -558,18 +565,7 @@ def get_sync_clipboard(
     # Apply offset and limit
     entries = query.order_by(Clipboard.updated_at.asc()).offset(offset).limit(limit).all()
 
-    serialized = []
-    for entry in entries:
-        serialized.append({
-            "id": entry.id,
-            "ciphertext": base64.b64encode(entry.ciphertext).decode('utf-8') if entry.ciphertext else None,
-            "nonce": base64.b64encode(entry.nonce).decode('utf-8') if entry.nonce else None,
-            "blob_version": entry.blob_version,
-            "timestamp": entry.timestamp,
-            "updated_at": entry.updated_at,
-            "is_deleted": entry.is_deleted,
-            "deleted_at": entry.deleted_at
-        })
+    serialized = [clipboard_to_response(entry).model_dump() for entry in entries]
 
     # For sync, 'next_offset' isn't really used the same way, but we can return the max updated_at
     # or just 0. The client relies on 'since' for the next call.
@@ -638,30 +634,34 @@ def refresh_token(
     if not token_entry:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
+    _te: Any = token_entry
+
     # 2. REUSE DETECTION: If token is already revoked, it's a theft attempt!
-    if token_entry.is_revoked:
+    if _te.is_revoked:
         # Security Alert: Delete the ENTIRE family to lock out the attacker
-        db.query(RefreshToken).filter(RefreshToken.family_id == token_entry.family_id).delete()
+        db.query(RefreshToken).filter(RefreshToken.family_id == _te.family_id).delete()
         db.commit()
         raise HTTPException(status_code=401, detail="Refresh token reused. Security alert: Session terminated.")
 
     # 3. Check expiry
     # Ensure token_entry.expiry is treated as UTC if it's naive (SQLAlchemy default)
-    expiry_utc = token_entry.expiry.replace(tzinfo=timezone.utc) if token_entry.expiry.tzinfo is None else token_entry.expiry
+    expiry_utc = _te.expiry.replace(tzinfo=timezone.utc) if _te.expiry.tzinfo is None else _te.expiry
 
     if expiry_utc < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="Expired refresh token")
 
-    user_id = token_entry.user_id
-    device_id = token_entry.device_id
+    user_id: int = _te.user_id
+    device_id: str = _te.device_id
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    _u: Any = user
+
     # 4. ROTATION: Issue new tokens
     access_token = create_access_token(
-        data={"sub": user.email, "device_id": device_id},
+        data={"sub": _u.email, "device_id": device_id},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
 
@@ -670,15 +670,15 @@ def refresh_token(
     new_expiry = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
     # Revoke the old token (don't delete it yet, keep it to detect reuse)
-    token_entry.is_revoked = True
-    
+    _te.is_revoked = True
+
     # Create new token in the SAME family
     db.add(RefreshToken(
-        user_id=user.id,
+        user_id=user_id,
         token=new_refresh_hashed,
         expiry=new_expiry,
         device_id=device_id,
-        family_id=token_entry.family_id, # Maintain the chain
+        family_id=_te.family_id, # Maintain the chain
         is_revoked=False
     ))
     db.commit()
@@ -694,22 +694,24 @@ async def delete_account(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    _cu: Any = current_user
+    user_id: int = _cu.id
     # Delete user's clipboard data
-    db.query(Clipboard).filter_by(user_id=current_user.id).delete()
+    db.query(Clipboard).filter_by(user_id=user_id).delete()
 
     # Delete user's devices
-    db.query(Device).filter_by(user_id=current_user.id).delete()
+    db.query(Device).filter_by(user_id=user_id).delete()
 
     # Delete all refresh tokens
-    db.query(RefreshToken).filter_by(user_id=current_user.id).delete()
+    db.query(RefreshToken).filter_by(user_id=user_id).delete()
 
     # Delete user record
-    db.query(User).filter_by(id=current_user.id).delete()
+    db.query(User).filter_by(id=user_id).delete()
 
     db.commit()
 
     # Disconnect all the websockets for this user
-    await manager.disconnect_user(current_user.id)
+    await manager.disconnect_user(user_id)
 
     return {"message": "Your account and all associated data have been deleted."}
 
@@ -750,12 +752,16 @@ def change_password(
     new_auth_key_hash = bcrypt.hashpw(new_auth_key_bytes, bcrypt.gensalt()).decode('utf-8')
     
     # Update auth_key and re-wrapped MK
-    db_user = db.query(User).filter_by(id=current_user.id).first()
-    db_user.auth_key_hash = new_auth_key_hash
-    db_user.encrypted_master_key = new_encrypted_mk_bytes
-    db_user.salt = new_salt_bytes
-    db_user.kdf_version = data.new_kdf_version
-    
+    _cu: Any = current_user
+    db_user = db.query(User).filter_by(id=_cu.id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    _dbu: Any = db_user
+    _dbu.auth_key_hash = new_auth_key_hash
+    _dbu.encrypted_master_key = new_encrypted_mk_bytes
+    _dbu.salt = new_salt_bytes
+    _dbu.kdf_version = data.new_kdf_version
+
     db.commit()
     db.refresh(db_user)
     
@@ -767,8 +773,10 @@ async def delete_device(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    _cu: Any = current_user
+    user_id: int = _cu.id
     # Lookup the device owned by this user
-    device = db.query(Device).filter_by(device_id=device_id, user_id=current_user.id).first()
+    device = db.query(Device).filter_by(device_id=device_id, user_id=user_id).first()
 
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -777,12 +785,12 @@ async def delete_device(
     db.delete(device)
 
     # 2. Revoke all refresh tokens for this device
-    db.query(RefreshToken).filter_by(user_id=current_user.id, device_id=device_id).delete()
+    db.query(RefreshToken).filter_by(user_id=user_id, device_id=device_id).delete()
     
     db.commit()
 
     # 3. Disconnect active WebSocket for this device
-    await manager.disconnect_device(current_user.id, device_id)
+    await manager.disconnect_device(user_id, device_id)
 
     return {"message": f"Device '{device.device_name}' deleted successfully"}
 
@@ -792,39 +800,39 @@ async def delete_clipboard_entry(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    _cu: Any = current_user
+    user_id: int = _cu.id
     # Idempotency: Check if item exists (tombstone or active)
-    entry = db.query(Clipboard).filter_by(id=clipboard_id, user_id=current_user.id).first()
-    
+    entry = db.query(Clipboard).filter_by(id=clipboard_id, user_id=user_id).first()
+
     # If not found, return success (idempotent)
     if not entry:
         return {"message": "Clipboard entry deleted"}
-        
-    # If already deleted, return success (idempotent) -- skipping broadcast usually, but plan says broadcast needed
-    # Optimization: If it's already a tombstone, we don't need to do anything or broadcast
-    if entry.is_deleted:
-         return {"message": "Clipboard entry deleted"}
-    
+
+    # If already deleted, return success (idempotent)
+    _entry: Any = entry
+    if _entry.is_deleted:
+        return {"message": "Clipboard entry deleted"}
+
     # Soft Delete
-    entry.is_deleted = True
-    entry.deleted_at = datetime.now(timezone.utc)
-    entry.updated_at = datetime.now(timezone.utc)
+    _entry.is_deleted = True
+    _entry.deleted_at = datetime.now(timezone.utc)
+    _entry.updated_at = datetime.now(timezone.utc)
     db.commit()
     
     # Broadcast deletion to all connected devices EXCLUDING origin
     # (Since this is REST API, we don't have socket ID, but conceptually the caller knows they deleted it)
     await manager.broadcast_to_user(
-        user_id=current_user.id,
+        user_id=user_id,
         message={
             "id": clipboard_id,
             "is_deleted": True,
-            "timestamp": entry.deleted_at.isoformat() + "Z",
+            "timestamp": _entry.deleted_at.isoformat() + "Z",
             "ciphertext": None,
             "nonce": None,
-            "blob_version": entry.blob_version
+            "blob_version": _entry.blob_version
         }
         # We don't have exclude_device here because REST API doesn't carry device_id in context easily
-        # unless added to request state. But implementation plan says exclude originating device.
-        # We can extract device_id from token if available.
     )
     
     return {"message": "Clipboard entry deleted"}
@@ -836,22 +844,25 @@ async def delete_clipboard_history(
     current_user: User = Depends(get_current_user)
 ):
     # Soft delete all active entries
+    _cu: Any = current_user
+    user_id: int = _cu.id
     active_entries = db.query(Clipboard).filter_by(
-        user_id=current_user.id, 
+        user_id=user_id,
         is_deleted=False
     ).all()
-    
+
     if not active_entries:
         return {"message": "No clipboard entries to delete."}
 
     now = datetime.now(timezone.utc)
     clipboard_ids = []
-    
+
     for entry in active_entries:
-        entry.is_deleted = True
-        entry.deleted_at = now
-        entry.updated_at = now
-        clipboard_ids.append(entry.id)
+        _e: Any = entry
+        _e.is_deleted = True
+        _e.deleted_at = now
+        _e.updated_at = now
+        clipboard_ids.append(_e.id)
         
     db.commit()
     
@@ -861,7 +872,7 @@ async def delete_clipboard_history(
     # Broadcast deletion of all entries
     for clipboard_id in clipboard_ids:
         await manager.broadcast_to_user(
-            user_id=current_user.id,
+            user_id=user_id,
             message={
                 "id": clipboard_id,
                 "is_deleted": True,
@@ -933,7 +944,8 @@ async def websocket_clipboard(websocket: WebSocket):
             return
         
         # Store user_id for use in the connection
-        user_id = user.id
+        _ws_user: Any = user
+        user_id: int = _ws_user.id
     finally:
         db.close()
 
@@ -1011,6 +1023,9 @@ async def websocket_clipboard(websocket: WebSocket):
             nonce_bytes = None
 
             if not is_deleted:
+                if ciphertext is None or nonce is None:
+                    await websocket.send_json({"type": "error", "message": "Missing ciphertext/nonce"})
+                    continue
                 try:
                     ciphertext_bytes = base64.b64decode(ciphertext)
                     nonce_bytes = base64.b64decode(nonce)
@@ -1033,53 +1048,51 @@ async def websocket_clipboard(websocket: WebSocket):
                 session = SessionLocal()
                 try:
                     existing = session.query(Clipboard).filter_by(id=msg_id, user_id=user_id).first()
-                    
+
                     if existing:
-                        # Conflict Resolution / Idempotency
-                        # Use valid timestamps to determine winner if needed, but usually last-write-wins or server-accepts-all
-                        # For now simplistically update. 
-                        
-                        existing.is_deleted = is_deleted
-                        existing.timestamp = msg_ts
-                        existing.blob_version = blob_version
-                        
+                        _ex: Any = existing
+                        _ex.is_deleted = is_deleted
+                        _ex.timestamp = msg_ts
+                        _ex.blob_version = blob_version
+
                         if is_deleted:
-                            existing.ciphertext = None
-                            existing.nonce = None
-                            existing.deleted_at = msg_ts # Use client timestamp as deleted_at
-                            existing.updated_at = datetime.now(timezone.utc)
+                            _ex.ciphertext = None
+                            _ex.nonce = None
+                            _ex.deleted_at = msg_ts
+                            _ex.updated_at = datetime.now(timezone.utc)
                         else:
-                            existing.ciphertext = ciphertext_bytes
-                            existing.nonce = nonce_bytes
-                            existing.deleted_at = None # Resurrect if previously deleted
-                            existing.updated_at = datetime.now(timezone.utc)
-                            
+                            _ex.ciphertext = ciphertext_bytes
+                            _ex.nonce = nonce_bytes
+                            _ex.deleted_at = None
+                            _ex.updated_at = datetime.now(timezone.utc)
+
                         session.commit()
                         return {
-                            "id": existing.id,
-                            "timestamp": existing.timestamp,
-                            "is_deleted": existing.is_deleted,
-                            "blob_version": existing.blob_version
+                            "id": _ex.id,
+                            "timestamp": _ex.timestamp,
+                            "is_deleted": _ex.is_deleted,
+                            "blob_version": _ex.blob_version
                         }
                     else:
                         new_entry = Clipboard(
-                            id=msg_id, # Client ID
+                            id=msg_id,
                             user_id=user_id,
                             ciphertext=ciphertext_bytes,
                             nonce=nonce_bytes,
                             blob_version=blob_version,
-                            timestamp=msg_ts, # Client Timestamp
+                            timestamp=msg_ts,
                             is_deleted=is_deleted,
                             deleted_at=msg_ts if is_deleted else None,
                             updated_at=datetime.now(timezone.utc)
                         )
                         session.add(new_entry)
                         session.commit()
+                        _ne: Any = new_entry
                         return {
-                            "id": new_entry.id,
-                            "timestamp": new_entry.timestamp,
-                            "is_deleted": new_entry.is_deleted,
-                            "blob_version": new_entry.blob_version
+                            "id": _ne.id,
+                            "timestamp": _ne.timestamp,
+                            "is_deleted": _ne.is_deleted,
+                            "blob_version": _ne.blob_version
                         }
                 except Exception as e:
                     session.rollback()
@@ -1088,7 +1101,7 @@ async def websocket_clipboard(websocket: WebSocket):
                     session.close()
 
             # Execute in thread pool to avoid blocking event loop
-            entry_data = await asyncio.to_thread(save_clipboard_entry)
+            entry_data: Any = await asyncio.to_thread(save_clipboard_entry)
 
             if "error" in entry_data:
                  logger.error(f"DB Error processing clipboard item: {entry_data['error']}")

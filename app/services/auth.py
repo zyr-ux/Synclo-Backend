@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
@@ -6,11 +7,12 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.models import User, BlacklistedToken, Device
-from app.services.utils import cleanup_expired_blacklisted_tokens
 from app.core.config import Settings
 
-# Secret key (change this in production!)
-SECRET_KEY = Settings.SECRET_KEY
+# SECRET_KEY is guaranteed non-None by Settings (raises RuntimeError at startup if missing)
+_raw_secret_key = Settings.SECRET_KEY
+assert _raw_secret_key is not None, "SECRET_KEY must be set"
+SECRET_KEY: str = _raw_secret_key
 ALGORITHM = Settings.ALGORITHM
 ACCESS_TOKEN_EXPIRE_MINUTES = Settings.ACCESS_TOKEN_EXPIRE_MINUTES
 
@@ -32,7 +34,7 @@ def hash_password(password: str):
 def verify_password(plain_password: str, hashed_password: str):
     return pwd_context.verify(plain_password, hashed_password)
 
-def create_access_token(data: dict, expires_delta: timedelta = None):
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + expires_delta if expires_delta else datetime.now(timezone.utc) + timedelta(minutes=15)
     to_encode.update({"exp": expire})
@@ -49,9 +51,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     try:
         # Decode JWT token
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        exp: int = payload.get("exp")
-        device_id: str = payload.get("device_id")
+        email: Optional[str] = payload.get("sub")
+        exp: Optional[int] = payload.get("exp")
+        device_id: Optional[str] = payload.get("device_id")
 
         if email is None or exp is None:
             raise credentials_exception
@@ -79,8 +81,8 @@ def get_user_from_token_ws(token: str):
     db = SessionLocal()
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        device_id: str = payload.get("device_id")
+        email: Optional[str] = payload.get("sub")
+        device_id: Optional[str] = payload.get("device_id")
 
         if email is None or device_id is None:
             return None

@@ -8,7 +8,7 @@ def cleanup_expired_blacklisted_tokens(db: Session):
         now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
         db.query(BlacklistedToken).filter(BlacklistedToken.expiry < now_naive).delete()
         db.commit()
-    except Exception as e:
+    except Exception:
         db.rollback()
         # Table may not exist if migrations haven't run yet
         pass
@@ -19,7 +19,7 @@ def cleanup_expired_refresh_tokens(db: Session):
         now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
         db.query(RefreshToken).filter(RefreshToken.expiry < now_naive).delete()
         db.commit()
-    except Exception as e:
+    except Exception:
         db.rollback()
         # Table may not exist if migrations haven't run yet
         pass
@@ -31,17 +31,17 @@ def cleanup_old_clipboard_entries(user_id: int, db: Session):
 
 def cleanup_old_tombstones(db: Session):
     try:
-        from config import Settings
+        from app.core.config import Settings
         retention_days = Settings.TOMBSTONE_RETENTION_DAYS
         # DB stores naive UTC
         cutoff_date = (datetime.now(timezone.utc) - timedelta(days=retention_days)).replace(tzinfo=None)
         
         db.query(Clipboard).filter(
-            Clipboard.is_deleted == True,
+            Clipboard.is_deleted.is_(True),
             Clipboard.deleted_at < cutoff_date
         ).delete()
         db.commit()
-    except Exception as e:
+    except Exception:
         db.rollback()
         pass
 

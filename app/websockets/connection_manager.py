@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from fastapi import WebSocket
 import asyncio
 import json
@@ -7,7 +7,7 @@ class ConnectionManager:
     def __init__(self):
         # Structure: { user_id: { device_id: websocket } }
         self.active_connections: Dict[int, Dict[str, WebSocket]] = {}
-        self.redis = None
+        self.redis: Optional[Any] = None
         self._listener_task: Optional[asyncio.Task] = None
         self._node_id = id(self)
 
@@ -53,7 +53,7 @@ class ConnectionManager:
     def get_user_devices(self, user_id: int) -> Dict[str, WebSocket]:
         return self.active_connections.get(user_id, {})
 
-    async def broadcast_to_user(self, user_id: int, message: dict, exclude_device: str = None):
+    async def broadcast_to_user(self, user_id: int, message: dict, exclude_device: Optional[str] = None):
         await self._broadcast_local(user_id, message, exclude_device)
 
         if self.redis:
@@ -65,13 +65,13 @@ class ConnectionManager:
             }
             await self.redis.publish(self._channel(user_id), json.dumps(envelope))
 
-    async def _broadcast_local(self, user_id: int, message: dict, exclude_device: str = None):
+    async def _broadcast_local(self, user_id: int, message: dict, exclude_device: Optional[str] = None):
         # Iterate over a copy of items to prevent runtime errors if connections drop during broadcast
         for device_id, ws in list(self.get_user_devices(user_id).items()):
             if device_id != exclude_device:
                 try:
                     await ws.send_json(message)
-                except (RuntimeError, ConnectionError) as e:
+                except (RuntimeError, ConnectionError):
                     # WebSocket connection is closed or broken, remove it
                     self.disconnect(user_id, device_id)
                 except Exception as e:
@@ -88,8 +88,10 @@ class ConnectionManager:
         if not self.redis or self._listener_task:
             return
 
+        redis = self.redis  # Capture as local so the nested closure sees a non-None type
+
         async def _listen():
-            pubsub = self.redis.pubsub()
+            pubsub = redis.pubsub()
             await pubsub.psubscribe(self._channel("*"))
             try:
                 async for message in pubsub.listen():

@@ -45,6 +45,18 @@ class TokenWithE2EE(Token):
     salt: str  # base64 encoded
     kdf_version: int
 
+class UserResponse(BaseModel):
+    """Safe user serialization (no hashes/keys)"""
+    email: str
+    kdf_version: int
+
+class UserWithE2EE(BaseModel):
+    """User with encrypted material (for client-side decryption)"""
+    email: str
+    encrypted_master_key: str  # base64 encoded
+    salt: str  # base64 encoded
+    kdf_version: int
+
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
