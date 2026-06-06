@@ -19,8 +19,8 @@ os.environ["REFRESH_TOKEN_EXPIRE_DAYS"] = "7"
 os.environ["REDIS_URL"] = "redis://localhost:6379/0"
 os.environ["DATABASE_URL"] = "sqlite:///./test.db"
 
-from models import Clipboard, User
-from schemas import ClipboardSyncResponse
+from app.models.models import Clipboard, User
+from app.schemas.schemas import ClipboardSyncResponse
 
 # We need to mock get_clipboard_sync dependencies
 # It requires: offset, limit, include_deleted, db, current_user
@@ -30,8 +30,8 @@ class TestOffsetPagination(unittest.TestCase):
         # We need to import the function to test
         # To avoid running startup logic, we just import what we need
         # But get_clipboard_sync is in main.py.
-        from main import get_clipboard_sync
-        self.get_clipboard_sync = get_clipboard_sync
+        from app.main import get_sync_clipboard
+        self.get_clipboard_sync = get_sync_clipboard
 
     def test_pagination_logic(self):
         # Mock DB Session
@@ -108,9 +108,9 @@ class TestOffsetPagination(unittest.TestCase):
         
         # Run Function
         response = self.get_clipboard_sync(
+            since=None,
             offset=0,
-            limit=50, 
-            include_deleted=False,
+            limit=50,
             db=mock_db,
             current_user=mock_user
         )
@@ -125,7 +125,7 @@ class TestOffsetPagination(unittest.TestCase):
         print("Success: Initial fetch returned correct next_offset")
 
     def test_empty_result(self):
-        from main import get_clipboard_sync
+        from app.main import get_sync_clipboard
         
         mock_db = MagicMock()
         # Mock returning empty list
@@ -134,10 +134,10 @@ class TestOffsetPagination(unittest.TestCase):
         
         mock_user = User(id=1)
         
-        response = get_clipboard_sync(
+        response = get_sync_clipboard(
+            since=None,
             offset=100,
             limit=50,
-            include_deleted=False, 
             db=mock_db,
             current_user=mock_user
         )

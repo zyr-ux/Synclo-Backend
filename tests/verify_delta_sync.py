@@ -46,7 +46,7 @@ sys.modules["fastapi_limiter.depends"] = mock_limiter_depends
 
 from fastapi.testclient import TestClient
 # Now import main
-from main import app, get_db
+from app.main import app, get_db
 import os
 import base64
 import time
