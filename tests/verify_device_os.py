@@ -145,6 +145,26 @@ def test_device_os():
         assert target_device_2_updated.get("os") == "iOS 18 Beta", f"OS update failed! Expected 'iOS 18 Beta', got '{target_device_2_updated.get('os')}'"
         print("OS update verification passed.")
         
+        # 6. Delete Device
+        print("Deleting device 2...")
+        resp = client.delete(f"/devices/{device_id_2}", headers={"Authorization": f"Bearer {token_2}"})
+        assert resp.status_code == 200, f"Delete device failed: {resp.text}"
+        print("Delete device endpoint returned 200.")
+        
+        # Check that token_2 is now invalid/rejected with 403 because device 2 is deleted
+        resp = client.get("/devices", headers={"Authorization": f"Bearer {token_2}"})
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+        assert resp.json().get("detail") == "Unauthorized device"
+        print("Verified token_2 was invalidated (403 Unauthorized device).")
+
+        # Check if device was deleted using the first active token (token)
+        resp = client.get("/devices", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, f"Get devices failed with token: {resp.text}"
+        devices = resp.json()
+        target_device_2_deleted = next((d for d in devices if d["device_id"] == device_id_2), None)
+        assert not target_device_2_deleted, "Device 2 was not deleted."
+        print("Device deletion verification passed via active device token.")
+        
         print("\nALL TESTS PASSED")
 
 if __name__ == "__main__":
