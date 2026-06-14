@@ -122,3 +122,6 @@ class ConnectionManager:
 
     def _channel(self, user_id):
         return f"clipboard:user:{user_id}"
+
+
+manager = ConnectionManager()

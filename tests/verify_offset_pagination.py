@@ -30,7 +30,7 @@ class TestOffsetPagination(unittest.TestCase):
         # We need to import the function to test
         # To avoid running startup logic, we just import what we need
         # But get_clipboard_sync is in main.py.
-        from app.main import get_sync_clipboard
+        from app.endpoints.clipboard_endpoints import get_sync_clipboard
         self.get_clipboard_sync = get_sync_clipboard
 
     def test_pagination_logic(self):
@@ -90,7 +90,7 @@ class TestOffsetPagination(unittest.TestCase):
         print("Success: Initial fetch returned correct next_offset")
 
     def test_empty_result(self):
-        from app.main import get_sync_clipboard
+        from app.endpoints.clipboard_endpoints import get_sync_clipboard
         
         mock_db = MagicMock()
         # Mock returning empty list
