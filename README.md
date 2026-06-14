@@ -37,7 +37,7 @@ For detailed guides, please refer to the following documents:
 The easiest way to start the server alongside its Redis instance is using Docker Compose:
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 The application will boot up at `http://localhost:8000`. You can inspect the logs using `docker compose logs -f`.
 
