@@ -37,72 +37,37 @@ class TestOffsetPagination(unittest.TestCase):
         # Mock DB Session
         mock_db = MagicMock()
         mock_query = mock_db.query.return_value
-        mock_filter_user = mock_query.filter_by.return_value
-        
-        # Test Case 1: Initial fetch (offset 0)
-        # Setup mock data associated with the user
-        # We expect filter(Clipboard.is_deleted == False) (default)
-        # Then filter(Clipboard.index > 0)
-        # Then order_by(Clipboard.index.asc())
-        # Then limit(50)
-        
-        # The chain in the code is:
-        # query = db.query(Clipboard).filter_by(user_id=uid)
-        # if not include_deleted: query = query.filter(is_deleted == False)
-        # entries = query.filter(index > offset).order_by(index.asc()).limit(limit).all()
-        
-        # Let's mock the chain effectively
-        # It's a bit complex to mock chained calls perfectly with SQLAlchemy syntax 
-        # because filter returns a query, order_by returns a query...
         
         # Simpler approach: Create a fake chain
-        mock_step1 = MagicMock() # filter_by(user_id)
-        mock_step2 = MagicMock() # filter(is_deleted==False)
-        mock_step3 = MagicMock() # filter(index > offset)
-        mock_step4 = MagicMock() # order_by
-        mock_step5 = MagicMock() # limit
+        mock_step1 = MagicMock() # order_by
+        mock_step2 = MagicMock() # offset
+        mock_step3 = MagicMock() # limit
         
-        mock_db.query.return_value.filter_by.return_value = mock_step1
-        mock_step1.filter.return_value = mock_step2
-        mock_step2.filter.return_value = mock_step3
-        mock_step3.order_by.return_value = mock_step4
-        mock_step4.limit.return_value = mock_step5
+        mock_db.query.return_value.filter.return_value = mock_step1
+        mock_step1.order_by.return_value = mock_step2
+        mock_step2.offset.return_value = mock_step3
         
         # Make some dummy entries
         entry1 = Clipboard(
             id="uuid-1", 
-            index=10, 
             ciphertext=b"data1", 
             nonce=b"nonce1", 
             blob_version=1, 
             timestamp=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
             is_deleted=False
         )
         entry2 = Clipboard(
             id="uuid-2", 
-            index=15, 
             ciphertext=b"data2", 
             nonce=b"nonce2", 
             blob_version=1, 
             timestamp=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
             is_deleted=False
         )
         
-        mock_step5.all.return_value = [entry1, entry2]
-        
-        # Mock Count
-        mock_step1.count.return_value = 100 
-        # Note: Code calls query.count() which is 'query' variable.
-        # Logic analysis:
-        # query = db.query(...) .filter_by(...)
-        # if not include_deleted: query = query.filter(...)
-        # ...
-        # total_count = query.count()
-        # So it uses 'query' right before pagination filters (offset/limit).
-        
-        # Since our mock structure might be brittle vs actual code flow, 
-        # let's just verifying the result processing logic assuming DB returns the list.
-        
+        mock_step3.limit.return_value.all.return_value = [entry1, entry2]
         
         mock_user = User(id=1, email="test@test.com")
         
@@ -118,7 +83,7 @@ class TestOffsetPagination(unittest.TestCase):
         # Assertions
         print("Response Entries:", len(response["entries"]))
         self.assertEqual(len(response["entries"]), 2)
-        self.assertEqual(response["next_offset"], 15) # Should match highest index
+        self.assertEqual(response["next_offset"], 2) # Should match offset + len(entries)
         self.assertEqual(response["entries"][0]["id"], "uuid-1")
         self.assertEqual(response["entries"][1]["id"], "uuid-2")
         
@@ -129,8 +94,7 @@ class TestOffsetPagination(unittest.TestCase):
         
         mock_db = MagicMock()
         # Mock returning empty list
-        mock_db.query.return_value.filter_by.return_value.filter.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = []
-        mock_db.query.return_value.filter_by.return_value.count.return_value = 0
+        mock_db.query.return_value.filter.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
         
         mock_user = User(id=1)
         
