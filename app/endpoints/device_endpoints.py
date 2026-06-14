@@ -7,7 +7,7 @@ from fastapi_limiter.depends import RateLimiter
 from sqlalchemy.orm import Session
 
 from app.core.constants import MIN_DEVICE_ID_LEN, MAX_DEVICE_ID_LEN
-from app.models.models import Device, User
+from app.models.models import Device, User, RefreshToken
 from app.schemas.schemas import DeviceRegister, DeviceOut
 from app.services.auth import get_db, get_current_user
 from app.websockets.connection_manager import manager
