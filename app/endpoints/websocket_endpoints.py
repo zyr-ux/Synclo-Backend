@@ -24,8 +24,8 @@ from app.websockets.connection_manager import manager
 router = APIRouter()
 
 
-@router.websocket("/clipboard")
-async def websocket_clipboard(websocket: WebSocket):
+@router.websocket("/sync")
+async def websocket_sync(websocket: WebSocket):
     # Accept the connection first - we MUST do this before any close operations
     await websocket.accept()
     

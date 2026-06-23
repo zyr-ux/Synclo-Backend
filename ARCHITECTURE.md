@@ -127,7 +127,7 @@ To synchronize deletions to offline clients, Synclo uses a soft-deletion pattern
 
 The WebSocket endpoint provides push-based real-time clipboard synchronization across all authorized active devices.
 
-*   **Endpoint:** `ws://<HOST>/ws/v1/clipboard` (local) or `wss://<HOST>/ws/v1/clipboard` (production)
+*   **Endpoint:** `ws://<HOST>/ws/v1/sync` (local) or `wss://<HOST>/ws/v1/sync` (production)
 *   **Protocol Handshake:** Must include the header: `Authorization: Bearer <access_token>`.
 
 ### Message Protocols (JSON Frames)
