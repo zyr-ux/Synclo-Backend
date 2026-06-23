@@ -75,7 +75,7 @@ def get_auth_headers(client, email):
         "kdf_version": 1
     }
     
-    resp = client.post("/register", json=reg_data)
+    resp = client.post("/api/v1/register", json=reg_data)
     assert resp.status_code == 200, f"Register failed: {resp.text}"
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -89,7 +89,7 @@ def test_delta_sync():
         print(f"Created user: {email}")
 
         # 1. Initial Sync (Since None) - Should be empty
-        resp = client.get("/clipboard/sync", headers=headers)
+        resp = client.get("/api/v1/clipboard/sync", headers=headers)
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["entries"]) == 0
@@ -103,7 +103,7 @@ def test_delta_sync():
 
         # 2. Add Item A
         item_a_id = "item_a_" + os.urandom(4).hex()
-        resp = client.post("/clipboard", json={
+        resp = client.post("/api/v1/clipboard", json={
             "id": item_a_id,
             "ciphertext": base64.b64encode(b"ciphertextA").decode('utf-8'),
             "nonce": base64.b64encode(b"nonceAAAA").decode('utf-8'), # 9 bytes
@@ -114,7 +114,7 @@ def test_delta_sync():
         print("Added Item A: OK")
 
         # 3. Sync Since T0 -> Should get Item A
-        resp = client.get("/clipboard/sync", params={"since": t0.isoformat()}, headers=headers)
+        resp = client.get("/api/v1/clipboard/sync", params={"since": t0.isoformat()}, headers=headers)
         assert resp.status_code == 200, f"Sync failed: {resp.text}"
         data = resp.json()
         if "entries" not in data:
@@ -131,7 +131,7 @@ def test_delta_sync():
 
         # 4. Add Item B
         item_b_id = "item_b_" + os.urandom(4).hex()
-        resp = client.post("/clipboard", json={
+        resp = client.post("/api/v1/clipboard", json={
             "id": item_b_id,
             "ciphertext": base64.b64encode(b"ciphertextB").decode('utf-8'),
             "nonce": base64.b64encode(b"nonceBBBB").decode('utf-8'), # 9 bytes
@@ -142,7 +142,7 @@ def test_delta_sync():
         print("Added Item B: OK")
 
         # 5. Sync Since T1 -> Should get Item B only
-        resp = client.get("/clipboard/sync", params={"since": item_a_updated_at}, headers=headers)
+        resp = client.get("/api/v1/clipboard/sync", params={"since": item_a_updated_at}, headers=headers)
         data = resp.json()
         assert len(data["entries"]) == 1
         assert data["entries"][0]["id"] == item_b_id
@@ -153,7 +153,7 @@ def test_delta_sync():
         time.sleep(1)
 
         # 6. Update Item A
-        resp = client.post("/clipboard", json={
+        resp = client.post("/api/v1/clipboard", json={
             "id": item_a_id,
             "ciphertext": base64.b64encode(b"ciphertextA_updated").decode('utf-8'),
             "nonce": base64.b64encode(b"nonceAAAA").decode('utf-8'), # 9 bytes
@@ -164,7 +164,7 @@ def test_delta_sync():
         print("Updated Item A: OK")
 
         # 7. Sync Since T2 -> Should get Item A (updated)
-        resp = client.get("/clipboard/sync", params={"since": item_b_updated_at}, headers=headers)
+        resp = client.get("/api/v1/clipboard/sync", params={"since": item_b_updated_at}, headers=headers)
         data = resp.json()
         assert len(data["entries"]) == 1
         assert data["entries"][0]["id"] == item_a_id
@@ -175,12 +175,12 @@ def test_delta_sync():
         time.sleep(1)
 
         # 8. Delete Item B
-        resp = client.delete(f"/clipboard/{item_b_id}", headers=headers)
+        resp = client.delete(f"/api/v1/clipboard/{item_b_id}", headers=headers)
         assert resp.status_code == 200
         print("Deleted Item B: OK")
 
         # 9. Sync Since T3 -> Should get Item B (deleted)
-        resp = client.get("/clipboard/sync", params={"since": item_a_updated_at_2}, headers=headers)
+        resp = client.get("/api/v1/clipboard/sync", params={"since": item_a_updated_at_2}, headers=headers)
         data = resp.json()
         assert len(data["entries"]) == 1
         assert data["entries"][0]["id"] == item_b_id
@@ -190,7 +190,7 @@ def test_delta_sync():
         # 10. Expired Sync -> Should return 410
         # Create a timestamp 31 days ago
         expired_ts = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=31)
-        resp = client.get("/clipboard/sync", params={"since": expired_ts.isoformat()}, headers=headers)
+        resp = client.get("/api/v1/clipboard/sync", params={"since": expired_ts.isoformat()}, headers=headers)
         assert resp.status_code == 410, f"Expired sync failed: {resp.status_code} {resp.text}"
         print("Expired sync returned 410: OK")
 
@@ -201,7 +201,7 @@ def test_delta_sync():
         # Add 3 items
         for i in range(3):
             cid = f"page_item_{i}_{os.urandom(4).hex()}"
-            client.post("/clipboard", json={
+            client.post("/api/v1/clipboard", json={
                 "id": cid,
                 "ciphertext": base64.b64encode(f"content{i}".encode()).decode(),
                 "nonce": base64.b64encode(b"noncePPPP").decode(),
@@ -214,14 +214,14 @@ def test_delta_sync():
         # We want to test pagination on the WHOLE set.
         
         # Request limit=2 (should get 2 items)
-        resp = client.get("/clipboard/sync", params={"limit": 2}, headers=headers)
+        resp = client.get("/api/v1/clipboard/sync", params={"limit": 2}, headers=headers)
         data = resp.json()
         assert len(data["entries"]) == 2
         assert data["has_more"] == True
         print("Pagination limit=2 returned 2 items: OK")
         
         # Request offset=2 (should get the rest)
-        resp = client.get("/clipboard/sync", params={"limit": 2, "offset": 2}, headers=headers)
+        resp = client.get("/api/v1/clipboard/sync", params={"limit": 2, "offset": 2}, headers=headers)
         data = resp.json()
         assert len(data["entries"]) >= 1 # We added at least 3 new ones + previous ones
         print("Pagination offset=2 returned items: OK")

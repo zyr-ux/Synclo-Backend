@@ -77,7 +77,7 @@ def test_device_os():
             "kdf_version": 1
         }
         
-        resp = client.post("/register", json=reg_data)
+        resp = client.post("/api/v1/register", json=reg_data)
         assert resp.status_code == 200, f"Registration failed: {resp.text}"
         res = resp.json()
         token = res["access_token"]
@@ -85,7 +85,7 @@ def test_device_os():
         
         # 2. Check Device OS via GET /devices
         print("Checking device OS...")
-        resp = client.get("/devices", headers={"Authorization": f"Bearer {token}"})
+        resp = client.get("/api/v1/devices", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200, f"Get devices failed: {resp.text}"
         devices = resp.json()
         print(f"Devices found: {json.dumps(devices, indent=2)}")
@@ -107,7 +107,7 @@ def test_device_os():
             "os": "iOS 17"
         }
         
-        resp = client.post("/login", json=login_data)
+        resp = client.post("/api/v1/login", json=login_data)
         assert resp.status_code == 200, f"Login failed: {resp.text}"
         res = resp.json()
         token_2 = res["access_token"]
@@ -115,7 +115,7 @@ def test_device_os():
         
         # 4. Check Device 2 OS
         print("Checking device 2 OS...")
-        resp = client.get("/devices", headers={"Authorization": f"Bearer {token_2}"})
+        resp = client.get("/api/v1/devices", headers={"Authorization": f"Bearer {token_2}"})
         devices = resp.json()
         target_device_2 = next((d for d in devices if d["device_id"] == device_id_2), None)
         
@@ -133,12 +133,12 @@ def test_device_os():
             "os": "iOS 18 Beta"
         }
         
-        resp = client.post("/login", json=login_data_update)
+        resp = client.post("/api/v1/login", json=login_data_update)
         assert resp.status_code == 200, f"Login update failed: {resp.text}"
         print("Login update successful.")
         
         # Check if OS updated
-        resp = client.get("/devices", headers={"Authorization": f"Bearer {token_2}"})
+        resp = client.get("/api/v1/devices", headers={"Authorization": f"Bearer {token_2}"})
         devices = resp.json()
         target_device_2_updated = next((d for d in devices if d["device_id"] == device_id_2), None)
         
@@ -147,18 +147,18 @@ def test_device_os():
         
         # 6. Delete Device
         print("Deleting device 2...")
-        resp = client.delete(f"/devices/{device_id_2}", headers={"Authorization": f"Bearer {token_2}"})
+        resp = client.delete(f"/api/v1/devices/{device_id_2}", headers={"Authorization": f"Bearer {token_2}"})
         assert resp.status_code == 200, f"Delete device failed: {resp.text}"
         print("Delete device endpoint returned 200.")
         
         # Check that token_2 is now invalid/rejected with 403 because device 2 is deleted
-        resp = client.get("/devices", headers={"Authorization": f"Bearer {token_2}"})
+        resp = client.get("/api/v1/devices", headers={"Authorization": f"Bearer {token_2}"})
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
         assert resp.json().get("detail") == "Unauthorized device"
         print("Verified token_2 was invalidated (403 Unauthorized device).")
 
         # Check if device was deleted using the first active token (token)
-        resp = client.get("/devices", headers={"Authorization": f"Bearer {token}"})
+        resp = client.get("/api/v1/devices", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200, f"Get devices failed with token: {resp.text}"
         devices = resp.json()
         target_device_2_deleted = next((d for d in devices if d["device_id"] == device_id_2), None)

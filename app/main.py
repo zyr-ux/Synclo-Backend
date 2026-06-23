@@ -22,10 +22,10 @@ from app.endpoints.websocket_endpoints import router as websocket_router
 app = FastAPI()
 
 # Include routers
-app.include_router(auth_router)
-app.include_router(device_router)
-app.include_router(clipboard_router)
-app.include_router(websocket_router)
+app.include_router(auth_router, prefix="/api/v1")
+app.include_router(device_router, prefix="/api/v1")
+app.include_router(clipboard_router, prefix="/api/v1")
+app.include_router(websocket_router, prefix="/ws/v1")
 
 
 @app.on_event("startup")

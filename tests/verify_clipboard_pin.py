@@ -68,7 +68,7 @@ def test_clipboard_pin():
             "kdf_version": 1
         }
         
-        resp = client.post("/register", json=reg_data)
+        resp = client.post("/api/v1/register", json=reg_data)
         assert resp.status_code == 200, f"Registration failed: {resp.text}"
         token = resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -76,7 +76,7 @@ def test_clipboard_pin():
 
         # 2. Add Pinned Item
         pinned_id = "pinned_" + os.urandom(4).hex()
-        resp = client.post("/clipboard", json={
+        resp = client.post("/api/v1/clipboard", json={
             "id": pinned_id,
             "ciphertext": base64.b64encode(b"pinned payload").decode('utf-8'),
             "nonce": base64.b64encode(b"nonce1111").decode('utf-8'),
@@ -89,7 +89,7 @@ def test_clipboard_pin():
 
         # 3. Add Unpinned Item
         unpinned_id = "unpinned_" + os.urandom(4).hex()
-        resp = client.post("/clipboard", json={
+        resp = client.post("/api/v1/clipboard", json={
             "id": unpinned_id,
             "ciphertext": base64.b64encode(b"unpinned payload").decode('utf-8'),
             "nonce": base64.b64encode(b"nonce2222").decode('utf-8'),
@@ -101,7 +101,7 @@ def test_clipboard_pin():
         print("Added unpinned item successfully.")
 
         # 4. Verify items are retrieved with correct is_pinned flags
-        resp = client.get("/clipboard/all", headers=headers)
+        resp = client.get("/api/v1/clipboard/all", headers=headers)
         assert resp.status_code == 200
         items = resp.json()
         assert len(items) == 2, f"Expected 2 items, got {len(items)}"
@@ -117,11 +117,11 @@ def test_clipboard_pin():
 
         # 5. Bulk Delete: DELETE /clipboard (should only affect unpinned item)
         print("Triggering bulk delete /clipboard...")
-        resp = client.delete("/clipboard", headers=headers)
+        resp = client.delete("/api/v1/clipboard", headers=headers)
         assert resp.status_code == 200
         
         # Check active items remaining (without include_deleted)
-        resp = client.get("/clipboard/all", headers=headers)
+        resp = client.get("/api/v1/clipboard/all", headers=headers)
         assert resp.status_code == 200
         active_items = resp.json()
         assert len(active_items) == 1, f"Expected 1 active item (pinned), got {len(active_items)}"
@@ -129,7 +129,7 @@ def test_clipboard_pin():
         print("Bulk delete successfully bypassed pinned item.")
 
         # Check full history (including deleted)
-        resp = client.get("/clipboard/all", params={"include_deleted": True}, headers=headers)
+        resp = client.get("/api/v1/clipboard/all", params={"include_deleted": True}, headers=headers)
         assert resp.status_code == 200
         all_items = resp.json()
         assert len(all_items) == 2
@@ -138,16 +138,16 @@ def test_clipboard_pin():
         
         # 6. Single Item Delete: DELETE /clipboard/{pinned_id} (should successfully delete the pinned item)
         print("Manually deleting the pinned item...")
-        resp = client.delete(f"/clipboard/{pinned_id}", headers=headers)
+        resp = client.delete(f"/api/v1/clipboard/{pinned_id}", headers=headers)
         assert resp.status_code == 200
         
         # Verify both items are now deleted
-        resp = client.get("/clipboard/all", headers=headers)
+        resp = client.get("/api/v1/clipboard/all", headers=headers)
         assert resp.status_code == 200
         assert len(resp.json()) == 0, "Expected 0 active items"
 
         # Check that pinned item was soft-deleted and is_pinned set to False
-        resp = client.get("/clipboard/all", params={"include_deleted": True}, headers=headers)
+        resp = client.get("/api/v1/clipboard/all", params={"include_deleted": True}, headers=headers)
         assert resp.status_code == 200
         items_after_all_deleted = resp.json()
         target_pinned_after_deleted = next((item for item in items_after_all_deleted if item["id"] == pinned_id), None)

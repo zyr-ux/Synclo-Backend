@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 
 # Configuration
-WS_URL = "ws://localhost:8000/ws/clipboard"
+WS_URL = "ws://localhost:8000/ws/v1/clipboard"
 API_URL = "http://localhost:8000"
 TEST_EMAIL = "test_sync@example.com"
 TEST_PASSWORD = "password123" # Not used directly, we fake the token flow or need to register?
