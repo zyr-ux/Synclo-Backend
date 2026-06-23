@@ -23,9 +23,9 @@ Before editing any code, please review the **[ARCHITECTURE.md](file:///E:/Files/
 * **No Plaintext Payloads:** Clipboard content is encrypted on the client side. The database fields `ciphertext` and `nonce` are base64-encoded binary blobs. Do not add logic attempting to decrypt, inspect, or format the content of these payloads on the server side.
 
 ### Rule 2: Soft Delete & Tombstones Pattern
-*   **No Direct DB Purges:** When an entry is deleted, it must be soft deleted. Set `is_deleted = True` and populate `deleted_at` with the server time. Do not run hard `DELETE` commands except for account deletion (`DELETE /delete`).
+*   **No Direct DB Purges:** When an entry is deleted, it must be soft deleted. Set `is_deleted = True` and populate `deleted_at` with the server time. Do not run hard `DELETE` commands except for account deletion (`DELETE /api/v1/delete`).
 *   **Retention Cleanup:** Tombstones are automatically cleaned up after 30 days (`TOMBSTONE_RETENTION_DAYS`). If you modify the cleanup logic or the database models, ensure the 30-day cutoff logic remains correct to prevent synchronization anomalies.
-*   **Pin System Preservation:** Bulk deletion requests (`DELETE /clipboard`) must preserve items that are pinned (`is_pinned = True`). Pinned items can only be deleted via targeted single-item deletion (`DELETE /clipboard/{id}`), which soft-deletes the item and sets `is_pinned = False`.
+*   **Pin System Preservation:** Bulk deletion requests (`DELETE /api/v1/clipboard`) must preserve items that are pinned (`is_pinned = True`). Pinned items can only be deleted via targeted single-item deletion (`DELETE /api/v1/clipboard/{id}`), which soft-deletes the item and sets `is_pinned = False`.
 *   **Deletion Broadcasts:** When a soft delete is triggered (either via REST API or WebSocket), a deletion notification must be broadcasted via WebSocket to all other connected client devices for that user:
   ```json
   {

@@ -12,10 +12,10 @@ Synclo is a real-time, secure, end-to-end encrypted clipboard synchronization se
 
 ```mermaid
 graph TD
-    Client1["Client Device 1 (Mobile/Desktop)"] <-->|WebSockets (wss/ws)| WS_End["WebSocket Endpoints"]
-    Client2["Client Device 2 (Mobile/Desktop)"] <-->|WebSockets (wss/ws)| WS_End
-    Client1 -->|REST HTTP Requests| REST_End["REST API Endpoints"]
-    Client2 -->|REST HTTP Requests| REST_End
+    Client1["Client Device 1 (Mobile/Desktop)"] ---|"WebSockets (wss/ws)"| WS_End["WebSocket Endpoints"]
+    Client2["Client Device 2 (Mobile/Desktop)"] ---|"WebSockets (wss/ws)"| WS_End
+    Client1 -->|"REST HTTP Requests"| REST_End["REST API Endpoints"]
+    Client2 -->|"REST HTTP Requests"| REST_End
     
     subgraph FastAPI ["Application Container"]
         WS_End
@@ -25,13 +25,13 @@ graph TD
         CleanupServ["Cleanup Service"]
     end
     
-    WS_End <--> Manager
+    WS_End --- Manager
     REST_End --> AuthServ
     WS_End --> DB[("SQLite Database")]
     REST_End --> DB
     CleanupServ --> DB
     
-    Manager <-->|Redis Pub/Sub| Redis[("Redis Cache & Pub/Sub")]
+    Manager ---|"Redis Pub/Sub"| Redis[("Redis Cache & Pub/Sub")]
 ```
 
 *   **REST HTTP Endpoints:** Handle authentication, session tokens, device registrations, and fallback manual clipboard transfers.
@@ -73,16 +73,16 @@ sequenceDiagram
     Client->>Client: Derive Derived Key (DK) = PBKDF2(Password, Salt, iterations=100,000)
     Client->>Client: Compute Auth Key (AK) = HMAC-SHA256(DK, "auth_key")
     Client->>Client: Encrypt Master Key (MK) using DK via AES-GCM -> Encrypted MK (EMK)
-    Client->>Server: POST /register (Email, AK, EMK, Salt, Device details)
+    Client->>Server: POST /api/v1/register (Email, AK, EMK, Salt, Device details)
     Note over Server: Bcrypt hashes Auth Key (AK)<br/>Stores record in DB
     Server-->>Client: Access Token (JWT) + Refresh Token
     
     Note over Client: Login Flow (Fresh Device / New Session)
-    Client->>Server: GET /auth/salt?email=user@example.com
+    Client->>Server: GET /api/v1/auth/salt?email=user@example.com
     Server-->>Client: KDF Salt
     Client->>Client: Derive DK = PBKDF2(Password, Salt, iterations=100,000)
     Client->>Client: Compute AK = HMAC-SHA256(DK, "auth_key")
-    Client->>Server: POST /login (Email, AK, Device details)
+    Client->>Server: POST /api/v1/login (Email, AK, Device details)
     Server-->>Client: Tokens + Encrypted MK (EMK)
     Client->>Client: Decrypt EMK using DK via AES-GCM -> Restores Master Key (MK)
 ```
@@ -90,14 +90,14 @@ sequenceDiagram
 #### A. Initial Registration
 1.  **Generate Local Secret Elements:** Generate a 256-bit `Master Key` and a random 128-bit `Salt` client-side.
 2.  **Key Derivation:** Derive a 256-bit `Derived Key` via PBKDF2-HMAC-SHA256 (100,000 iterations). Compute the `Auth Key` by taking the HMAC-SHA256 of the `Derived Key`:
-    $$\text{Auth Key} = \text{HMAC-SHA256}(\text{Derived Key}, \text{"auth\_key"})$$
+    $$\text{Auth Key} = \text{HMAC-SHA256}(\text{Derived Key}, \text{"auth\\_key"})$$
 3.  **Local Wrapping:** Encrypt the `Master Key` using the `Derived Key` via **AES-256-GCM** to output the `Encrypted Master Key`.
-4.  **Transmission:** Submit the base64-encoded `Auth Key`, `Encrypted Master Key`, `Salt`, KDF version, and device data to `POST /register`.
+4.  **Transmission:** Submit the base64-encoded `Auth Key`, `Encrypted Master Key`, `Salt`, KDF version, and device data to `POST /api/v1/register`.
 
 #### B. Logging In
-1.  **Retrieve Salt:** Query `GET /auth/salt?email=<email>` to fetch the KDF Salt.
+1.  **Retrieve Salt:** Query `GET /api/v1/auth/salt?email=<email>` to fetch the KDF Salt.
 2.  **Derivation:** Recompute the `Derived Key` and `Auth Key` using the password and salt.
-3.  **Authentication:** Send the base64-encoded `Auth Key` to `POST /login` alongside device identifiers.
+3.  **Authentication:** Send the base64-encoded `Auth Key` to `POST /api/v1/login` alongside device identifiers.
 4.  **Restore Session:** The login response yields the JWT session tokens and the stored `Encrypted Master Key`. Decrypt the `Encrypted Master Key` using the computed `Derived Key` via AES-256-GCM to restore the plaintext `Master Key` in the client's memory.
 
 #### C. Password Changing (Master Key Re-wrapping)
@@ -105,7 +105,7 @@ sequenceDiagram
 2.  Generate a new random `Salt`.
 3.  Derive the **new** `Derived Key` and **new** `Auth Key` using the new password and salt.
 4.  Re-encrypt (re-wrap) the raw `Master Key` (which remains unchanged to preserve existing database history) using the **new** `Derived Key` to create a **new** `Encrypted Master Key`.
-5.  Send the old and new key material to `POST /password/change`.
+5.  Send the old and new key material to `POST /api/v1/password/change`.
 
 > [!WARNING]
 > Do not change the `Master Key` during a password change. Doing so will invalidate all existing clipboard history stored in the database, making it impossible to decrypt them. Only re-wrap the existing Master Key using the new Derived Key.
@@ -116,8 +116,8 @@ sequenceDiagram
 
 To synchronize deletions to offline clients, Synclo uses a soft-deletion pattern:
 - **Tombstones:** Deleted clipboard items are not purged immediately. They are marked `is_deleted = True` and given a `deleted_at` server timestamp.
-- **Delta Sync:** Offline clients query `/clipboard/sync` using a `since` timestamp parameter. The server returns all clipboard updates (inserts, modifications, and tombstones) where `updated_at > since`.
-- **Pin System:** Active clipboard entries can be pinned (`is_pinned = True`), keeping them synchronized across devices. Pinned entries are bypassed and preserved during a bulk delete request (`DELETE /clipboard`). They are only soft-deleted when targeted specifically (`DELETE /clipboard/{id}`), which automatically sets `is_pinned = False`.
+- **Delta Sync:** Offline clients query `/api/v1/clipboard/sync` using a `since` timestamp parameter. The server returns all clipboard updates (inserts, modifications, and tombstones) where `updated_at > since`.
+- **Pin System:** Active clipboard entries can be pinned (`is_pinned = True`), keeping them synchronized across devices. Pinned entries are bypassed and preserved during a bulk delete request (`DELETE /api/v1/clipboard`). They are only soft-deleted when targeted specifically (`DELETE /api/v1/clipboard/{id}`), which automatically sets `is_pinned = False`.
 - **Retention Cleanup:** A background thread running every 24 hours purges tombstones older than `TOMBSTONE_RETENTION_DAYS` (default: 30 days) to prevent database bloating.
 - **Expired Sync Prevention:** If a client requests a delta sync with a `since` timestamp older than the 30-day retention cutoff, the server rejects it with `410 Gone`. The client is forced to wipe its local database and perform a fresh full sync.
 
@@ -127,7 +127,7 @@ To synchronize deletions to offline clients, Synclo uses a soft-deletion pattern
 
 The WebSocket endpoint provides push-based real-time clipboard synchronization across all authorized active devices.
 
-*   **Endpoint:** `ws://<HOST>/ws/clipboard` (local) or `wss://<HOST>/ws/clipboard` (production)
+*   **Endpoint:** `ws://<HOST>/ws/v1/clipboard` (local) or `wss://<HOST>/ws/v1/clipboard` (production)
 *   **Protocol Handshake:** Must include the header: `Authorization: Bearer <access_token>`.
 
 ### Message Protocols (JSON Frames)
@@ -206,7 +206,7 @@ All protected API endpoints require an Authorization Header: `Authorization: Bea
 
 ### Authentication Endpoints
 
-#### `GET /auth/salt`
+#### `GET /api/v1/auth/salt`
 Retrieves KDF parameters to begin key derivation for login.
 *   **Query Parameters:**
     *   `email` (string, required): The user's email address.
@@ -223,7 +223,7 @@ Retrieves KDF parameters to begin key derivation for login.
 
 ---
 
-#### `POST /register`
+#### `POST /api/v1/register`
 Registers a new user and registers the first device.
 *   **Request Body:**
     ```json
@@ -252,7 +252,7 @@ Registers a new user and registers the first device.
 
 ---
 
-#### `POST /login`
+#### `POST /api/v1/login`
 Logs in a user and registers/updates the device connection.
 *   **Request Body:**
     ```json
@@ -282,7 +282,7 @@ Logs in a user and registers/updates the device connection.
 
 ---
 
-#### `POST /logout`
+#### `POST /api/v1/logout`
 Logs out the current device and blacklists the current access token.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Request Body:**
@@ -300,7 +300,7 @@ Logs out the current device and blacklists the current access token.
 
 ---
 
-#### `POST /refresh`
+#### `POST /api/v1/refresh`
 Obtains a new Access/Refresh token pair using Refresh Token Rotation (RTR).
 *   **Request Body:**
     ```json
@@ -321,7 +321,7 @@ Obtains a new Access/Refresh token pair using Refresh Token Rotation (RTR).
 
 ---
 
-#### `POST /password/change`
+#### `POST /api/v1/password/change`
 Changes the user password and updates the wrapped master key.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Request Body:**
@@ -345,7 +345,7 @@ Changes the user password and updates the wrapped master key.
 
 ---
 
-#### `DELETE /delete`
+#### `DELETE /api/v1/delete`
 Permanently deletes the user account, all device records, and all clipboard history.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
@@ -359,7 +359,7 @@ Permanently deletes the user account, all device records, and all clipboard hist
 
 ### Device Management Endpoints
 
-#### `POST /devices/register`
+#### `POST /api/v1/devices/register`
 Manually adds a new device connection to the user account.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Request Body:**
@@ -383,7 +383,7 @@ Manually adds a new device connection to the user account.
 
 ---
 
-#### `GET /devices`
+#### `GET /api/v1/devices`
 Lists all active devices linked to the user account.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
@@ -399,7 +399,7 @@ Lists all active devices linked to the user account.
 
 ---
 
-#### `DELETE /devices/{device_id}`
+#### `DELETE /api/v1/devices/{device_id}`
 Removes a device, revokes its session tokens, and disconnects its active WebSocket.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
@@ -415,7 +415,7 @@ Removes a device, revokes its session tokens, and disconnects its active WebSock
 
 ### Clipboard Endpoints
 
-#### `POST /clipboard`
+#### `POST /api/v1/clipboard`
 Synchronizes or updates a clipboard item manually via REST.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Request Body:**
@@ -439,7 +439,7 @@ Synchronizes or updates a clipboard item manually via REST.
 
 ---
 
-#### `GET /clipboard`
+#### `GET /api/v1/clipboard`
 Fetches the latest active clipboard entry.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
@@ -461,7 +461,7 @@ Fetches the latest active clipboard entry.
 
 ---
 
-#### `GET /clipboard/all`
+#### `GET /api/v1/clipboard/all`
 Debug endpoint to retrieve all clipboard items.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Query Parameters:**
@@ -485,7 +485,7 @@ Debug endpoint to retrieve all clipboard items.
 
 ---
 
-#### `GET /clipboard/sync`
+#### `GET /api/v1/clipboard/sync`
 Delta sync endpoint for clients coming online to download changes.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Query Parameters:**
@@ -518,7 +518,7 @@ Delta sync endpoint for clients coming online to download changes.
 
 ---
 
-#### `DELETE /clipboard/{clipboard_id}`
+#### `DELETE /api/v1/clipboard/{clipboard_id}`
 Soft-deletes a single clipboard item (Idempotent).
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
@@ -530,7 +530,7 @@ Soft-deletes a single clipboard item (Idempotent).
 
 ---
 
-#### `DELETE /clipboard`
+#### `DELETE /api/v1/clipboard`
 Soft-deletes all currently active, unpinned clipboard entries (history clearing). Pinned entries are preserved and skipped.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
