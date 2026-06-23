@@ -189,6 +189,32 @@ If a device is deleted by another device via REST APIs:
 1.  Server sends JSON frame: `{"type": "device_deleted", "message": "This device has been removed from your account"}`
 2.  Server immediately closes connection with code `4003`.
 
+#### G. Device Added Notification (Server ➔ Other Clients)
+Pushed to other connected user devices when a new device is registered:
+```json
+{
+  "type": "device_added",
+  "device": {
+    "device_id": "unique_device_id_string",
+    "device_name": "My iPhone 15",
+    "os": "iOS"
+  }
+}
+```
+
+#### H. Device Updated Notification (Server ➔ Other Clients)
+Pushed to other connected user devices when an existing device updates its metadata (e.g. OS version during login):
+```json
+{
+  "type": "device_updated",
+  "device": {
+    "device_id": "unique_device_id_string",
+    "device_name": "My iPhone 15",
+    "os": "iOS"
+  }
+}
+```
+
 ### WebSocket Close Status Codes
 
 *   `1000`: Normal closure.
@@ -224,7 +250,9 @@ Retrieves KDF parameters to begin key derivation for login.
 ---
 
 #### `POST /api/v1/register`
-Registers a new user and registers the first device.
+Registers a new user and registers the first device (Async).
+> [!NOTE]
+> On successful user and device registration, the server broadcasts a `"device_added"` event over WebSockets to any other connected devices for this user.
 *   **Request Body:**
     ```json
     {
@@ -253,7 +281,10 @@ Registers a new user and registers the first device.
 ---
 
 #### `POST /api/v1/login`
-Logs in a user and registers/updates the device connection.
+Logs in a user and registers/updates the device connection (Async).
+> [!NOTE]
+> * If a new device is auto-registered during login, a `"device_added"` event is broadcasted.
+> * If an existing device updates its OS version during login, a `"device_updated"` event is broadcasted.
 *   **Request Body:**
     ```json
     {
@@ -360,7 +391,9 @@ Permanently deletes the user account, all device records, and all clipboard hist
 ### Device Management Endpoints
 
 #### `POST /api/v1/devices/register`
-Manually adds a new device connection to the user account.
+Manually adds a new device connection to the user account (Async).
+> [!NOTE]
+> On successful registration, the server broadcasts a `"device_added"` event over WebSockets to any other connected devices for this user.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Request Body:**
     ```json

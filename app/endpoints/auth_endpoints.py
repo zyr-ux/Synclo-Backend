@@ -76,7 +76,7 @@ def get_salt_for_email(email: str, db: Session = Depends(get_db)):
 
 
 @router.post("/register", response_model=Token, dependencies=[Depends(RateLimiter(times=3, seconds=60))])
-def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
+async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     # Validate device_id length/format
     if not (MIN_DEVICE_ID_LEN <= len(user.device_id) <= MAX_DEVICE_ID_LEN):
         raise HTTPException(status_code=400, detail="device_id length out of bounds")
@@ -159,6 +159,20 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
 
         db.commit()
 
+        # Broadcast to other connected devices (will be empty for a new user, but kept for architectural consistency)
+        await manager.broadcast_to_user(
+            user_id=new_user.id,
+            message={
+                "type": "device_added",
+                "device": {
+                    "device_id": new_device.device_id,
+                    "device_name": new_device.device_name,
+                    "os": new_device.os
+                }
+            },
+            exclude_device=user.device_id
+        )
+
     except IntegrityError:
         db.rollback()
         # Handle race where the same device_id or email slipped in between checks
@@ -179,7 +193,7 @@ def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=TokenWithE2EE, dependencies=[Depends(RateLimiter(times=5, seconds=60))])
-def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
+async def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
     if not db_user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -222,6 +236,19 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
             db.add(device)
             db.commit()
             db.refresh(device)
+            # Broadcast device_added to other devices
+            await manager.broadcast_to_user(
+                user_id=db_user_id,
+                message={
+                    "type": "device_added",
+                    "device": {
+                        "device_id": device.device_id,
+                        "device_name": device.device_name,
+                        "os": device.os
+                    }
+                },
+                exclude_device=user.device_id
+            )
         except IntegrityError:
             db.rollback()
             # Re-check ownership after rollback to surface proper error
@@ -240,6 +267,19 @@ def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
         _device.os = user.os
         db.commit()
         db.refresh(device)
+        # Broadcast device_updated to other devices
+        await manager.broadcast_to_user(
+            user_id=db_user_id,
+            message={
+                "type": "device_updated",
+                "device": {
+                    "device_id": _device.device_id,
+                    "device_name": _device.device_name,
+                    "os": _device.os
+                }
+            },
+            exclude_device=user.device_id
+        )
 
     access_token = create_access_token(
         data={"sub": user.email, "device_id": device.device_id},

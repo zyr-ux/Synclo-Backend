@@ -16,7 +16,7 @@ router = APIRouter()
 
 
 @router.post("/devices/register", response_model=DeviceOut, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
-def register_device(
+async def register_device(
     device: DeviceRegister,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -41,6 +41,18 @@ def register_device(
         db.add(new_device)
         db.commit()
         db.refresh(new_device)
+        # Broadcast to other connected devices
+        await manager.broadcast_to_user(
+            user_id=current_user_id,
+            message={
+                "type": "device_added",
+                "device": {
+                    "device_id": new_device.device_id,
+                    "device_name": new_device.device_name,
+                    "os": new_device.os
+                }
+            }
+        )
         return new_device
     except Exception:
         db.rollback()
