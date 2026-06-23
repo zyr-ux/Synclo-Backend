@@ -677,9 +677,109 @@ Monitors connection sockets in a thread-safe nested dictionary. Integrates Redis
 #### [main.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/main.py)
 Initializes the FastAPI application instance. Configures automatic migrations (`alembic upgrade head`), configures Redis connection pools, initializes rate limits, starts the 24h periodic cleanup loop, and sets up global exception handlers.
 
+## 7. Database Schema Reference
+
+Synclo uses SQLite as its primary database. The schema is optimized for E2EE payloads, real-time device tracking, and delta-based synchronizations. Below is a detailed view of the tables and their relations:
+
+```mermaid
+erDiagram
+    users {
+        int id PK
+        string user_id UK "UUID"
+        string email UK
+        string auth_key_hash
+        binary encrypted_master_key
+        binary salt
+        int kdf_version
+    }
+    devices {
+        int id PK
+        string device_id UK
+        string device_name
+        string os
+        string user_id FK "users.user_id"
+    }
+    clipboard {
+        int id PK
+        string clipboard_id UK
+        string user_id FK "users.user_id"
+        binary ciphertext
+        binary nonce
+        int blob_version
+        datetime timestamp
+        boolean is_deleted
+        datetime deleted_at
+        boolean is_pinned
+        datetime updated_at
+    }
+    refresh_tokens {
+        int id PK
+        string user_id FK "users.user_id"
+        string token UK
+        datetime expiry
+        string device_id
+        string token_id "Rotation family ID"
+        boolean is_revoked
+    }
+    blacklisted_tokens {
+        int id PK
+        string token UK
+        datetime expiry
+    }
+
+    users ||--o{ devices : owns
+    users ||--o{ clipboard : possesses
+    users ||--o{ refresh_tokens : has
+```
+
+### Table Definitions
+
+#### A. `users` Table
+*   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary identifier.
+*   **`user_id`** (`String`, Unique, Index, Not Null): Public UUID string used as the primary identifier for database relationships and logs.
+*   **`email`** (`String`, Unique, Index, Not Null): The user's registered email address.
+*   **`auth_key_hash`** (`String`, Not Null): Bcrypt hash of the HKDF client-derived auth key.
+*   **`encrypted_master_key`** (`LargeBinary`, Not Null): Client-wrapped master decryption key (AES-256-GCM encrypted).
+*   **`salt`** (`LargeBinary`, Not Null): 16-byte KDF salt used during password hashing.
+*   **`kdf_version`** (`Integer`, Not Null, Default `1`): Argon2/PBKDF2 settings version.
+
+#### B. `devices` Table
+*   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary identifier.
+*   **`device_id`** (`String`, Unique, Index, Not Null): Client-generated unique device string.
+*   **`device_name`** (`String`): Friendly name assigned to the device.
+*   **`os`** (`String`, Nullable): Device OS metadata.
+*   **`user_id`** (`String`, FK, Index): References `users.user_id` (UUID).
+
+#### C. `clipboard` Table
+*   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary key (renamed from `index`).
+*   **`clipboard_id`** (`String`, Unique, Index, Not Null): Client-generated item UUID (renamed from `id`).
+*   **`user_id`** (`String`, FK): References `users.user_id` (UUID).
+*   **`ciphertext`** (`LargeBinary`, Nullable): Encrypted clipboard content (purged/null when soft-deleted).
+*   **`nonce`** (`LargeBinary`, Nullable): AES-GCM IV (purged/null when soft-deleted).
+*   **`blob_version`** (`Integer`, Not Null, Default `1`): Encrypted payload structural schema version.
+*   **`timestamp`** (`DateTime`): Client-side copying event timestamp.
+*   **`is_deleted`** (`Boolean`, Index): Indicates if the item is a soft-deleted tombstone.
+*   **`deleted_at`** (`DateTime`, Index, Nullable): Server timestamp of soft-deletion.
+*   **`is_pinned`** (`Boolean`, Index, Not Null, Default `0`): Protects items from bulk clear operations.
+*   **`updated_at`** (`DateTime`, Index, Not Null): Server modification time used for offline client delta updates.
+
+#### D. `refresh_tokens` Table
+*   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary identifier.
+*   **`user_id`** (`String`, FK): References `users.user_id` (UUID).
+*   **`token`** (`String`, Unique, Index): HMAC-SHA256 hash of the refresh token string.
+*   **`expiry`** (`DateTime`, Index): Expiration timestamp.
+*   **`device_id`** (`String`, Not Null): ID of the device associated with this session token.
+*   **`token_id`** (`String`, Index, Not Null): Token family ID used for Rotation & Theft Detection (renamed from `family_id`).
+*   **`is_revoked`** (`Boolean`, Default `False`): Tracks whether token has already been rotated.
+
+#### E. `blacklisted_tokens` Table
+*   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary identifier.
+*   **`token`** (`String`, Unique, Not Null): Invalidated access token value.
+*   **`expiry`** (`DateTime`, Index, Not Null): Expiration time of token.
+
 ---
 
-## 7. Database Schema Migration & Infrastructure
+## 8. Database Schema Migration & Infrastructure
 
 - **[alembic.ini](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/alembic.ini):** Configures Alembic migration routes.
 - **[Dockerfile](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/Dockerfile):** Builds the standard Docker image using a `python:3.12-slim` base image.
