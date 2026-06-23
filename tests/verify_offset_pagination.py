@@ -49,7 +49,7 @@ class TestOffsetPagination(unittest.TestCase):
         
         # Make some dummy entries
         entry1 = Clipboard(
-            id="uuid-1", 
+            clipboard_id="uuid-1", 
             ciphertext=b"data1", 
             nonce=b"nonce1", 
             blob_version=1, 
@@ -59,7 +59,7 @@ class TestOffsetPagination(unittest.TestCase):
             is_pinned=False
         )
         entry2 = Clipboard(
-            id="uuid-2", 
+            clipboard_id="uuid-2", 
             ciphertext=b"data2", 
             nonce=b"nonce2", 
             blob_version=1, 
@@ -71,7 +71,7 @@ class TestOffsetPagination(unittest.TestCase):
         
         mock_step3.limit.return_value.all.return_value = [entry1, entry2]
         
-        mock_user = User(id=1, email="test@test.com")
+        mock_user = User(id=1, email="test@test.com", user_id="user-uuid-1")
         
         # Run Function
         response = self.get_clipboard_sync(
@@ -98,7 +98,7 @@ class TestOffsetPagination(unittest.TestCase):
         # Mock returning empty list
         mock_db.query.return_value.filter.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
         
-        mock_user = User(id=1)
+        mock_user = User(id=1, user_id="user-uuid-1")
         
         response = get_sync_clipboard(
             since=None,

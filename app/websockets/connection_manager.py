@@ -6,23 +6,23 @@ import json
 class ConnectionManager:
     def __init__(self):
         # Structure: { user_id: { device_id: websocket } }
-        self.active_connections: Dict[int, Dict[str, WebSocket]] = {}
+        self.active_connections: Dict[str, Dict[str, WebSocket]] = {}
         self.redis: Optional[Any] = None
         self._listener_task: Optional[asyncio.Task] = None
         self._node_id = id(self)
 
-    async def connect(self, user_id: int, device_id: str, websocket: WebSocket):
+    async def connect(self, user_id: str, device_id: str, websocket: WebSocket):
         if user_id not in self.active_connections:
             self.active_connections[user_id] = {}
         self.active_connections[user_id][device_id] = websocket
 
-    def disconnect(self, user_id: int, device_id: str):
+    def disconnect(self, user_id: str, device_id: str):
         if user_id in self.active_connections:
             self.active_connections[user_id].pop(device_id, None)
             if not self.active_connections[user_id]:
                 self.active_connections.pop(user_id, None)
 
-    async def disconnect_device(self, user_id: int, device_id: str):
+    async def disconnect_device(self, user_id: str, device_id: str):
         """Forcefully disconnect a specific device (e.g., when deleted remotely)."""
         if user_id in self.active_connections:
             ws = self.active_connections[user_id].get(device_id)
@@ -42,7 +42,7 @@ class ConnectionManager:
                     # Always clean up the connection
                     self.disconnect(user_id, device_id)
 
-    async def disconnect_user(self, user_id: int):
+    async def disconnect_user(self, user_id: str):
         #Forcefully disconnect all devices for a user.
         if user_id in self.active_connections:
             # Create a list of items to iterate safely while modifying the dict
@@ -50,10 +50,10 @@ class ConnectionManager:
                 await ws.close(code=4000)
                 self.disconnect(user_id, device_id)
 
-    def get_user_devices(self, user_id: int) -> Dict[str, WebSocket]:
+    def get_user_devices(self, user_id: str) -> Dict[str, WebSocket]:
         return self.active_connections.get(user_id, {})
 
-    async def broadcast_to_user(self, user_id: int, message: dict, exclude_device: Optional[str] = None):
+    async def broadcast_to_user(self, user_id: str, message: dict, exclude_device: Optional[str] = None):
         await self._broadcast_local(user_id, message, exclude_device)
 
         if self.redis:
@@ -65,7 +65,7 @@ class ConnectionManager:
             }
             await self.redis.publish(self._channel(user_id), json.dumps(envelope))
 
-    async def _broadcast_local(self, user_id: int, message: dict, exclude_device: Optional[str] = None):
+    async def _broadcast_local(self, user_id: str, message: dict, exclude_device: Optional[str] = None):
         # Iterate over a copy of items to prevent runtime errors if connections drop during broadcast
         for device_id, ws in list(self.get_user_devices(user_id).items()):
             if device_id != exclude_device:

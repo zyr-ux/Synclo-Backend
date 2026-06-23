@@ -75,7 +75,7 @@ async def websocket_sync(websocket: WebSocket):
             return
 
         # Check if device belongs to this user
-        device = db.query(Device).filter_by(user_id=user.id, device_id=device_id).first()
+        device = db.query(Device).filter_by(user_id=user.user_id, device_id=device_id).first()
         if not device:
             logger.warning(f"WebSocket connection attempted with unauthorized device {device_id} for user {email}")
             await websocket.send_json({"type": "error", "message": "Unauthorized device"})
@@ -84,7 +84,7 @@ async def websocket_sync(websocket: WebSocket):
         
         # Store user_id for use in the connection
         _ws_user: Any = user
-        user_id: int = _ws_user.id
+        user_id: str = _ws_user.user_id
     finally:
         db.close()
 
@@ -187,7 +187,7 @@ async def websocket_sync(websocket: WebSocket):
             def save_clipboard_entry():
                 session = SessionLocal()
                 try:
-                    existing = session.query(Clipboard).filter_by(id=msg_id, user_id=user_id).first()
+                    existing = session.query(Clipboard).filter_by(clipboard_id=msg_id, user_id=user_id).first()
 
                     if existing:
                         _ex: Any = existing
@@ -210,7 +210,7 @@ async def websocket_sync(websocket: WebSocket):
 
                         session.commit()
                         return {
-                            "id": _ex.id,
+                            "id": _ex.clipboard_id,
                             "timestamp": _ex.timestamp,
                             "is_deleted": _ex.is_deleted,
                             "is_pinned": _ex.is_pinned,
@@ -218,7 +218,7 @@ async def websocket_sync(websocket: WebSocket):
                         }
                     else:
                         new_entry = Clipboard(
-                            id=msg_id,
+                            clipboard_id=msg_id,
                             user_id=user_id,
                             ciphertext=ciphertext_bytes,
                             nonce=nonce_bytes,
@@ -233,7 +233,7 @@ async def websocket_sync(websocket: WebSocket):
                         session.commit()
                         _ne: Any = new_entry
                         return {
-                            "id": _ne.id,
+                            "id": _ne.clipboard_id,
                             "timestamp": _ne.timestamp,
                             "is_deleted": _ne.is_deleted,
                             "is_pinned": _ne.is_pinned,

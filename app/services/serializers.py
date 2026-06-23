@@ -23,7 +23,7 @@ def clipboard_to_response(entry: Clipboard) -> ClipboardOut:
     """
     e: Any = entry
     return ClipboardOut(
-        id=e.id,
+        id=e.clipboard_id,
         ciphertext=base64.b64encode(e.ciphertext).decode('utf-8') if e.ciphertext else None,
         nonce=base64.b64encode(e.nonce).decode('utf-8') if e.nonce else None,
         blob_version=e.blob_version,

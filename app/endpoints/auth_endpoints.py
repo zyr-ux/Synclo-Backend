@@ -115,6 +115,7 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     try:
         # Create new user with E2EE key material
         new_user = User(
+            user_id=str(uuid4()),
             email=user.email,
             auth_key_hash=auth_key_hash,
             encrypted_master_key=encrypted_mk_bytes,
@@ -129,7 +130,7 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
             device_id=user.device_id,
             device_name=user.device_name,
             os=user.os,
-            user_id=new_user.id
+            user_id=new_user.user_id
         )
         db.add(new_device)
         db.flush()
@@ -145,15 +146,15 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
         hashed_refresh = hash_refresh_token(plain_refresh_token)
         refresh_expiry = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
-        # Generate family ID
-        family_id = str(uuid4())
+        # Generate token ID
+        token_id = str(uuid4())
 
         db.add(RefreshToken(
-            user_id=new_user.id,
+            user_id=new_user.user_id,
             token=hashed_refresh,
             expiry=refresh_expiry,
             device_id=user.device_id,
-            family_id=family_id,
+            token_id=token_id,
             is_revoked=False
         ))
 
@@ -215,7 +216,7 @@ async def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
     cleanup_expired_refresh_tokens(db)
 
     _db_user: Any = db_user
-    db_user_id: int = _db_user.id
+    db_user_id: str = _db_user.user_id
 
     device = db.query(Device).filter_by(device_id=user.device_id, user_id=db_user_id).first()
     if not device:
@@ -290,8 +291,8 @@ async def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
     hashed_refresh = hash_refresh_token(plain_refresh_token)
     refresh_expiry = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     
-    # Generate a new family ID for this login session
-    family_id = str(uuid4())
+    # Generate a new token ID for this login session
+    token_id = str(uuid4())
 
     # Remove any existing tokens for this device to start fresh
     db.query(RefreshToken).filter_by(
@@ -304,7 +305,7 @@ async def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
         token=hashed_refresh,
         expiry=refresh_expiry,
         device_id=user.device_id,
-        family_id=family_id,  # Start new family
+        token_id=token_id,  # Start new token chain
         is_revoked=False
     ))
     db.commit()
@@ -373,7 +374,7 @@ def refresh_token(
     # 2. REUSE DETECTION: If token is already revoked, it's a theft attempt!
     if _te.is_revoked:
         # Security Alert: Delete the ENTIRE family to lock out the attacker
-        db.query(RefreshToken).filter(RefreshToken.family_id == _te.family_id).delete()
+        db.query(RefreshToken).filter(RefreshToken.token_id == _te.token_id).delete()
         db.commit()
         raise HTTPException(status_code=401, detail="Refresh token reused. Security alert: Session terminated.")
 
@@ -384,10 +385,10 @@ def refresh_token(
     if expiry_utc < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="Expired refresh token")
 
-    user_id: int = _te.user_id
+    user_id: str = _te.user_id
     device_id: str = _te.device_id
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -412,7 +413,7 @@ def refresh_token(
         token=new_refresh_hashed,
         expiry=new_expiry,
         device_id=device_id,
-        family_id=_te.family_id, # Maintain the chain
+        token_id=_te.token_id, # Maintain the chain
         is_revoked=False
     ))
     db.commit()
@@ -430,7 +431,7 @@ async def delete_account(
     current_user: User = Depends(get_current_user)
 ):
     _cu: Any = current_user
-    user_id: int = _cu.id
+    user_id: str = _cu.user_id
     # Delete user's clipboard data
     db.query(Clipboard).filter_by(user_id=user_id).delete()
 
@@ -441,7 +442,7 @@ async def delete_account(
     db.query(RefreshToken).filter_by(user_id=user_id).delete()
 
     # Delete user record
-    db.query(User).filter_by(id=user_id).delete()
+    db.query(User).filter_by(user_id=user_id).delete()
 
     db.commit()
 

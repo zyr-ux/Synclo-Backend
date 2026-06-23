@@ -24,7 +24,7 @@ def cleanup_expired_refresh_tokens(db: Session):
         # Table may not exist if migrations haven't run yet
         pass
 
-def cleanup_old_clipboard_entries(user_id: int, db: Session):
+def cleanup_old_clipboard_entries(user_id: str, db: Session):
     # Active items are now retained indefinitely.
     # This function is kept for signature compatibility but does nothing.
     pass

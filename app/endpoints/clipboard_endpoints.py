@@ -32,7 +32,7 @@ def sync_clipboard(
     current_user: User = Depends(get_current_user)
 ):
     _cu: Any = current_user
-    user_id: int = _cu.id
+    user_id: str = _cu.user_id
     # Clean old entries even on write to avoid unbounded growth if user never reads
     cleanup_old_clipboard_entries(user_id, db)
 
@@ -56,7 +56,7 @@ def sync_clipboard(
     new_timestamp = data.timestamp.replace(tzinfo=None) # Ensure naive for DB comparison if needed
 
     # Upsert Logic: Check if ID exists
-    existing_entry = db.query(Clipboard).filter_by(id=data.id, user_id=user_id).first()
+    existing_entry = db.query(Clipboard).filter_by(clipboard_id=data.id, user_id=user_id).first()
 
     if existing_entry:
         # Update existing
@@ -68,11 +68,11 @@ def sync_clipboard(
         _e.is_pinned = data.is_pinned
         _e.updated_at = datetime.now(timezone.utc)
         db.commit()
-        return {"status": "clipboard updated", "id": _e.id}
+        return {"status": "clipboard updated", "id": _e.clipboard_id}
     else:
         # Insert new
         new_entry = Clipboard(
-            id=data.id, # Use Client ID
+            clipboard_id=data.id, # Use Client ID
             user_id=user_id,
             ciphertext=ciphertext_bytes,
             nonce=nonce_bytes,
@@ -85,7 +85,7 @@ def sync_clipboard(
         db.commit()
 
         _ne: Any = new_entry
-        return {"status": "clipboard synced", "id": _ne.id}
+        return {"status": "clipboard synced", "id": _ne.clipboard_id}
 
 
 @router.get("/clipboard", response_model=ClipboardOut, dependencies=[Depends(RateLimiter(times=30, seconds=60))])
@@ -94,7 +94,7 @@ def get_clipboard(
     current_user: User = Depends(get_current_user)
 ):
     _cu: Any = current_user
-    user_id: int = _cu.id
+    user_id: str = _cu.user_id
     cleanup_old_clipboard_entries(user_id, db)
 
     entry = (
@@ -116,7 +116,7 @@ def get_clipboard_all(
     current_user: User = Depends(get_current_user)
 ):
     _cu: Any = current_user
-    query = db.query(Clipboard).filter_by(user_id=_cu.id)
+    query = db.query(Clipboard).filter_by(user_id=_cu.user_id)
 
     # Default behavior: exclude deleted items unless explicitly requested
     if not include_deleted:
@@ -152,7 +152,7 @@ def get_sync_clipboard(
             raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
 
     _cu: Any = current_user
-    query = db.query(Clipboard).filter(Clipboard.user_id == _cu.id)
+    query = db.query(Clipboard).filter(Clipboard.user_id == _cu.user_id)
     
     if since:
          # Ensure since is offset-aware UTC or naive treated as UTC
@@ -181,9 +181,9 @@ async def delete_clipboard_entry(
     current_user: User = Depends(get_current_user)
 ):
     _cu: Any = current_user
-    user_id: int = _cu.id
+    user_id: str = _cu.user_id
     # Idempotency: Check if item exists (tombstone or active)
-    entry = db.query(Clipboard).filter_by(id=clipboard_id, user_id=user_id).first()
+    entry = db.query(Clipboard).filter_by(clipboard_id=clipboard_id, user_id=user_id).first()
 
     # If not found, return success (idempotent)
     if not entry:
@@ -226,7 +226,7 @@ async def delete_clipboard_history(
 ):
     # Soft delete all active entries
     _cu: Any = current_user
-    user_id: int = _cu.id
+    user_id: str = _cu.user_id
     active_entries = db.query(Clipboard).filter_by(
         user_id=user_id,
         is_deleted=False,
@@ -244,7 +244,7 @@ async def delete_clipboard_history(
         _e.is_deleted = True
         _e.deleted_at = now
         _e.updated_at = now
-        clipboard_ids.append(_e.id)
+        clipboard_ids.append(_e.clipboard_id)
         
     db.commit()
     

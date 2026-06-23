@@ -69,7 +69,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
             raise credentials_exception
         
         # Verify that device is registered for the user
-        if not db.query(Device).filter_by(user_id=user.id, device_id=device_id).first():
+        if not db.query(Device).filter_by(user_id=user.user_id, device_id=device_id).first():
             raise HTTPException(status_code=403, detail="Unauthorized device")
         
         return user
@@ -96,7 +96,7 @@ def get_user_from_token_ws(token: str):
             return None
 
         # Check if device belongs to this user
-        device = db.query(Device).filter_by(user_id=user.id, device_id=device_id).first()
+        device = db.query(Device).filter_by(user_id=user.user_id, device_id=device_id).first()
         
         if device is None:
             return None

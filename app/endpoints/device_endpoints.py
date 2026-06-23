@@ -24,7 +24,7 @@ async def register_device(
     if not (MIN_DEVICE_ID_LEN <= len(device.device_id) <= MAX_DEVICE_ID_LEN):
         raise HTTPException(status_code=400, detail="device_id length out of bounds")
     _cu: Any = current_user
-    current_user_id: int = _cu.id
+    current_user_id: str = _cu.user_id
     existing = db.query(Device).filter(Device.device_id == device.device_id).first()
     _ex: Any = existing
     if existing:
@@ -71,7 +71,7 @@ def get_devices(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    return db.query(Device).filter(Device.user_id == current_user.id).all()
+    return db.query(Device).filter(Device.user_id == current_user.user_id).all()
 
 
 @router.delete("/devices/{device_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
@@ -81,7 +81,7 @@ async def delete_device(
     current_user: User = Depends(get_current_user)
 ):
     _cu: Any = current_user
-    user_id: int = _cu.id
+    user_id: str = _cu.user_id
     # Lookup the device owned by this user
     device = db.query(Device).filter_by(device_id=device_id, user_id=user_id).first()
 

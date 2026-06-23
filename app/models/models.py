@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from uuid import uuid4
 from sqlalchemy import Column, Integer, String, ForeignKey, LargeBinary, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -6,6 +7,7 @@ from app.core.database import Base
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, unique=True, index=True, nullable=False, default=lambda: str(uuid4()))
     email = Column(String, unique=True, index=True, nullable=False)
     auth_key_hash = Column(String, nullable=False)  # bcrypt hash of client-derived auth key
     encrypted_master_key = Column(LargeBinary, nullable=False)
@@ -19,15 +21,15 @@ class Device(Base):
     device_id = Column(String, unique=True, index=True, nullable=False)
     device_name = Column(String)
     os = Column(String, nullable=True)
-    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    user_id = Column(String, ForeignKey("users.user_id"), index=True)
 
     owner = relationship("User", back_populates="devices")
 
 class Clipboard(Base):
     __tablename__ = "clipboard"
-    index = Column(Integer, primary_key=True, index=True)  # Auto-increment index; id is the business identifier
-    id = Column(String, unique=True, index=True, nullable=False) # UUID business identifier
-    user_id = Column(Integer, ForeignKey("users.id"))
+    id = Column(Integer, primary_key=True, index=True)  # Auto-increment database index
+    clipboard_id = Column(String, unique=True, index=True, nullable=False) # UUID business identifier
+    user_id = Column(String, ForeignKey("users.user_id"))
     ciphertext = Column(LargeBinary, nullable=True)
     nonce = Column(LargeBinary, nullable=True)
     blob_version = Column(Integer, nullable=False, default=1)
@@ -42,13 +44,13 @@ class Clipboard(Base):
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
+    user_id = Column(String, ForeignKey("users.user_id"))
     token = Column(String, unique=True, index=True)
     expiry = Column(DateTime, index=True)
     device_id = Column(String, nullable=False)
     
     # New fields for rotation & reuse detection
-    family_id = Column(String, index=True, nullable=False)
+    token_id = Column(String, index=True, nullable=False)
     is_revoked = Column(Boolean, default=False)
 
     user = relationship("User")
