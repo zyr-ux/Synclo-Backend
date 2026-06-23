@@ -55,7 +55,8 @@ class TestOffsetPagination(unittest.TestCase):
             blob_version=1, 
             timestamp=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
-            is_deleted=False
+            is_deleted=False,
+            is_pinned=False
         )
         entry2 = Clipboard(
             id="uuid-2", 
@@ -64,7 +65,8 @@ class TestOffsetPagination(unittest.TestCase):
             blob_version=1, 
             timestamp=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
-            is_deleted=False
+            is_deleted=False,
+            is_pinned=False
         )
         
         mock_step3.limit.return_value.all.return_value = [entry1, entry2]

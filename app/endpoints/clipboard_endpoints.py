@@ -65,6 +65,7 @@ def sync_clipboard(
         _e.nonce = nonce_bytes
         _e.blob_version = data.blob_version
         _e.timestamp = new_timestamp
+        _e.is_pinned = data.is_pinned
         _e.updated_at = datetime.now(timezone.utc)
         db.commit()
         return {"status": "clipboard updated", "id": _e.id}
@@ -77,6 +78,7 @@ def sync_clipboard(
             nonce=nonce_bytes,
             blob_version=data.blob_version,
             timestamp=new_timestamp, # Use Client Timestamp
+            is_pinned=data.is_pinned,
             updated_at=datetime.now(timezone.utc)
         )
         db.add(new_entry)
@@ -194,6 +196,7 @@ async def delete_clipboard_entry(
 
     # Soft Delete
     _entry.is_deleted = True
+    _entry.is_pinned = False
     _entry.deleted_at = datetime.now(timezone.utc)
     _entry.updated_at = datetime.now(timezone.utc)
     db.commit()
@@ -204,6 +207,7 @@ async def delete_clipboard_entry(
         message={
             "id": clipboard_id,
             "is_deleted": True,
+            "is_pinned": False,
             "timestamp": _entry.deleted_at.isoformat() + "Z",
             "ciphertext": None,
             "nonce": None,
@@ -225,7 +229,8 @@ async def delete_clipboard_history(
     user_id: int = _cu.id
     active_entries = db.query(Clipboard).filter_by(
         user_id=user_id,
-        is_deleted=False
+        is_deleted=False,
+        is_pinned=False
     ).all()
 
     if not active_entries:
@@ -250,6 +255,7 @@ async def delete_clipboard_history(
             message={
                 "id": clipboard_id,
                 "is_deleted": True,
+                "is_pinned": False,
                 "timestamp": now.isoformat() + "Z",
                 "ciphertext": None,
                 "nonce": None,

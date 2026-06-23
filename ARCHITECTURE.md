@@ -117,6 +117,7 @@ sequenceDiagram
 To synchronize deletions to offline clients, Synclo uses a soft-deletion pattern:
 - **Tombstones:** Deleted clipboard items are not purged immediately. They are marked `is_deleted = True` and given a `deleted_at` server timestamp.
 - **Delta Sync:** Offline clients query `/clipboard/sync` using a `since` timestamp parameter. The server returns all clipboard updates (inserts, modifications, and tombstones) where `updated_at > since`.
+- **Pin System:** Active clipboard entries can be pinned (`is_pinned = True`), keeping them synchronized across devices. Pinned entries are bypassed and preserved during a bulk delete request (`DELETE /clipboard`). They are only soft-deleted when targeted specifically (`DELETE /clipboard/{id}`), which automatically sets `is_pinned = False`.
 - **Retention Cleanup:** A background thread running every 24 hours purges tombstones older than `TOMBSTONE_RETENTION_DAYS` (default: 30 days) to prevent database bloating.
 - **Expired Sync Prevention:** If a client requests a delta sync with a `since` timestamp older than the 30-day retention cutoff, the server rejects it with `410 Gone`. The client is forced to wipe its local database and perform a fresh full sync.
 
@@ -140,7 +141,8 @@ When the client copies a text, it encrypts the data using the `Master Key` (AES-
   "ciphertext": "dGhpcyBpcyBzZWNyZXQ...",
   "nonce": "YTM4OTJkOWM...",
   "blob_version": 1,
-  "is_deleted": false
+  "is_deleted": false,
+  "is_pinned": false
 }
 ```
 
@@ -173,7 +175,8 @@ Broadcasts incoming changes/tombstones to other devices. For deletions:
   "ciphertext": null,
   "nonce": null,
   "blob_version": 1,
-  "is_deleted": true
+  "is_deleted": true,
+  "is_pinned": false
 }
 ```
 
@@ -422,7 +425,8 @@ Synchronizes or updates a clipboard item manually via REST.
       "ciphertext": "base64_encoded_ciphertext",
       "nonce": "base64_encoded_nonce",
       "blob_version": 1,
-      "timestamp": "2026-06-14T14:15:30Z"
+      "timestamp": "2026-06-14T14:15:30Z",
+      "is_pinned": false
     }
     ```
 *   **Response (200 OK):**
@@ -448,7 +452,8 @@ Fetches the latest active clipboard entry.
       "timestamp": "2026-06-14T14:15:30Z",
       "updated_at": "2026-06-14T14:15:31Z",
       "is_deleted": false,
-      "deleted_at": null
+      "deleted_at": null,
+      "is_pinned": false
     }
     ```
 *   **Errors:**
@@ -460,7 +465,7 @@ Fetches the latest active clipboard entry.
 Debug endpoint to retrieve all clipboard items.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Query Parameters:**
-    *   `include_deleted` (boolean, optional, default: `false`): Include deleted tombstones in response.
+*   `include_deleted` (boolean, optional, default: `false`): Include deleted tombstones in response.
 *   **Response (200 OK):**
     ```json
     [
@@ -472,7 +477,8 @@ Debug endpoint to retrieve all clipboard items.
         "timestamp": "2026-06-14T14:15:30Z",
         "updated_at": "2026-06-14T14:15:31Z",
         "is_deleted": false,
-        "deleted_at": null
+        "deleted_at": null,
+        "is_pinned": false
       }
     ]
     ```
@@ -498,7 +504,8 @@ Delta sync endpoint for clients coming online to download changes.
           "timestamp": "2026-06-14T14:15:30Z",
           "updated_at": "2026-06-14T14:18:01Z",
           "is_deleted": true,
-          "deleted_at": "2026-06-14T14:18:00Z"
+          "deleted_at": "2026-06-14T14:18:00Z",
+          "is_pinned": false
         }
       ],
       "next_offset": 1,
@@ -524,7 +531,7 @@ Soft-deletes a single clipboard item (Idempotent).
 ---
 
 #### `DELETE /clipboard`
-Soft-deletes all currently active clipboard entries (history clearing).
+Soft-deletes all currently active, unpinned clipboard entries (history clearing). Pinned entries are preserved and skipped.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
     ```json
@@ -532,7 +539,7 @@ Soft-deletes all currently active clipboard entries (history clearing).
       "message": "15 clipboard entries deleted."
     }
     ```
-    *(Returns `{"message": "No clipboard entries to delete."}` if history is already empty)*
+    *(Returns `{"message": "No clipboard entries to delete."}` if history is already empty or only contains pinned items)*
 
 ---
 

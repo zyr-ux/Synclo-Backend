@@ -30,5 +30,6 @@ def clipboard_to_response(entry: Clipboard) -> ClipboardOut:
         timestamp=e.timestamp,
         updated_at=e.updated_at,
         is_deleted=e.is_deleted,
-        deleted_at=e.deleted_at
+        deleted_at=e.deleted_at,
+        is_pinned=e.is_pinned if getattr(e, 'is_pinned', None) is not None else False
     )

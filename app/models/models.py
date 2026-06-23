@@ -34,6 +34,7 @@ class Clipboard(Base):
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_deleted = Column(Boolean, default=False, index=True)
     deleted_at = Column(DateTime, nullable=True, index=True)
+    is_pinned = Column(Boolean, default=False, server_default="0", index=True, nullable=False)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True, nullable=False)
 
     owner = relationship("User")

@@ -132,6 +132,7 @@ async def websocket_clipboard(websocket: WebSocket):
             msg_id = data.get("id")
             # Client determines deletion status
             is_deleted = data.get("is_deleted", False)
+            is_pinned = data.get("is_pinned", False)
             
             msg_ts_str = data.get("timestamp")
             ciphertext = data.get("ciphertext")
@@ -197,11 +198,13 @@ async def websocket_clipboard(websocket: WebSocket):
                         if is_deleted:
                             _ex.ciphertext = None
                             _ex.nonce = None
+                            _ex.is_pinned = False
                             _ex.deleted_at = msg_ts
                             _ex.updated_at = datetime.now(timezone.utc)
                         else:
                             _ex.ciphertext = ciphertext_bytes
                             _ex.nonce = nonce_bytes
+                            _ex.is_pinned = is_pinned
                             _ex.deleted_at = None
                             _ex.updated_at = datetime.now(timezone.utc)
 
@@ -210,6 +213,7 @@ async def websocket_clipboard(websocket: WebSocket):
                             "id": _ex.id,
                             "timestamp": _ex.timestamp,
                             "is_deleted": _ex.is_deleted,
+                            "is_pinned": _ex.is_pinned,
                             "blob_version": _ex.blob_version
                         }
                     else:
@@ -221,6 +225,7 @@ async def websocket_clipboard(websocket: WebSocket):
                             blob_version=blob_version,
                             timestamp=msg_ts,
                             is_deleted=is_deleted,
+                            is_pinned=is_pinned if not is_deleted else False,
                             deleted_at=msg_ts if is_deleted else None,
                             updated_at=datetime.now(timezone.utc)
                         )
@@ -231,6 +236,7 @@ async def websocket_clipboard(websocket: WebSocket):
                             "id": _ne.id,
                             "timestamp": _ne.timestamp,
                             "is_deleted": _ne.is_deleted,
+                            "is_pinned": _ne.is_pinned,
                             "blob_version": _ne.blob_version
                         }
                 except Exception as e:
@@ -251,6 +257,7 @@ async def websocket_clipboard(websocket: WebSocket):
                 "id": entry_data["id"],
                 "timestamp": entry_data["timestamp"].isoformat(),
                 "is_deleted": entry_data["is_deleted"],
+                "is_pinned": entry_data["is_pinned"],
                 "blob_version": entry_data["blob_version"]
             }
             

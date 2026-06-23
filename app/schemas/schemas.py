@@ -22,6 +22,7 @@ class ClipboardIn(BaseModel):
     blob_version: int = 1
     timestamp: datetime  # Client-generated timestamp (ISO 8601)
     is_deleted: bool = False
+    is_pinned: bool = False
 
 class ClipboardOut(BaseModel):
     id: str
@@ -32,6 +33,7 @@ class ClipboardOut(BaseModel):
     updated_at: datetime
     is_deleted: bool = False
     deleted_at: Optional[datetime] = None
+    is_pinned: bool = False
 
 
 
