@@ -132,6 +132,9 @@ python -m tests.verify_device_os
 
 # Verify offset pagination and sync stability
 python -m tests.verify_offset_pagination
+
+# Verify clipboard pin system logic
+python -m tests.verify_clipboard_pin
 ```
 
 Ensure you have your virtual environment active and dependencies installed prior to running tests.

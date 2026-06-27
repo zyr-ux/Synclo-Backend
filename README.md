@@ -94,6 +94,7 @@ Verify that your local changes do not break core logic by running:
 python -m tests.verify_delta_sync
 python -m tests.verify_device_os
 python -m tests.verify_offset_pagination
+python -m tests.verify_clipboard_pin
 ```
 
 ---
