@@ -576,12 +576,15 @@ Soft-deletes all currently active, unpinned clipboard entries (history clearing)
 
 ---
 
-#### `GET /health`
-Public health status check.
-*   **Response (200 OK):**
+#### `GET /api/health`
+Public health status check. Used by client applications to verify server status and check that the target endpoint runs a genuine Synclo server.
+*   **Response Headers:**
+    *   `Synclo-Server`: `genuine` (used for client-side server identity verification)
+*   **Response Body (200 OK):**
     ```json
     {
-      "status": "ok"
+      "status": "ok",
+      "server": "synclo"
     }
     ```
 

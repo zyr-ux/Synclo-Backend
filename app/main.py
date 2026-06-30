@@ -117,7 +117,15 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 
-@app.get("/health")
+@app.get("/api/health")
 def health_check():
     logger.info("Health check pinged")
-    return {"status": "ok"}
+    return JSONResponse(
+        content={
+            "status": "ok",
+            "server": "synclo"
+        },
+        headers={
+            "Synclo-Server": "genuine"
+        }
+    )
