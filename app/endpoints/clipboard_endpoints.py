@@ -16,7 +16,7 @@ from app.core.constants import (
     MAX_CIPHERTEXT_LEN,
 )
 from app.models.models import Clipboard, User
-from app.schemas.schemas import ClipboardIn, ClipboardOut, ClipboardSyncResponse
+from app.schemas.schemas import ClipboardIn, ClipboardOut, ClipboardPinUpdate, ClipboardSyncResponse
 from app.services.auth import get_db, get_current_user
 from app.services.serializers import clipboard_to_response
 from app.services.utils import cleanup_old_clipboard_entries
@@ -238,6 +238,53 @@ def get_clipboard_by_id(
     entry = db.query(Clipboard).filter_by(clipboard_id=clipboard_id, user_id=user_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Clipboard entry not found")
+
+    return clipboard_to_response(entry)
+
+
+@router.patch("/clipboard/{clipboard_id}/pin", response_model=ClipboardOut, dependencies=[Depends(RateLimiter(times=30, seconds=60))])
+async def pin_clipboard_item(
+    clipboard_id: str,
+    data: ClipboardPinUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    _cu: Any = current_user
+    user_id: str = _cu.user_id
+
+    entry = db.query(Clipboard).filter_by(clipboard_id=clipboard_id, user_id=user_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Clipboard entry not found")
+
+    _entry: Any = entry
+    if _entry.is_deleted:
+        raise HTTPException(status_code=400, detail="Cannot pin or unpin a deleted clipboard entry")
+
+    now = datetime.now(timezone.utc)
+    _entry.is_pinned = data.is_pinned
+    if data.is_pinned:
+        if data.pinned_at:
+            _entry.pinned_at = data.pinned_at.replace(tzinfo=timezone.utc) if data.pinned_at.tzinfo is None else data.pinned_at
+        else:
+            _entry.pinned_at = now
+    else:
+        _entry.pinned_at = None
+
+    _entry.updated_at = now
+    db.commit()
+    db.refresh(entry)
+
+    # Broadcast lightweight pin update event to all connected devices for this user
+    await manager.broadcast_to_user(
+        user_id=user_id,
+        message={
+            "type": "clipboard_pin",
+            "id": clipboard_id,
+            "is_pinned": _entry.is_pinned,
+            "pinned_at": _entry.pinned_at.isoformat().replace("+00:00", "Z") if _entry.pinned_at else None,
+            "updated_at": _entry.updated_at.isoformat().replace("+00:00", "Z")
+        }
+    )
 
     return clipboard_to_response(entry)
 

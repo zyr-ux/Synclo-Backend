@@ -92,3 +92,87 @@ def test_pinned_at_timestamp_preservation_and_sync(client, auth_headers):
     match = next(e for e in entries if e["id"] == clip_id)
     assert match["is_pinned"] is True
     assert "2026-08-20T10:00:00" in match["pinned_at"]
+
+
+def test_pin_and_unpin_clipboard_item(client, auth_headers):
+    clip_id = "pin_toggle_test"
+    payload = make_clipboard_payload(clip_id, is_pinned=False)
+    client.post("/api/v1/clipboard", json=payload, headers=auth_headers)
+
+    # 1. Pin item
+    res_pin = client.patch(
+        f"/api/v1/clipboard/{clip_id}/pin",
+        json={"is_pinned": True},
+        headers=auth_headers
+    )
+    assert res_pin.status_code == 200
+    data_pin = res_pin.json()
+    assert data_pin["id"] == clip_id
+    assert data_pin["is_pinned"] is True
+    assert data_pin["pinned_at"] is not None
+    assert data_pin["ciphertext"] == payload["ciphertext"]
+    assert data_pin["nonce"] == payload["nonce"]
+
+    # 2. Verify via GET
+    res_get = client.get(f"/api/v1/clipboard/{clip_id}", headers=auth_headers)
+    assert res_get.status_code == 200
+    assert res_get.json()["is_pinned"] is True
+    assert res_get.json()["pinned_at"] == data_pin["pinned_at"]
+
+    # 3. Unpin item
+    res_unpin = client.patch(
+        f"/api/v1/clipboard/{clip_id}/pin",
+        json={"is_pinned": False},
+        headers=auth_headers
+    )
+    assert res_unpin.status_code == 200
+    data_unpin = res_unpin.json()
+    assert data_unpin["id"] == clip_id
+    assert data_unpin["is_pinned"] is False
+    assert data_unpin["pinned_at"] is None
+
+    # 4. Verify via GET
+    res_get_unpinned = client.get(f"/api/v1/clipboard/{clip_id}", headers=auth_headers)
+    assert res_get_unpinned.status_code == 200
+    assert res_get_unpinned.json()["is_pinned"] is False
+    assert res_get_unpinned.json()["pinned_at"] is None
+
+
+def test_pin_non_existent_item_returns_404(client, auth_headers):
+    res = client.patch(
+        "/api/v1/clipboard/non_existent_id/pin",
+        json={"is_pinned": True},
+        headers=auth_headers
+    )
+    assert res.status_code == 404
+    assert res.json()["detail"] == "Clipboard entry not found"
+
+
+def test_pin_deleted_item_returns_400(client, auth_headers):
+    clip_id = "deleted_pin_target"
+    client.post("/api/v1/clipboard", json=make_clipboard_payload(clip_id), headers=auth_headers)
+    client.delete(f"/api/v1/clipboard/{clip_id}", headers=auth_headers)
+
+    res = client.patch(
+        f"/api/v1/clipboard/{clip_id}/pin",
+        json={"is_pinned": True},
+        headers=auth_headers
+    )
+    assert res.status_code == 400
+    assert "Cannot pin or unpin a deleted clipboard entry" in res.json()["detail"]
+
+
+def test_pin_item_user_isolation(client, user_factory):
+    user1 = user_factory()
+    user2 = user_factory()
+
+    clip_id = "user1_clip_item"
+    client.post("/api/v1/clipboard", json=make_clipboard_payload(clip_id), headers=user1["headers"])
+
+    # User 2 tries to pin User 1's item
+    res = client.patch(
+        f"/api/v1/clipboard/{clip_id}/pin",
+        json={"is_pinned": True},
+        headers=user2["headers"]
+    )
+    assert res.status_code == 404

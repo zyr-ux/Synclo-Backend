@@ -40,6 +40,11 @@ class ClipboardOut(BaseModel):
     pinned_at: Optional[datetime] = None
 
 
+class ClipboardPinUpdate(BaseModel):
+    is_pinned: bool
+    pinned_at: Optional[datetime] = None
+
+
 
 class Token(BaseModel):
     access_token: str

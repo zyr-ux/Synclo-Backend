@@ -133,3 +133,35 @@ def test_websocket_rejects_missing_auth(client):
         msg = ws.receive_json()
         assert msg.get("type") == "error"
         assert "Authorization" in msg.get("message", "")
+
+
+def test_websocket_broadcast_on_pin_update(client, user_factory):
+    user = user_factory()
+    dev2_res = client.post("/api/v1/login", json={
+        "email": user["email"],
+        "auth_key": user["auth_key"],
+        "device_id": "ws_device_pin_2",
+        "device_name": "Device 2",
+        "os": "Android",
+    })
+    token_dev2 = dev2_res.json()["access_token"]
+
+    clip_id = "ws_pin_broadcast_item"
+    client.post("/api/v1/clipboard", json=make_clipboard_payload(clip_id), headers=user["headers"])
+
+    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}) as ws2:
+        # Device 1 pins the clipboard item
+        res = client.patch(
+            f"/api/v1/clipboard/{clip_id}/pin",
+            json={"is_pinned": True},
+            headers=user["headers"]
+        )
+        assert res.status_code == 200
+
+        # Device 2 should receive the clipboard_pin broadcast
+        msg = _receive_non_ping(ws2)
+        assert msg.get("type") == "clipboard_pin"
+        assert msg.get("id") == clip_id
+        assert msg.get("is_pinned") is True
+        assert msg.get("pinned_at") is not None
+        assert msg.get("updated_at") is not None
