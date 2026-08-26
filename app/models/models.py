@@ -14,7 +14,9 @@ class User(Base):
     encrypted_master_key = Column(LargeBinary, nullable=False)
     salt = Column(LargeBinary, nullable=False)
     kdf_version = Column(Integer, nullable=False, default=1)
+    clipboard_limit = Column(Integer, nullable=False, default=100, server_default="100")
     devices = relationship("Device", back_populates="owner")
+
 
 class Device(Base):
     __tablename__ = "devices"

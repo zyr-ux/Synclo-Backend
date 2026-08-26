@@ -19,8 +19,9 @@ from app.models.models import Clipboard, User
 from app.schemas.schemas import ClipboardIn, ClipboardOut, ClipboardPinUpdate, ClipboardSyncResponse
 from app.services.auth import get_db, get_current_user
 from app.services.serializers import clipboard_to_response
-from app.services.utils import cleanup_old_clipboard_entries
+from app.services.utils import prune_user_clipboard
 from app.websockets.connection_manager import manager
+
 
 router = APIRouter()
 
@@ -33,9 +34,6 @@ async def sync_clipboard(
 ):
     _cu: Any = current_user
     user_id: str = _cu.user_id
-    # Clean old entries even on write to avoid unbounded growth if user never reads
-    cleanup_old_clipboard_entries(user_id, db)
-
     new_timestamp = data.timestamp.replace(tzinfo=timezone.utc) if data.timestamp.tzinfo is None else data.timestamp
 
     if data.is_deleted:
@@ -115,10 +113,12 @@ async def sync_clipboard(
 
     # Upsert Logic: Check if ID exists
     existing_entry = db.query(Clipboard).filter_by(clipboard_id=data.id, user_id=user_id).first()
-
+    ret_status = "clipboard synced"
+    was_deleted = False
     if existing_entry:
-        # Update existing
         _e: Any = existing_entry
+        was_deleted = bool(_e.is_deleted)
+        # Update existing
         _e.ciphertext = ciphertext_bytes
         _e.nonce = nonce_bytes
         _e.blob_version = data.blob_version
@@ -129,7 +129,7 @@ async def sync_clipboard(
         _e.pinned_at = pinned_at
         _e.updated_at = datetime.now(timezone.utc)
         db.commit()
-        return {"status": "clipboard updated", "id": _e.clipboard_id}
+        ret_status = "clipboard updated"
     else:
         # Insert new
         new_entry = Clipboard(
@@ -148,8 +148,17 @@ async def sync_clipboard(
         db.add(new_entry)
         db.commit()
 
-        _ne: Any = new_entry
-        return {"status": "clipboard synced", "id": _ne.clipboard_id}
+    # Trigger auto-pruning and broadcast any tombstones only when adding new entries or un-deleting
+    if not existing_entry or was_deleted:
+        tombstones = prune_user_clipboard(user_id, db, limit=_cu.clipboard_limit)
+        for tombstone in tombstones:
+            await manager.broadcast_to_user(
+                user_id=user_id,
+                message=tombstone
+            )
+
+    return {"status": ret_status, "id": data.id}
+
 
 
 @router.get("/clipboard", response_model=ClipboardOut, dependencies=[Depends(RateLimiter(times=30, seconds=60))])
@@ -159,7 +168,6 @@ def get_clipboard(
 ):
     _cu: Any = current_user
     user_id: str = _cu.user_id
-    cleanup_old_clipboard_entries(user_id, db)
 
     entry = (
         db.query(Clipboard)

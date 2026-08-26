@@ -43,6 +43,13 @@ class Settings:
 
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 30))
     TOMBSTONE_RETENTION_DAYS = int(os.getenv("TOMBSTONE_RETENTION_DAYS", "30"))
+
+    # Clipboard History Limits
+    DEFAULT_CLIPBOARD_LIMIT = int(os.getenv("DEFAULT_CLIPBOARD_LIMIT", 100))
+    MIN_CLIPBOARD_LIMIT = int(os.getenv("MIN_CLIPBOARD_LIMIT", 10))
+    MAX_CLIPBOARD_LIMIT = int(os.getenv("MAX_CLIPBOARD_LIMIT", 1000))
+
     # DB
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/clipboard.db")
     REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379") # Default to docker service name; override for local
+

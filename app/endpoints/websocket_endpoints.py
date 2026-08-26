@@ -19,7 +19,9 @@ from app.core.constants import (
 from app.core.logging_config import logger
 from app.models.models import Clipboard, User, Device, BlacklistedToken
 from app.services.auth import SECRET_KEY, ALGORITHM
+from app.services.utils import prune_user_clipboard
 from app.websockets.connection_manager import manager
+
 
 router = APIRouter()
 
@@ -243,7 +245,7 @@ async def websocket_sync(websocket: WebSocket):
                             _ex.updated_at = datetime.now(timezone.utc)
 
                         session.commit()
-                        return {
+                        entry_resp = {
                             "id": _ex.clipboard_id,
                             "timestamp": _ex.timestamp,
                             "is_deleted": _ex.is_deleted,
@@ -268,7 +270,7 @@ async def websocket_sync(websocket: WebSocket):
                         session.add(new_entry)
                         session.commit()
                         _ne: Any = new_entry
-                        return {
+                        entry_resp = {
                             "id": _ne.clipboard_id,
                             "timestamp": _ne.timestamp,
                             "is_deleted": _ne.is_deleted,
@@ -276,6 +278,13 @@ async def websocket_sync(websocket: WebSocket):
                             "pinned_at": _ne.pinned_at,
                             "blob_version": _ne.blob_version
                         }
+
+                    pruned_tombstones = []
+                    if not is_deleted and not existing:
+                        pruned_tombstones = prune_user_clipboard(user_id, session)
+
+                    entry_resp["pruned_tombstones"] = pruned_tombstones
+                    return entry_resp
                 except Exception as e:
                     session.rollback()
                     return {"error": str(e)}
@@ -319,11 +328,19 @@ async def websocket_sync(websocket: WebSocket):
                 exclude_device=device_id
             )
 
+            # Broadcast any pruned tombstones to all devices
+            for tombstone in entry_data.get("pruned_tombstones", []):
+                await manager.broadcast_to_user(
+                    user_id=user_id,
+                    message=tombstone
+                )
+
             # Send acknowledgment back to the sender
             await websocket.send_json({
                 "type": "ack",
                 "id": entry_data["id"]
             })
+
 
     except WebSocketDisconnect:
         pass
