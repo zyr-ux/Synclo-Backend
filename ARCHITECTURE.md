@@ -446,6 +446,33 @@ Removes a device, revokes its session tokens, and disconnects its active WebSock
 
 ---
 
+#### `PATCH /api/v1/devices/{device_id}`
+Updates the display name of an existing registered device.
+> [!NOTE]
+> On successful update, the server broadcasts a `"device_updated"` event over WebSockets to all other connected client devices for this user.
+*   **Headers:** `Authorization: Bearer <access_token>`
+*   **Request Body:**
+    ```json
+    {
+      "device_name": "Work Laptop"
+    }
+    ```
+*   **Response (200 OK):**
+    ```json
+    {
+      "device_id": "unique_device_id_string",
+      "device_name": "Work Laptop",
+      "os": "Windows",
+      "last_seen": "2026-06-14T14:18:00Z",
+      "is_online": true
+    }
+    ```
+*   **Errors:**
+    *   `400 Bad Request`: `device_name` length out of bounds (1-128 characters).
+    *   `404 Not Found`: Device not found under this user account.
+
+---
+
 ### Clipboard Endpoints
 
 #### `POST /api/v1/clipboard`

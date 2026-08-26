@@ -165,3 +165,34 @@ def test_websocket_broadcast_on_pin_update(client, user_factory):
         assert msg.get("is_pinned") is True
         assert msg.get("pinned_at") is not None
         assert msg.get("updated_at") is not None
+
+
+def test_websocket_broadcast_on_device_rename(client, user_factory):
+    user = user_factory()
+    dev2_res = client.post("/api/v1/login", json={
+        "email": user["email"],
+        "auth_key": user["auth_key"],
+        "device_id": "ws_device_rename_2",
+        "device_name": "Device 2",
+        "os": "macOS",
+    })
+    token_dev2 = dev2_res.json()["access_token"]
+
+    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}) as ws2:
+        # Device 1 renames device 2 (or its own device)
+        res = client.patch(
+            f"/api/v1/devices/{user['device_id']}",
+            json={"device_name": "Desktop Beast"},
+            headers=user["headers"]
+        )
+        assert res.status_code == 200
+
+        # Device 2 should receive the device_updated broadcast
+        msg = _receive_non_ping(ws2)
+        assert msg.get("type") == "device_updated"
+        device_info = msg.get("device")
+        assert device_info is not None
+        assert device_info.get("device_id") == user["device_id"]
+        assert device_info.get("device_name") == "Desktop Beast"
+        assert device_info.get("os") == user["os"]
+

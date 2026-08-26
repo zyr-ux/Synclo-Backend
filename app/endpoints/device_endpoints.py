@@ -7,9 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi_limiter.depends import RateLimiter
 from sqlalchemy.orm import Session
 
-from app.core.constants import MIN_DEVICE_ID_LEN, MAX_DEVICE_ID_LEN
+from app.core.constants import MIN_DEVICE_ID_LEN, MAX_DEVICE_ID_LEN, MIN_DEVICE_NAME_LEN, MAX_DEVICE_NAME_LEN
 from app.models.models import Device, User, RefreshToken
-from app.schemas.schemas import DeviceRegister, DeviceOut
+from app.schemas.schemas import DeviceRegister, DeviceRename, DeviceOut
 from app.services.auth import get_db, get_current_user
 from app.websockets.connection_manager import manager
 
@@ -132,3 +132,48 @@ async def delete_device(
     await manager.disconnect_device(user_id, device_id)
 
     return {"message": f"Device '{device.device_name}' deleted successfully"}
+
+
+@router.patch("/devices/{device_id}", response_model=DeviceOut, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+async def rename_device(
+    device_id: str,
+    data: DeviceRename,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    name = data.device_name.strip()
+    if not (MIN_DEVICE_NAME_LEN <= len(name) <= MAX_DEVICE_NAME_LEN):
+        raise HTTPException(status_code=400, detail="device_name length out of bounds")
+
+    _cu: Any = current_user
+    user_id: str = _cu.user_id
+
+    device = db.query(Device).filter_by(device_id=device_id, user_id=user_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    _dev: Any = device
+    _dev.device_name = name
+    db.commit()
+    db.refresh(device)
+
+    # Broadcast device_updated to other connected devices
+    await manager.broadcast_to_user(
+        user_id=user_id,
+        message={
+            "type": "device_updated",
+            "device": {
+                "device_id": _dev.device_id,
+                "device_name": _dev.device_name,
+                "os": _dev.os
+            }
+        }
+    )
+
+    return DeviceOut(
+        device_id=_dev.device_id,
+        device_name=_dev.device_name,
+        os=_dev.os,
+        last_seen=_dev.last_seen,
+        is_online=manager.is_device_online(user_id, _dev.device_id)
+    )

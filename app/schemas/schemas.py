@@ -7,6 +7,9 @@ class DeviceRegister(BaseModel):
     device_name: str
     os: Optional[str] = None
 
+class DeviceRename(BaseModel):
+    device_name: str
+
 class DeviceOut(BaseModel):
     device_id: str
     device_name: str

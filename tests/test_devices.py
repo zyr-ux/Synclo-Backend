@@ -84,3 +84,61 @@ def test_device_online_presence_and_token_invalidation(client, user_factory):
 
     auth_check = client.get("/api/v1/devices", headers=user["headers"])
     assert auth_check.status_code == 403
+
+
+def test_rename_device_success(client, auth_user):
+    dev_id = auth_user["device_id"]
+    res = client.patch(
+        f"/api/v1/devices/{dev_id}",
+        json={"device_name": "Workstation Pro"},
+        headers=auth_user["headers"]
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["device_id"] == dev_id
+    assert data["device_name"] == "Workstation Pro"
+
+    # Verify updated in listing
+    res_list = client.get("/api/v1/devices", headers=auth_user["headers"])
+    assert res_list.status_code == 200
+    devices = res_list.json()
+    matched = next(d for d in devices if d["device_id"] == dev_id)
+    assert matched["device_name"] == "Workstation Pro"
+
+
+def test_rename_device_validation_errors(client, auth_user):
+    dev_id = auth_user["device_id"]
+    # Empty / whitespace-only name
+    res_empty = client.patch(
+        f"/api/v1/devices/{dev_id}",
+        json={"device_name": "   "},
+        headers=auth_user["headers"]
+    )
+    assert res_empty.status_code == 400
+
+    # Overly long name (>128 chars)
+    res_long = client.patch(
+        f"/api/v1/devices/{dev_id}",
+        json={"device_name": "a" * 129},
+        headers=auth_user["headers"]
+    )
+    assert res_long.status_code == 400
+
+
+def test_cannot_rename_other_user_device(client, auth_user, user_factory):
+    other_user = user_factory()
+    res = client.patch(
+        f"/api/v1/devices/{other_user['device_id']}",
+        json={"device_name": "Hijacked Device"},
+        headers=auth_user["headers"]
+    )
+    assert res.status_code == 404
+
+
+def test_rename_non_existent_device(client, auth_user):
+    res = client.patch(
+        "/api/v1/devices/non_existent_device_id_123",
+        json={"device_name": "Ghost Device"},
+        headers=auth_user["headers"]
+    )
+    assert res.status_code == 404
