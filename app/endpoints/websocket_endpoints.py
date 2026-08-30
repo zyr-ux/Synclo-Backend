@@ -307,6 +307,7 @@ async def websocket_sync(websocket: WebSocket):
 
             # Broadcast to other devices (excluding sender)
             broadcast_payload = {
+                "type": "clipboard_sync",
                 "id": entry_data["id"],
                 "timestamp": format_iso_utc(entry_data["timestamp"]),
                 "is_deleted": entry_data["is_deleted"],

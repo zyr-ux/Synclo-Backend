@@ -74,6 +74,7 @@ def prune_user_clipboard(user_id: str, db: Session, limit: Optional[int] = None)
 
             ts_str = _item.timestamp.isoformat().replace("+00:00", "Z") if _item.timestamp else now.isoformat().replace("+00:00", "Z")
             tombstones.append({
+                "type": "clipboard_sync",
                 "id": _item.clipboard_id,
                 "is_deleted": True,
                 "is_pinned": False,

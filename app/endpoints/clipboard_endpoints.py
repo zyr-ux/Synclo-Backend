@@ -73,6 +73,7 @@ async def sync_clipboard(
         await manager.broadcast_to_user(
             user_id=user_id,
             message={
+                "type": "clipboard_sync",
                 "id": data.id,
                 "is_deleted": True,
                 "is_pinned": False,
@@ -331,6 +332,7 @@ async def delete_clipboard_item(
     await manager.broadcast_to_user(
         user_id=user_id,
         message={
+            "type": "clipboard_sync",
             "id": clipboard_id,
             "is_deleted": True,
             "is_pinned": False,
@@ -384,6 +386,7 @@ async def delete_clipboard_history(
         await manager.broadcast_to_user(
             user_id=user_id,
             message={
+                "type": "clipboard_sync",
                 "id": clipboard_id,
                 "is_deleted": True,
                 "is_pinned": False,

@@ -124,6 +124,7 @@ def test_websocket_clipboard_broadcast_to_other_devices(client, user_factory):
 
             # Device 2 should receive broadcast
             broadcast_msg = _receive_non_ping(ws2)
+            assert broadcast_msg.get("type") == "clipboard_sync"
             assert broadcast_msg.get("id") == clip_id
             assert broadcast_msg.get("is_deleted") is False
 

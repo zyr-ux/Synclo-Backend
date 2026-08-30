@@ -167,9 +167,10 @@ Sent after the database write succeeds:
 ```
 
 #### D. Server Broadcast Update (Server ➔ Other Clients)
-Broadcasts incoming changes/tombstones to other devices. For deletions:
+Broadcasts incoming changes/tombstones to other devices:
 ```json
 {
+  "type": "clipboard_sync",
   "id": "c1f77d33-bc42-4916-b847-ec4b868e4bf9",
   "timestamp": "2026-06-14T14:18:00.000Z",
   "ciphertext": null,

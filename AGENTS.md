@@ -29,6 +29,7 @@ Before editing any code, please review the **[ARCHITECTURE.md](file:///E:/Files/
 *   **Deletion Broadcasts:** When a soft delete is triggered (either via REST API or WebSocket), a deletion notification must be broadcasted via WebSocket to all other connected client devices for that user:
   ```json
   {
+    "type": "clipboard_sync",
     "id": "uuid_string",
     "is_deleted": true,
     "is_pinned": false,
