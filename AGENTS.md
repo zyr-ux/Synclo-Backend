@@ -26,7 +26,10 @@ Before editing any code, please review the **[ARCHITECTURE.md](file:///E:/Files/
 *   **No Direct DB Purges:** When an entry is deleted, it must be soft deleted. Set `is_deleted = True` and populate `deleted_at` with the server time. Do not run hard `DELETE` commands except for account deletion (`DELETE /api/v1/delete`).
 *   **Retention Cleanup:** Tombstones are automatically cleaned up after 30 days (`TOMBSTONE_RETENTION_DAYS`). If you modify the cleanup logic or the database models, ensure the 30-day cutoff logic remains correct to prevent synchronization anomalies.
 *   **Pin System Preservation:** Bulk deletion requests (`DELETE /api/v1/clipboard`) must preserve items that are pinned (`is_pinned = True`). Pinned items can only be deleted via targeted single-item deletion (`DELETE /api/v1/clipboard/{id}`), which soft-deletes the item and sets `is_pinned = False`.
-*   **Deletion Broadcasts:** When a soft delete is triggered (either via REST API or WebSocket), a deletion notification must be broadcasted via WebSocket to all other connected client devices for that user:
+*   **Auto-Pruning Invariants:**
+    *   Pinned items (`is_pinned = True`) are strictly immune to quota auto-pruning.
+    *   Pruned items must be soft-deleted (`is_deleted = True`, `deleted_at = now`, `ciphertext = None`, `nonce = None`) and broadcasted to clients as tombstones.
+*   **Deletion Broadcasts:** When a soft delete is triggered (either via REST API, WebSocket, or auto-pruning), a deletion notification must be broadcasted via WebSocket to all other connected client devices for that user:
   ```json
   {
     "type": "clipboard_sync",
@@ -61,27 +64,40 @@ Before editing any code, please review the **[ARCHITECTURE.md](file:///E:/Files/
   dependencies=[Depends(RateLimiter(times=30, seconds=60))]
   ```
 
+### Rule 6: Mobile Push Notifications (UnifiedPush)
+*   **Zero-Knowledge Push Protocol:** Push payloads dispatched to external distributors must only contain lightweight wake-up triggers `{"type": "push"}`. Never send ciphertext, nonces, keys, or user credentials in push messages.
+*   **Stale Endpoint Self-Healing:** The push service automatically strips dead/unregistered push subscriptions if the distributor responds with `400`, `404`, or `410 Gone`.
+
 ---
 
 ## 3. Directory Structure Map
 
 Refer to this map to find where to add code:
-* `app/core/`: Configuration (`config.py`), constants (`constants.py`), database session initialization (`database.py`), logging settings.
+* `app/core/`: Configuration (`config.py`), constants (`constants.py`), database session initialization (`database.py`), logging settings (`logging_config.py`), Prometheus metrics (`metrics.py`).
 * `app/endpoints/`: FastAPI routers split by domain (`auth_endpoints.py`, `device_endpoints.py`, `clipboard_endpoints.py`, `websocket_endpoints.py`).
-* `app/models/`: SQLAlchemy database models.
-* `app/schemas/`: Pydantic input/output schemas (using Pydantic v2).
-* `app/services/`: Core logic (such as `auth.py` helpers and background `utils.py` tasks).
-* `app/websockets/`: Real-time WebSocket connection handling and Redis Pub/Sub listener.
-* `tests/`: End-to-end and mock-based integration test scripts.
+* `app/models/`: SQLAlchemy database models (`models.py`).
+* `app/schemas/`: Pydantic input/output schemas (`schemas.py` using Pydantic v2).
+* `app/services/`: Core logic (such as `auth.py` helpers, background `utils.py` tasks, and `push_service.py`).
+* `app/websockets/`: Real-time WebSocket connection handling and Redis Pub/Sub listener (`connection_manager.py`).
+* `tests/`: Standardized pytest test suite.
 
 ---
 
 ## 4. Verification Check list for Agents
 
 Before concluding your task, you **must** run the test suite to ensure no regressions were introduced.
+Always use the local Python virtual environment (`.venv`) to execute the tests:
+
 Use `run_command` to execute tests:
-```bash
-# Run the complete standardized pytest suite
+```powershell
+# Windows (PowerShell) using the local .venv directly
+.venv\Scripts\pytest.exe
+
+# Linux / macOS using the local .venv directly
+.venv/bin/pytest
+
+# Alternatively, activate the virtual environment and run
+# Windows: .venv\Scripts\activate | Unix: source .venv/bin/activate
 pytest
 ```
 If any tests fail, resolve the issues before presenting your solution.

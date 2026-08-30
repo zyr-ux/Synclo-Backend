@@ -15,8 +15,12 @@ It operates on a **Zero-Knowledge Architecture**, ensuring that all clipboard co
 
 *   🔒 **Zero-Knowledge Security:** Plaintext passwords, Master Keys, and decrypted clipboard entries never touch the server. All payloads are AES-encrypted before transmission.
 *   ⚡ **Real-Time Push Synchronization:** Employs WebSockets for instant propagation of clipboard updates across client devices.
+*   📲 **Mobile Background Push Notifications:** Integrated with UnifiedPush / FCM distributors for energy-efficient silent background wake-ups on Android devices.
 *   🌐 **Multi-Instance Scalability:** Uses Redis Pub/Sub underneath to distribute WebSocket broadcasts, enabling the backend to scale across multiple server nodes.
 *   🔄 **Smart Delta Synchronization:** Employs a soft-delete (tombstone) strategy to support robust synchronization for devices transitioning between offline and online states.
+*   📌 **Granular Pin Management:** Lightweight dedicated pinning system ensuring pinned clipboard items are preserved during bulk history purges and immune to auto-pruning.
+*   📊 **Configurable Quota & Auto-Pruning:** User-customizable clipboard history depth limits with automatic background pruning of older unpinned entries.
+*   📈 **Observability & Prometheus Telemetry:** Exposes anonymized, privacy-preserving operational metrics at `/metrics`.
 *   🛡️ **Advanced Session Security:** Uses Refresh Token Rotation, token reuse detection, and global rate limiting to protect against session theft and brute-force attacks.
 
 ---
@@ -26,6 +30,7 @@ It operates on a **Zero-Knowledge Architecture**, ensuring that all clipboard co
 For detailed guides, please refer to the following documents:
 
 *   📐 **[ARCHITECTURE.md](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/ARCHITECTURE.md):** Comprehensive overview of the system design, Zero-Knowledge cryptographic sequences, real-time WebSocket protocol frames, detailed REST API specs, and a file-by-file codebase guide.
+*   🗺️ **[ROADMAP.md](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/ROADMAP.md):** Strategic product roadmap detailing completed milestones and planned future features.
 *   🛠️ **[CONTRIBUTING.md](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/CONTRIBUTING.md):** Step-by-step instructions for local virtual environment configuration, running migrations, and setting up Redis.
 *   🤖 **[AGENTS.md](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/AGENTS.md):** Playbook and coding constraints for AI coding agents developing on this codebase.
 
@@ -52,7 +57,7 @@ The application will boot up at `http://localhost:8000`. You can inspect the log
     ```bash
     python -m venv .venv
     # Windows: .venv\Scripts\activate | Unix: source .venv/bin/activate
-    pip install -r requirements.txt
+    pip install -e ".[dev]"
     ```
 3.  **Run Migrations:**
     ```bash
@@ -70,31 +75,38 @@ The application will boot up at `http://localhost:8000`. You can inspect the log
 ```text
 Synclo-Backend/
 ├── app/
-│   ├── core/         # Configuration, DB connection, constants, logging
+│   ├── core/         # Configuration, DB connection, constants, logging, metrics
 │   ├── endpoints/    # Routers (Auth, Devices, Clipboard, WebSockets)
 │   ├── models/       # SQLAlchemy DB schemas
 │   ├── schemas/      # Pydantic v2 request/response models
-│   ├── services/     # Core logic helpers (Auth, Serialization, Tasks)
+│   ├── services/     # Core logic (Auth, Serialization, Tasks, Push Service)
 │   ├── websockets/   # WebSocket Connection Manager with Redis Pub/Sub listener
 │   └── main.py       # Application initialization and startup routines
 ├── alembic/          # Database migration history
 ├── data/             # Persistent directory for SQLite database
 ├── logs/             # Persistent directory for rotative logs
-├── tests/            # Automated verification integration scripts
-└── docker-compose.yaml
+├── tests/            # Automated pytest test suite
+├── compose.yaml      # Docker Compose orchestration
+├── pyproject.toml    # Project metadata, dependencies, and build configuration
+├── ROADMAP.md        # Strategic engineering roadmap
+└── ARCHITECTURE.md   # Architectural & protocol reference
 ```
 
 ---
 
 ## 🧪 Verification & Testing
 
-Verify that your local changes do not break core logic by running:
+Verify that your local changes do not break core logic by running the standardized pytest suite within your virtual environment (`.venv`):
 
 ```bash
-python -m tests.verify_delta_sync
-python -m tests.verify_device_os
-python -m tests.verify_offset_pagination
-python -m tests.verify_clipboard_pin
+# With .venv activated:
+pytest
+
+# Or running directly via virtual environment executable:
+# Windows:
+.venv\Scripts\pytest.exe
+# macOS / Linux:
+.venv/bin/pytest
 ```
 
 ---

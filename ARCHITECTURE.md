@@ -208,15 +208,57 @@ Pushed to other connected user devices when a new device is registered:
 ```
 
 #### H. Device Updated Notification (Server ➔ Other Clients)
-Pushed to other connected user devices when an existing device updates its metadata (e.g. OS version during login):
+Pushed to other connected user devices when an existing device updates its metadata (e.g. OS version during login or display name via PATCH):
 ```json
 {
   "type": "device_updated",
   "device": {
     "device_id": "unique_device_id_string",
     "device_name": "My iPhone 15",
-    "os": "iOS"
+    "os": "iOS",
+    "last_seen": "2026-08-30T12:00:00Z",
+    "is_online": true,
+    "push_enabled": true
   }
+}
+```
+
+#### I. Clipboard Pin Notification (Server ➔ Other Clients)
+Pushed to other connected user devices when a clipboard entry is pinned or unpinned via the lightweight pin toggle API:
+```json
+{
+  "type": "clipboard_pin",
+  "id": "c1f77d33-bc42-4916-b847-ec4b868e4bf9",
+  "is_pinned": true,
+  "pinned_at": "2026-08-30T14:18:00.000Z",
+  "updated_at": "2026-08-30T14:18:00.000Z"
+}
+```
+
+#### J. Username Updated Notification (Server ➔ Other Clients)
+Pushed to other connected user devices when the user updates their profile username:
+```json
+{
+  "type": "username_updated",
+  "username": "NewUsername"
+}
+```
+
+#### K. Email Updated Notification (Server ➔ Other Clients)
+Pushed to other connected user devices when the user successfully changes their email address:
+```json
+{
+  "type": "email_updated",
+  "email": "new_email@example.com"
+}
+```
+
+#### L. User Settings Updated Notification (Server ➔ Other Clients)
+Pushed to other connected user devices when clipboard history quota settings are modified:
+```json
+{
+  "type": "user_settings_updated",
+  "clipboard_limit": 50
 }
 ```
 
@@ -378,6 +420,98 @@ Changes the user password and updates the wrapped master key.
     ```
 *   **Errors:**
     *   `401 Unauthorized`: Incorrect old auth key.
+
+---
+
+#### `GET /api/v1/user`
+Retrieves safe profile information for the authenticated user (no passwords or private cryptographic keys).
+*   **Headers:** `Authorization: Bearer <access_token>`
+*   **Response (200 OK):**
+    ```json
+    {
+      "user_id": "c1f77d33-bc42-4916-b847-ec4b868e4bf9",
+      "email": "user@example.com",
+      "username": "Alice",
+      "kdf_version": 1,
+      "clipboard_limit": 100
+    }
+    ```
+
+---
+
+#### `PUT /api/v1/user/username`
+Updates the friendly username for the authenticated user.
+> [!NOTE]
+> On successful update, the server broadcasts a `"username_updated"` event over WebSockets to all connected client devices for this user.
+*   **Headers:** `Authorization: Bearer <access_token>`
+*   **Request Body:**
+    ```json
+    {
+      "username": "AliceSmith"
+    }
+    ```
+*   **Response (200 OK):**
+    ```json
+    {
+      "message": "Username updated successfully",
+      "username": "AliceSmith"
+    }
+    ```
+*   **Errors:**
+    *   `400 Bad Request`: Username length out of bounds (1-128 characters).
+
+---
+
+#### `PUT /api/v1/user/email`
+Updates the email address associated with the user account. Because tokens and KDF derivations may bind to email, this endpoint re-verifies the user's `auth_key` and issues a fresh token pair.
+> [!NOTE]
+> On successful update, the server broadcasts an `"email_updated"` event over WebSockets to all other connected client devices for this user.
+*   **Headers:** `Authorization: Bearer <access_token>`
+*   **Request Body:**
+    ```json
+    {
+      "email": "new_email@example.com",
+      "auth_key": "base64_encoded_current_auth_key"
+    }
+    ```
+*   **Response (200 OK):**
+    ```json
+    {
+      "message": "Email updated successfully",
+      "email": "new_email@example.com",
+      "access_token": "eyJhbGciOi...",
+      "refresh_token": "new_plain_refresh_token_string",
+      "token_type": "bearer"
+    }
+    ```
+*   **Errors:**
+    *   `401 Unauthorized`: Invalid `auth_key`.
+    *   `409 Conflict`: Email already in use by another account.
+
+---
+
+#### `PUT /api/v1/user/clipboard-limit` & `PATCH /api/v1/user/clipboard-limit`
+Configures the cloud clipboard history quota limit for the user account. Automatically triggers background auto-pruning if the new limit is lower than the current unpinned entry count.
+> [!NOTE]
+> On successful update, the server broadcasts a `"user_settings_updated"` event over WebSockets to all connected client devices for this user.
+*   **Headers:** `Authorization: Bearer <access_token>`
+*   **Request Body:**
+    ```json
+    {
+      "clipboard_limit": 50
+    }
+    ```
+    *(Set `clipboard_limit` to `0` for unlimited history, or an integer between `10` and `1000`)*
+*   **Response (200 OK):**
+    ```json
+    {
+      "status": "success",
+      "clipboard_limit": 50,
+      "pruned_count": 5
+    }
+    ```
+*   **Errors:**
+    *   `422 Unprocessable Entity`: `clipboard_limit` outside allowed range (`0` or `10`-`1000`).
 
 ---
 
@@ -636,6 +770,63 @@ Delta sync endpoint for clients coming online to download changes.
 
 ---
 
+#### `GET /api/v1/clipboard/{clipboard_id}`
+Retrieves a specific clipboard entry by its client-generated UUID.
+*   **Headers:** `Authorization: Bearer <access_token>`
+*   **Response (200 OK):**
+    ```json
+    {
+      "id": "c1f77d33-bc42-4916-b847-ec4b868e4bf9",
+      "ciphertext": "base64_encoded_ciphertext",
+      "nonce": "base64_encoded_nonce",
+      "blob_version": 1,
+      "timestamp": "2026-06-14T14:15:30Z",
+      "updated_at": "2026-06-14T14:15:31Z",
+      "is_deleted": false,
+      "deleted_at": null,
+      "is_pinned": true,
+      "pinned_at": "2026-08-30T14:18:00Z"
+    }
+    ```
+*   **Errors:**
+    *   `404 Not Found`: Clipboard entry not found.
+
+---
+
+#### `PATCH /api/v1/clipboard/{clipboard_id}/pin`
+Lightweight endpoint to toggle the pin status of an active clipboard item without re-transmitting or re-encrypting ciphertext payload blobs.
+> [!NOTE]
+> On successful update, the server broadcasts a lightweight `"clipboard_pin"` metadata event over WebSockets to all connected client devices for this user.
+*   **Headers:** `Authorization: Bearer <access_token>`
+*   **Request Body:**
+    ```json
+    {
+      "is_pinned": true,
+      "pinned_at": "2026-08-30T14:18:00Z"
+    }
+    ```
+    *(If `pinned_at` is omitted when pinning, server defaults to the current UTC timestamp)*
+*   **Response (200 OK):**
+    ```json
+    {
+      "id": "c1f77d33-bc42-4916-b847-ec4b868e4bf9",
+      "ciphertext": "base64_encoded_ciphertext",
+      "nonce": "base64_encoded_nonce",
+      "blob_version": 1,
+      "timestamp": "2026-06-14T14:15:30Z",
+      "updated_at": "2026-08-30T14:18:00Z",
+      "is_deleted": false,
+      "deleted_at": null,
+      "is_pinned": true,
+      "pinned_at": "2026-08-30T14:18:00Z"
+    }
+    ```
+*   **Errors:**
+    *   `400 Bad Request`: Cannot pin a deleted clipboard entry.
+    *   `404 Not Found`: Clipboard entry not found.
+
+---
+
 #### `DELETE /api/v1/clipboard/{clipboard_id}`
 Soft-deletes a single clipboard item (Idempotent).
 *   **Headers:** `Authorization: Bearer <access_token>`
@@ -709,6 +900,9 @@ Configures the SQLAlchemy engine and SQLite session pool, defining database conn
 #### [logging_config.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/core/logging_config.py)
 Initializes stdout stream loggers and rotating file log handlers writing logs to the `/app/logs/` folder.
 
+#### [metrics.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/core/metrics.py)
+Initializes Prometheus instrumentation middleware and exposes the `/metrics` endpoint with custom zero-knowledge metrics tracking active WebSockets, event dispatches, push notification latencies, and status outcomes.
+
 ---
 
 ### Database Models & Schemas
@@ -733,7 +927,7 @@ Calculates HMAC-SHA256 hashes of refresh tokens to secure database storage again
 Converts raw database byte fields (e.g., binary ciphertext, salt blobs) into base64-encoded strings for JSON serializations.
 
 #### [utils.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/utils.py)
-Defines scheduled database housekeeping routines: clearing revoked tokens, expired refresh sessions, and old tombstone entries.
+Defines scheduled database housekeeping routines: clearing revoked tokens, expired refresh sessions, old tombstone entries, and auto-pruning clipboard history beyond user quota limits.
 
 #### [push_service.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/push_service.py)
 Dispatches asynchronous zero-knowledge push notifications (`{"type": "push"}`) to UnifiedPush/FCM distributors with 5s timeout and automatic 400/404/410 stale subscription self-healing.
@@ -743,13 +937,13 @@ Dispatches asynchronous zero-knowledge push notifications (`{"type": "push"}`) t
 ### API Routers & Endpoints (`app/endpoints/`)
 
 #### [auth_endpoints.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/endpoints/auth_endpoints.py)
-Processes accounts, sessions, password changes, token rotations, logouts, and user deletions.
+Processes accounts, sessions, password changes, token rotations, logouts, user deletions, profile retrievals, and username/email/limit updates.
 
 #### [device_endpoints.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/endpoints/device_endpoints.py)
-Manages device list registries and remote device exclusions.
+Manages device list registries, device renaming, push subscription management, and remote device exclusions.
 
 #### [clipboard_endpoints.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/endpoints/clipboard_endpoints.py)
-Manages manual HTTP clipboard operations, delta updates, history clears, and deletes.
+Manages manual HTTP clipboard operations, delta updates, item pinning, history clears, and deletes.
 
 #### [websocket_endpoints.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/endpoints/websocket_endpoints.py)
 Handles client WebSocket upgrades, handles heartbeat protocols, receives writes/deletes, processes database saves asynchronously via `asyncio.to_thread` pools, and broadcasts updates.
@@ -766,7 +960,7 @@ Monitors connection sockets in a thread-safe nested dictionary. Integrates Redis
 ### Application Entry Point
 
 #### [main.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/main.py)
-Initializes the FastAPI application instance. Configures automatic migrations (`alembic upgrade head`), configures Redis connection pools, initializes rate limits, starts the 24h periodic cleanup loop, and sets up global exception handlers.
+Initializes the FastAPI application instance. Configures automatic migrations (`alembic upgrade head`), configures Redis connection pools, initializes rate limits, attaches Prometheus telemetry instrumentation (`/metrics`), starts the 24h periodic cleanup loop, and sets up global exception handlers.
 
 ## 7. Database Schema Reference
 
@@ -778,10 +972,12 @@ erDiagram
         int id PK
         string user_id UK "UUID"
         string email UK
+        string username
         string auth_key_hash
         binary encrypted_master_key
         binary salt
         int kdf_version
+        int clipboard_limit
     }
     devices {
         int id PK
@@ -804,6 +1000,7 @@ erDiagram
         boolean is_deleted
         datetime deleted_at
         boolean is_pinned
+        datetime pinned_at
         datetime updated_at
     }
     refresh_tokens {
@@ -832,10 +1029,12 @@ erDiagram
 *   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary identifier.
 *   **`user_id`** (`String`, Unique, Index, Not Null): Public UUID string used as the primary identifier for database relationships and logs.
 *   **`email`** (`String`, Unique, Index, Not Null): The user's registered email address.
+*   **`username`** (`String`, Nullable): Friendly display name chosen by the user.
 *   **`auth_key_hash`** (`String`, Not Null): Bcrypt hash of the HKDF client-derived auth key.
 *   **`encrypted_master_key`** (`LargeBinary`, Not Null): Client-wrapped master decryption key (AES-256-GCM encrypted).
 *   **`salt`** (`LargeBinary`, Not Null): 16-byte KDF salt used during password hashing.
 *   **`kdf_version`** (`Integer`, Not Null, Default `1`): Argon2/PBKDF2 settings version.
+*   **`clipboard_limit`** (`Integer`, Not Null, Default `100`): User-configured maximum active clipboard history depth (`0` = unlimited).
 
 #### B. `devices` Table
 *   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary identifier.
@@ -857,7 +1056,8 @@ erDiagram
 *   **`timestamp`** (`DateTime`): Client-side copying event timestamp.
 *   **`is_deleted`** (`Boolean`, Index): Indicates if the item is a soft-deleted tombstone.
 *   **`deleted_at`** (`DateTime`, Index, Nullable): Server timestamp of soft-deletion.
-*   **`is_pinned`** (`Boolean`, Index, Not Null, Default `0`): Protects items from bulk clear operations.
+*   **`is_pinned`** (`Boolean`, Index, Not Null, Default `0`): Protects items from bulk clear operations and auto-pruning.
+*   **`pinned_at`** (`DateTime`, Index, Nullable): Server timestamp when the item was pinned.
 *   **`updated_at`** (`DateTime`, Index, Not Null): Server modification time used for offline client delta updates.
 
 #### D. `refresh_tokens` Table
@@ -881,7 +1081,7 @@ erDiagram
 - **[alembic.ini](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/alembic.ini):** Configures Alembic migration routes.
 - **[Dockerfile](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/Dockerfile):** Builds the standard Docker image using a `python:3.12-slim` base image.
 - **[compose.yaml](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/compose.yaml):** Orchestrates multi-container runs (FastAPI App + Redis alpine instance) mapping storage folders to host paths.
-- **[tests/](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/tests/):** End-to-end integration and mock tests targeting delta sync limits, device creation/revocation, and pagination.
+- **[tests/](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/tests/):** Standardized pytest integration test suite targeting delta sync limits, device creation/revocation, pagination, pin toggles, and push services (executed via the `.venv` virtual environment).
 
 ---
 

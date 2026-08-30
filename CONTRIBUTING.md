@@ -59,8 +59,9 @@ python -m venv .venv
 ```
 
 ### Step 3: Install Dependencies
+Install the package in editable mode with development dependencies:
 ```bash
-pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
 
 ### Step 4: Configure Environment Variables
@@ -80,6 +81,14 @@ REDIS_URL=redis://localhost:6379
 
 # Soft Delete settings
 TOMBSTONE_RETENTION_DAYS=30
+
+# Clipboard History Limits
+DEFAULT_CLIPBOARD_LIMIT=100
+MIN_CLIPBOARD_LIMIT=10
+MAX_CLIPBOARD_LIMIT=1000
+
+# Push Notification settings (set to true only for local development/testing over HTTP)
+ALLOW_INSECURE_PUSH_ENDPOINTS=false
 ```
 
 ### Step 5: Run Database Migrations
@@ -119,25 +128,33 @@ To maintain code quality and security, please follow these guidelines when writi
 
 ## 5. Running Tests
 
-Before submitting a Pull Request, verify that all tests pass.
+Before submitting a Pull Request, verify that all tests pass. Always run the tests inside your configured virtual environment (`.venv`).
 
 ### Execution
-You can run the verification scripts directly:
+
+**Option A: With the virtual environment activated**
 ```bash
-# Verify delta synchronization logic (incorporates mock Redis setup)
-python -m tests.verify_delta_sync
+# Activate .venv
+# macOS/Linux: source .venv/bin/activate
+# Windows: .venv\Scripts\activate
 
-# Verify device OS-specific flows
-python -m tests.verify_device_os
-
-# Verify offset pagination and sync stability
-python -m tests.verify_offset_pagination
-
-# Verify clipboard pin system logic
-python -m tests.verify_clipboard_pin
+pytest
 ```
 
-Ensure you have your virtual environment active and dependencies installed prior to running tests.
+**Option B: Direct execution via `.venv` binary**
+```bash
+# Windows (PowerShell/CMD):
+.venv\Scripts\pytest.exe
+
+# macOS/Linux (Bash/Zsh):
+.venv/bin/pytest
+```
+
+To run tests with detailed verbosity or test coverage:
+```bash
+pytest -v
+pytest --cov=app tests/
+```
 
 ---
 
