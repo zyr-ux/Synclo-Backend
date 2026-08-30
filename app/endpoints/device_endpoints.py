@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.constants import MIN_DEVICE_ID_LEN, MAX_DEVICE_ID_LEN, MIN_DEVICE_NAME_LEN, MAX_DEVICE_NAME_LEN
 from app.models.models import Device, User, RefreshToken
-from app.schemas.schemas import DeviceRegister, DeviceRename, DeviceOut
+from app.schemas.schemas import DeviceRegister, DeviceRename, DeviceOut, PushSubscription
 from app.services.auth import get_db, get_current_user
 from app.websockets.connection_manager import manager
 
@@ -38,7 +38,8 @@ async def register_device(
             device_name=_ex.device_name,
             os=_ex.os,
             last_seen=_ex.last_seen,
-            is_online=manager.is_device_online(current_user_id, _ex.device_id)
+            is_online=manager.is_device_online(current_user_id, _ex.device_id),
+            push_enabled=bool(_ex.push_subscription)
         )
     new_device = Device(
         device_id=device.device_id,
@@ -68,7 +69,8 @@ async def register_device(
             device_name=new_device.device_name,
             os=new_device.os,
             last_seen=new_device.last_seen,
-            is_online=manager.is_device_online(current_user_id, new_device.device_id)
+            is_online=manager.is_device_online(current_user_id, new_device.device_id),
+            push_enabled=bool(new_device.push_subscription)
         )
     except Exception:
         db.rollback()
@@ -83,7 +85,8 @@ async def register_device(
                 device_name=_ex2.device_name,
                 os=_ex2.os,
                 last_seen=_ex2.last_seen,
-                is_online=manager.is_device_online(current_user_id, _ex2.device_id)
+                is_online=manager.is_device_online(current_user_id, _ex2.device_id),
+                push_enabled=bool(_ex2.push_subscription)
             )
         raise HTTPException(status_code=400, detail="Failed to register device")
 
@@ -100,7 +103,8 @@ def get_devices(
             device_name=d.device_name,
             os=d.os,
             last_seen=d.last_seen,
-            is_online=manager.is_device_online(current_user.user_id, d.device_id)
+            is_online=manager.is_device_online(current_user.user_id, d.device_id),
+            push_enabled=bool(d.push_subscription)
         )
         for d in devices
     ]
@@ -175,5 +179,65 @@ async def rename_device(
         device_name=_dev.device_name,
         os=_dev.os,
         last_seen=_dev.last_seen,
-        is_online=manager.is_device_online(user_id, _dev.device_id)
+        is_online=manager.is_device_online(user_id, _dev.device_id),
+        push_enabled=bool(_dev.push_subscription)
     )
+
+
+@router.put("/devices/{device_id}/push", response_model=DeviceOut, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+async def update_device_push(
+    device_id: str,
+    data: PushSubscription,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    _cu: Any = current_user
+    user_id: str = _cu.user_id
+    device = db.query(Device).filter_by(device_id=device_id, user_id=user_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    _dev: Any = device
+    _dev.push_subscription = data.push_subscription
+    _dev.push_subscription_updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(device)
+
+    return DeviceOut(
+        device_id=_dev.device_id,
+        device_name=_dev.device_name,
+        os=_dev.os,
+        last_seen=_dev.last_seen,
+        is_online=manager.is_device_online(user_id, _dev.device_id),
+        push_enabled=bool(_dev.push_subscription)
+    )
+
+
+@router.delete("/devices/{device_id}/push", response_model=DeviceOut, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+async def remove_device_push(
+    device_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    _cu: Any = current_user
+    user_id: str = _cu.user_id
+    device = db.query(Device).filter_by(device_id=device_id, user_id=user_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    _dev: Any = device
+    _dev.push_subscription = None
+    _dev.push_subscription_updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(device)
+
+    return DeviceOut(
+        device_id=_dev.device_id,
+        device_name=_dev.device_name,
+        os=_dev.os,
+        last_seen=_dev.last_seen,
+        is_online=manager.is_device_online(user_id, _dev.device_id),
+        push_enabled=False
+    )
+
+

@@ -12,6 +12,7 @@ from app.core.logging_config import logger
 from app.core.config import Settings
 from app.services.utils import run_all_cleanup
 from app.websockets.connection_manager import manager
+from app.services.push_service import push_service
 
 # Import routers
 from app.endpoints.auth_endpoints import router as auth_router
@@ -57,6 +58,7 @@ async def startup():
     await FastAPILimiter.init(redis)
     manager.set_redis(redis)
     await manager.start_listener()
+    await push_service.start()
     
     # Start background cleanup task and keep a handle for shutdown
     app.state.cleanup_task = asyncio.create_task(periodic_cleanup())
@@ -64,6 +66,7 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+    await push_service.stop()
     await manager.stop_listener()
     redis = getattr(app.state, "redis", None)
     if redis:

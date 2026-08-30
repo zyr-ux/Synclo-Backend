@@ -23,6 +23,7 @@ graph TD
         Manager["ConnectionManager"]
         AuthServ["Auth Service"]
         CleanupServ["Cleanup Service"]
+        PushServ["Push Notification Service"]
     end
     
     WS_End --- Manager
@@ -30,6 +31,9 @@ graph TD
     WS_End --> DB[("SQLite Database")]
     REST_End --> DB
     CleanupServ --> DB
+    REST_End --> PushServ
+    WS_End --> PushServ
+    PushServ --> Dist["UnifiedPush Distributors / Webhooks"]
     
     Manager ---|"Redis Pub/Sub"| Redis[("Redis Cache & Pub/Sub")]
 ```
@@ -409,7 +413,10 @@ Manually adds a new device connection to the user account (Async).
     {
       "device_id": "unique_device_id_string",
       "device_name": "My iPad Pro",
-      "os": "iPadOS"
+      "os": "iPadOS",
+      "last_seen": "2026-08-30T12:00:00Z",
+      "is_online": true,
+      "push_enabled": false
     }
     ```
 *   **Errors:**
@@ -426,10 +433,60 @@ Lists all active devices linked to the user account.
       {
         "device_id": "unique_device_id_string",
         "device_name": "My iPad Pro",
-        "os": "iPadOS"
+        "os": "iPadOS",
+        "last_seen": "2026-08-30T12:00:00Z",
+        "is_online": true,
+        "push_enabled": true
       }
     ]
     ```
+
+---
+
+#### `PUT /api/v1/devices/{device_id}/push`
+Registers or updates a UnifiedPush webhook subscription URL for the device.
+*   **Rate Limit:** 10 requests / minute
+*   **Headers:** `Authorization: Bearer <access_token>`
+*   **Request Body (`PushSubscription`):**
+    ```json
+    {
+      "push_subscription": "https://ntfy.sh/up_synclo_unique_topic"
+    }
+    ```
+*   **Response (200 OK):**
+    ```json
+    {
+      "device_id": "unique_device_id_string",
+      "device_name": "My iPad Pro",
+      "os": "iPadOS",
+      "last_seen": "2026-08-30T12:00:00Z",
+      "is_online": true,
+      "push_enabled": true
+    }
+    ```
+*   **Errors:**
+    *   `404 Not Found`: Device not found under this user account.
+    *   `422 Unprocessable Entity`: Invalid URL format or non-HTTPS URL in production.
+
+---
+
+#### `DELETE /api/v1/devices/{device_id}/push`
+Removes the push notification subscription from the specified device.
+*   **Rate Limit:** 10 requests / minute
+*   **Headers:** `Authorization: Bearer <access_token>`
+*   **Response (200 OK):**
+    ```json
+    {
+      "device_id": "unique_device_id_string",
+      "device_name": "My iPad Pro",
+      "os": "iPadOS",
+      "last_seen": "2026-08-30T12:00:00Z",
+      "is_online": true,
+      "push_enabled": false
+    }
+    ```
+*   **Errors:**
+    *   `404 Not Found`: Device not found under this user account.
 
 ---
 
@@ -678,6 +735,9 @@ Converts raw database byte fields (e.g., binary ciphertext, salt blobs) into bas
 #### [utils.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/utils.py)
 Defines scheduled database housekeeping routines: clearing revoked tokens, expired refresh sessions, and old tombstone entries.
 
+#### [push_service.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/push_service.py)
+Dispatches asynchronous zero-knowledge push notifications (`{"type": "push"}`) to UnifiedPush/FCM distributors with 5s timeout and automatic 400/404/410 stale subscription self-healing.
+
 ---
 
 ### API Routers & Endpoints (`app/endpoints/`)
@@ -729,6 +789,9 @@ erDiagram
         string device_name
         string os
         string user_id FK "users.user_id"
+        datetime last_seen
+        string push_subscription
+        datetime push_subscription_updated_at
     }
     clipboard {
         int id PK
@@ -780,6 +843,9 @@ erDiagram
 *   **`device_name`** (`String`): Friendly name assigned to the device.
 *   **`os`** (`String`, Nullable): Device OS metadata.
 *   **`user_id`** (`String`, FK, Index): References `users.user_id` (UUID).
+*   **`last_seen`** (`DateTime`, Index, Nullable): Timestamp of device's most recent activity.
+*   **`push_subscription`** (`String`, Nullable): UnifiedPush webhook URL for background wake-ups.
+*   **`push_subscription_updated_at`** (`DateTime`, Nullable): Timestamp when push subscription was registered or modified.
 
 #### C. `clipboard` Table
 *   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary key (renamed from `index`).

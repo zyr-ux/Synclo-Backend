@@ -1,5 +1,6 @@
 # app/endpoints/clipboard_endpoints.py
 
+import asyncio
 import base64
 from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
@@ -18,6 +19,7 @@ from app.core.constants import (
 from app.models.models import Clipboard, User
 from app.schemas.schemas import ClipboardIn, ClipboardOut, ClipboardPinUpdate, ClipboardSyncResponse
 from app.services.auth import get_db, get_current_user
+from app.services.push_service import launch_background_push
 from app.services.serializers import clipboard_to_response
 from app.services.utils import prune_user_clipboard
 from app.websockets.connection_manager import manager
@@ -84,6 +86,10 @@ async def sync_clipboard(
                 "blob_version": data.blob_version
             }
         )
+
+        # Trigger push notification dispatch to background devices (excluding sender)
+        caller_device_id = getattr(current_user, "current_device_id", None)
+        launch_background_push(user_id=user_id, exclude_device=caller_device_id)
 
         return {"status": "clipboard deleted", "id": data.id}
 
@@ -157,6 +163,10 @@ async def sync_clipboard(
                 user_id=user_id,
                 message=tombstone
             )
+
+    # Trigger push notification dispatch to background devices (excluding sender)
+    caller_device_id = getattr(current_user, "current_device_id", None)
+    launch_background_push(user_id=user_id, exclude_device=caller_device_id)
 
     return {"status": ret_status, "id": data.id}
 
@@ -295,6 +305,10 @@ async def pin_clipboard_item(
         }
     )
 
+    # Trigger push notification dispatch to background devices (excluding sender)
+    caller_device_id = getattr(current_user, "current_device_id", None)
+    launch_background_push(user_id=user_id, exclude_device=caller_device_id)
+
     return clipboard_to_response(entry)
 
 
@@ -343,6 +357,10 @@ async def delete_clipboard_item(
             "blob_version": _entry.blob_version
         }
     )
+    
+    # Trigger push notification dispatch to background devices (excluding sender)
+    caller_device_id = getattr(current_user, "current_device_id", None)
+    launch_background_push(user_id=user_id, exclude_device=caller_device_id)
     
     return {"message": "Clipboard entry deleted"}
 
@@ -397,5 +415,9 @@ async def delete_clipboard_history(
                 "blob_version": blob_version
             }
         )
+    
+    # Trigger push notification dispatch to background devices (excluding sender)
+    caller_device_id = getattr(current_user, "current_device_id", None)
+    launch_background_push(user_id=user_id, exclude_device=caller_device_id)
     
     return {"message": f"{len(active_entries)} clipboard entries deleted."}

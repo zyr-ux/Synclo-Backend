@@ -19,6 +19,7 @@ from app.core.constants import (
 from app.core.logging_config import logger
 from app.models.models import Clipboard, User, Device, BlacklistedToken
 from app.services.auth import SECRET_KEY, ALGORITHM
+from app.services.push_service import launch_background_push
 from app.services.utils import prune_user_clipboard
 from app.websockets.connection_manager import manager
 
@@ -328,6 +329,9 @@ async def websocket_sync(websocket: WebSocket):
                 message=broadcast_payload,
                 exclude_device=device_id
             )
+
+            # Trigger push notification dispatch to background devices (excluding sender)
+            launch_background_push(user_id=user_id, exclude_device=device_id)
 
             # Broadcast any pruned tombstones to all devices
             for tombstone in entry_data.get("pruned_tombstones", []):

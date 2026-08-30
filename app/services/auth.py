@@ -72,6 +72,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         if not db.query(Device).filter_by(user_id=user.user_id, device_id=device_id).first():
             raise HTTPException(status_code=403, detail="Unauthorized device")
         
+        user.current_device_id = device_id
         return user
 
     except JWTError:

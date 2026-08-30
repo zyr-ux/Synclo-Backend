@@ -27,6 +27,10 @@ class Device(Base):
     user_id = Column(String, ForeignKey("users.user_id"), index=True)
     last_seen = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=True, index=True)
 
+    # Push Notification fields
+    push_subscription = Column(String, nullable=True)  # UnifiedPush Webhook URL (e.g. https://ntfy.sh/up_...)
+    push_subscription_updated_at = Column(DateTime(timezone=True), nullable=True)
+
     owner = relationship("User", back_populates="devices")
 
 class Clipboard(Base):

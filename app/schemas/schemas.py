@@ -1,5 +1,6 @@
+from urllib.parse import urlparse
 from typing import List, Optional
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, field_validator, model_validator
 from datetime import datetime
 from app.core.config import Settings
 
@@ -18,9 +19,34 @@ class DeviceOut(BaseModel):
     os: Optional[str] = None
     last_seen: Optional[datetime] = None
     is_online: bool = False
+    push_enabled: bool = False
 
     class Config:
         from_attributes = True
+
+class PushSubscription(BaseModel):
+    push_subscription: str
+
+    @field_validator("push_subscription")
+    @classmethod
+    def validate_push_url(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("push_subscription cannot be empty")
+        v = v.strip()
+        parsed = urlparse(v)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError("Invalid URL format")
+        
+        # Enforce HTTPS unless running in debug/insecure mode or local address
+        if parsed.scheme == "http":
+            is_local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+            if not (Settings.ALLOW_INSECURE_PUSH_ENDPOINTS or is_local):
+                raise ValueError("Push endpoint must use HTTPS in production")
+        elif parsed.scheme != "https":
+            raise ValueError("Push endpoint must use HTTPS or HTTP (local/dev)")
+            
+        return v
+
 
 class ClipboardIn(BaseModel):
     id: str  # Client-generated UUID
