@@ -1,13 +1,13 @@
-# app/services/push_service.py
-
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, List, Optional, Set, Tuple
 
 import httpx
 
 from app.core.database import SessionLocal
+from app.core.metrics import PUSH_DISPATCHES_TOTAL, PUSH_DURATION_SECONDS
 from app.models.models import Device
 
 logger = logging.getLogger("clipboard_sync")
@@ -90,27 +90,40 @@ class PushService:
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         }
 
+        start_time = time.perf_counter()
         try:
             client = self._get_or_create_client()
             response = await client.post(endpoint, json=payload)
+            duration = time.perf_counter() - start_time
+            PUSH_DURATION_SECONDS.observe(duration)
+
             if response.status_code in (200, 201, 202, 204):
+                PUSH_DISPATCHES_TOTAL.labels(status="success").inc()
                 logger.info(f"Push wake-up delivered to device={device_id} status={response.status_code}")
                 return True
             elif response.status_code in (400, 404, 410):
+                PUSH_DISPATCHES_TOTAL.labels(status="stale_pruned").inc()
                 logger.warning(
                     f"Distributor rejected endpoint ({response.status_code}) for device={device_id}. Pruning stale subscription."
                 )
                 await asyncio.to_thread(_prune_stale_endpoint, user_id, device_id)
                 return False
             else:
+                PUSH_DISPATCHES_TOTAL.labels(status="error").inc()
                 logger.warning(
                     f"Distributor error ({response.status_code}) for device={device_id}"
                 )
                 return False
         except httpx.TimeoutException:
+            duration = time.perf_counter() - start_time
+            PUSH_DURATION_SECONDS.observe(duration)
+            PUSH_DISPATCHES_TOTAL.labels(status="timeout").inc()
             logger.warning(f"Push delivery timed out after {self.timeout}s for device={device_id}")
             return False
         except Exception as e:
+            duration = time.perf_counter() - start_time
+            PUSH_DURATION_SECONDS.observe(duration)
+            PUSH_DISPATCHES_TOTAL.labels(status="error").inc()
             logger.warning(f"Push delivery failed for device={device_id}: {e}")
             return False
 

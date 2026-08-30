@@ -41,6 +41,8 @@ dependencies = [
     "fastapi-limiter==0.1.6",
     "httpx>=0.27.0",
     "passlib==1.7.4",
+    "prometheus-client>=0.26.0",
+    "prometheus-fastapi-instrumentator>=8.1.0",
     "pycryptodome==3.23.0",
     "pydantic==2.13.4",
     "python-dotenv==1.2.2",

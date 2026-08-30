@@ -10,6 +10,7 @@ from redis.asyncio import Redis
 from app.core.database import SessionLocal
 from app.core.logging_config import logger
 from app.core.config import Settings
+from app.core.metrics import setup_metrics
 from app.services.utils import run_all_cleanup
 from app.websockets.connection_manager import manager
 from app.services.push_service import push_service
@@ -25,6 +26,9 @@ app = FastAPI(
     version=Settings.VERSION,
     description=Settings.DESCRIPTION,
 )
+
+# Setup Prometheus metrics & expose /metrics endpoint
+setup_metrics(app)
 
 # Include routers
 app.include_router(auth_router, prefix="/api/v1")

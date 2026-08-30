@@ -882,3 +882,25 @@ erDiagram
 - **[Dockerfile](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/Dockerfile):** Builds the standard Docker image using a `python:3.12-slim` base image.
 - **[compose.yaml](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/compose.yaml):** Orchestrates multi-container runs (FastAPI App + Redis alpine instance) mapping storage folders to host paths.
 - **[tests/](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/tests/):** End-to-end integration and mock tests targeting delta sync limits, device creation/revocation, and pagination.
+
+---
+
+## 9. Observability & Telemetry Subsystem
+
+Synclo exposes operational metrics for real-time monitoring via Prometheus and Grafana scrapers at `GET /metrics`.
+
+### Zero-Knowledge & Anonymity Guarantee
+* **Strict Invariant**: Under no circumstances does the telemetry subsystem track or expose user-identifying data (PII, user IDs, usernames, email addresses, device IDs, IP addresses, session tokens, push distributor URLs, or ciphertext payloads).
+* **Aggregation**: All telemetry is strictly aggregated at the server/instance level across anonymized dimensions (HTTP status codes, generic event types, and outcome statuses).
+
+### Exposed Prometheus Metrics
+
+| Metric Name | Type | Labels | Description |
+| :--- | :--- | :--- | :--- |
+| `http_requests_total` | Counter | `handler`, `method`, `status` | Total HTTP requests processed across API endpoints. |
+| `http_request_duration_seconds` | Histogram | `handler`, `method` | HTTP request processing latency distribution. |
+| `synclo_active_websockets` | Gauge | *None* | Current number of active local WebSocket client connections on the server node. |
+| `synclo_websocket_events_total` | Counter | `event_type` | Total WebSocket messages broadcasted across the cluster, labeled only by generic event type (`clipboard_sync`, `clipboard_pin`, `device_updated`, `user_settings_updated`). |
+| `synclo_push_dispatches_total` | Counter | `status` | Total background push notifications dispatched, labeled by outcome status (`success`, `stale_pruned`, `timeout`, `error`). |
+| `synclo_push_duration_seconds` | Histogram | *None* | Latency of outbound push notification triggers to external distributor endpoints. |
+

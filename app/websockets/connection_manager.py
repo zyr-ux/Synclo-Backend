@@ -3,6 +3,8 @@ from fastapi import WebSocket
 import asyncio
 import json
 
+from app.core.metrics import ACTIVE_WEBSOCKETS, WEBSOCKET_EVENTS_TOTAL
+
 class ConnectionManager:
     def __init__(self):
         # Structure: { user_id: { device_id: websocket } }
@@ -11,16 +13,22 @@ class ConnectionManager:
         self._listener_task: Optional[asyncio.Task] = None
         self._node_id = id(self)
 
+    def _update_active_metric(self):
+        total = sum(len(devices) for devices in self.active_connections.values())
+        ACTIVE_WEBSOCKETS.set(total)
+
     async def connect(self, user_id: str, device_id: str, websocket: WebSocket):
         if user_id not in self.active_connections:
             self.active_connections[user_id] = {}
         self.active_connections[user_id][device_id] = websocket
+        self._update_active_metric()
 
     def disconnect(self, user_id: str, device_id: str):
         if user_id in self.active_connections:
             self.active_connections[user_id].pop(device_id, None)
             if not self.active_connections[user_id]:
                 self.active_connections.pop(user_id, None)
+        self._update_active_metric()
 
     async def disconnect_device(self, user_id: str, device_id: str):
         """Forcefully disconnect a specific device (e.g., when deleted remotely)."""
@@ -57,6 +65,9 @@ class ConnectionManager:
         return device_id in self.get_user_devices(user_id)
 
     async def broadcast_to_user(self, user_id: str, message: dict, exclude_device: Optional[str] = None):
+        event_type = message.get("type", "unknown") if isinstance(message, dict) else "unknown"
+        WEBSOCKET_EVENTS_TOTAL.labels(event_type=event_type).inc()
+
         await self._broadcast_local(user_id, message, exclude_device)
 
         if self.redis:
