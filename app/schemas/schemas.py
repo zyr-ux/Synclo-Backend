@@ -37,13 +37,13 @@ class PushSubscription(BaseModel):
         if not parsed.scheme or not parsed.netloc:
             raise ValueError("Invalid URL format")
         
-        # Enforce HTTPS unless running in debug/insecure mode or local address
+        # Enforce HTTPS unless HTTPS_ONLY is disabled or connecting to local loopback address
         if parsed.scheme == "http":
             is_local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-            if not (Settings.ALLOW_INSECURE_PUSH_ENDPOINTS or is_local):
-                raise ValueError("Push endpoint must use HTTPS in production")
+            if Settings.HTTPS_ONLY and not is_local:
+                raise ValueError("Push endpoint must use HTTPS when HTTPS_ONLY is enabled")
         elif parsed.scheme != "https":
-            raise ValueError("Push endpoint must use HTTPS or HTTP (local/dev)")
+            raise ValueError("Push endpoint must use HTTPS or HTTP")
             
         return v
 

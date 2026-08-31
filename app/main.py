@@ -3,7 +3,7 @@
 import asyncio
 import traceback
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi_limiter import FastAPILimiter
 from redis.asyncio import Redis
 
@@ -35,6 +35,24 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(device_router, prefix="/api/v1")
 app.include_router(clipboard_router, prefix="/api/v1")
 app.include_router(websocket_router, prefix="/ws/v1")
+
+
+@app.middleware("http")
+async def https_enforcement_middleware(request: Request, call_next):
+    if Settings.HTTPS_ONLY:
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+        is_https = request.url.scheme == "https" or forwarded_proto == "https"
+        is_loopback = request.url.hostname in {"localhost", "127.0.0.1", "::1", "testserver"}
+
+        if not is_https and not is_loopback:
+            https_url = request.url.replace(scheme="https")
+            return RedirectResponse(url=str(https_url), status_code=307)
+
+        response = await call_next(request)
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+    return await call_next(request)
 
 
 @app.on_event("startup")

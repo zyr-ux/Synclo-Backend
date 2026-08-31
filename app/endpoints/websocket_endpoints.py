@@ -10,6 +10,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
 
 from app.core.database import SessionLocal
+from app.core.config import Settings
 from app.core.constants import (
     ALLOWED_BLOB_VERSIONS,
     MIN_NONCE_LEN,
@@ -31,6 +32,17 @@ router = APIRouter()
 async def websocket_sync(websocket: WebSocket):
     # Accept the connection first - we MUST do this before any close operations
     await websocket.accept()
+
+    # If HTTPS_ONLY is enabled, reject insecure WebSocket connections from non-loopback clients
+    if Settings.HTTPS_ONLY:
+        forwarded_proto = websocket.headers.get("x-forwarded-proto", "").lower()
+        is_secure = websocket.url.scheme == "wss" or forwarded_proto in ("https", "wss")
+        is_loopback = websocket.url.hostname in {"localhost", "127.0.0.1", "::1", "testserver"}
+        if not is_secure and not is_loopback:
+            logger.warning("WebSocket connection rejected: HTTPS_ONLY is enabled and connection is insecure")
+            await websocket.send_json({"type": "error", "message": "Insecure WebSocket connection rejected (WSS required)"})
+            await websocket.close(code=1008)
+            return
     
     # Extract token from Authorization header
     auth_header = websocket.headers.get("authorization", "")

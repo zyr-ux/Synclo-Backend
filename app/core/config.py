@@ -51,6 +51,6 @@ class Settings:
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/clipboard.db")
     REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379") # Default to docker service name; override for local
 
-    # Push Notification Service
-    ALLOW_INSECURE_PUSH_ENDPOINTS = os.getenv("ALLOW_INSECURE_PUSH_ENDPOINTS", "false").lower() in ("true", "1", "yes")
+    # Security & Transport Mode
+    HTTPS_ONLY = os.getenv("HTTPS_ONLY", "true").lower() in ("true", "1", "yes")
 

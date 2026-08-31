@@ -85,8 +85,8 @@ TOMBSTONE_RETENTION_DAYS=30
 # Clipboard Retention Policy (in days, 0 = disabled)
 CLIPBOARD_RETENTION_DAYS=30
 
-# Push Notification settings (set to true only for local development/testing over HTTP)
-ALLOW_INSECURE_PUSH_ENDPOINTS=false
+# Security & HTTPS Mode (set to false only for local development/self-hosting without SSL)
+HTTPS_ONLY=true
 ```
 
 ### Step 5: Run Database Migrations

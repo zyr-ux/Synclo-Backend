@@ -78,7 +78,8 @@ def test_remove_push_subscription(client, auth_user):
     assert dev["push_enabled"] is False
 
 
-def test_push_subscription_url_validation(client, auth_user):
+def test_push_subscription_url_validation(client, auth_user, monkeypatch):
+    from app.core.config import Settings
     device_id = auth_user["device_id"]
     headers = auth_user["headers"]
 
@@ -98,7 +99,8 @@ def test_push_subscription_url_validation(client, auth_user):
     )
     assert res_ftp.status_code == 422
 
-    # Plain HTTP for remote non-localhost (when ALLOW_INSECURE_PUSH_ENDPOINTS is False)
+    # Plain HTTP for remote non-localhost (when HTTPS_ONLY is True)
+    monkeypatch.setattr(Settings, "HTTPS_ONLY", True)
     res_http_remote = client.put(
         f"/api/v1/devices/{device_id}/push",
         json={"push_subscription": "http://external-push.example.com/endpoint"},
@@ -106,7 +108,7 @@ def test_push_subscription_url_validation(client, auth_user):
     )
     assert res_http_remote.status_code == 422
 
-    # Plain HTTP on localhost / 127.0.0.1 is accepted for local dev/testing
+    # Plain HTTP on localhost / 127.0.0.1 is accepted even when HTTPS_ONLY is True
     res_http_local = client.put(
         f"/api/v1/devices/{device_id}/push",
         json={"push_subscription": "http://localhost:8080/up_dev_test"},
@@ -114,6 +116,16 @@ def test_push_subscription_url_validation(client, auth_user):
     )
     assert res_http_local.status_code == 200
     assert res_http_local.json()["push_enabled"] is True
+
+    # When HTTPS_ONLY is False, plain HTTP remote endpoints are accepted
+    monkeypatch.setattr(Settings, "HTTPS_ONLY", False)
+    res_http_remote_allowed = client.put(
+        f"/api/v1/devices/{device_id}/push",
+        json={"push_subscription": "http://192.168.1.100:8080/up_lan_endpoint"},
+        headers=headers
+    )
+    assert res_http_remote_allowed.status_code == 200
+    assert res_http_remote_allowed.json()["push_enabled"] is True
 
 
 def test_cannot_modify_other_user_push_subscription(client, auth_user, user_factory):
