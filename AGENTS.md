@@ -57,6 +57,7 @@ Before editing any code, please review the **[ARCHITECTURE.md](file:///E:/Files/
 *   **Connection Lifecycle:** The `ConnectionManager` in `app/websockets/connection_manager.py` tracks active sockets.
 *   **Multi-Instance (Redis):** Keep in mind that when an event is broadcasted, it uses Redis Pub/Sub to reach other server nodes. Always use `manager.broadcast_to_user` so that the event gets published to Redis and distributed.
 *   **WebSocket Close Codes:** Always use the defined close codes when closing connections:
+  - `1008`: Insecure WebSocket connection rejected when `HTTPS_ONLY` is enabled (send `{"type": "error", "message": "Insecure WebSocket connection rejected (WSS required)"}` before closing).
   - `4001`: Token Expired
   - `4003`: Device deleted remotely (send a `{"type": "device_deleted"}` JSON message right before closing).
 
@@ -69,6 +70,10 @@ Before editing any code, please review the **[ARCHITECTURE.md](file:///E:/Files/
 ### Rule 6: Mobile Push Notifications (UnifiedPush)
 *   **Zero-Knowledge Push Protocol:** Push payloads dispatched to external distributors must only contain lightweight wake-up triggers `{"type": "push"}`. Never send ciphertext, nonces, keys, or user credentials in push messages.
 *   **Stale Endpoint Self-Healing:** The push service automatically strips dead/unregistered push subscriptions if the distributor responds with `400`, `404`, or `410 Gone`.
+
+### Rule 7: HTTPS & Transport Security (`HTTPS_ONLY`)
+*   **Enforce Secure Ingress:** When `Settings.HTTPS_ONLY` is enabled, all non-loopback ingress HTTP traffic must be redirected to HTTPS (307) and WebSocket upgrades must be secure (`wss://` or `X-Forwarded-Proto: https`).
+*   **Preserve Loopback Exemptions:** Do not break loopback exemptions (`localhost`, `127.0.0.1`, `::1`, `testserver`) to ensure local development and automated pytest runs remain functional without TLS certs.
 
 ---
 

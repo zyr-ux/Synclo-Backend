@@ -256,7 +256,7 @@ Pushed to other connected user devices when the user successfully changes their 
 ### WebSocket Close Status Codes
 
 *   `1000`: Normal closure.
-*   `1008`: Policy Violation / Auth Failed. Token invalid or blacklisted. Prompt re-login.
+*   `1008`: Policy Violation (Insecure WebSocket connection rejected when `HTTPS_ONLY` is enabled, or authentication credentials invalid/blacklisted).
 *   `4001`: Token Expired. Perform token refresh and reconnect.
 *   `4002`: Ping/Pong Timeout. Reconnect (possible network drop).
 *   `4003`: Device Deleted Remotely. Clear local state, logout user, redirect to login.
@@ -831,6 +831,31 @@ Public health status check. Used by client applications to verify server status 
 
 ---
 
+### System Policies & Transport Security
+
+#### Transport Security & HTTPS Mode (`HTTPS_ONLY`)
+To guarantee end-to-end transport security for tokens, payloads, and WebSockets in production, the server provides strict transport security controls configured via `HTTPS_ONLY` (boolean):
+
+*   **HTTP-to-HTTPS Redirection:** When `HTTPS_ONLY=True`, non-HTTPS requests from remote hosts are redirected to `https://` with a `307 Temporary Redirect` status.
+*   **HSTS Header:** Automatically attaches `Strict-Transport-Security: max-age=31536000; includeSubDomains` to all HTTP responses.
+*   **Reverse Proxy Support:** Detects TLS termination handled by reverse proxies (e.g. Nginx, Caddy, Cloudflare, Traefik) via the `X-Forwarded-Proto: https` header.
+*   **Loopback Exemption:** Requests originating from loopback hosts (`localhost`, `127.0.0.1`, `::1`, `testserver`) bypass HTTPS redirection, allowing seamless local development and automated testing without SSL certificate setup.
+*   **WebSocket WSS Enforcement:** Remote WebSocket upgrade requests over plain `ws://` without TLS are rejected with code `1008` (Policy Violation) and a descriptive error message.
+*   **Push Distributor Validation:** Push subscription registration (`PUT /api/v1/devices/{device_id}/push`) validates distributor URLs and requires HTTPS when `HTTPS_ONLY=True` (allowing plain HTTP only on local loopback addresses).
+
+---
+
+#### Server-Wide Age-Based Clipboard Retention & Auto-Pruning (`CLIPBOARD_RETENTION_DAYS`)
+The server enforces a server-wide retention policy for unpinned clipboard history, configured via `CLIPBOARD_RETENTION_DAYS` (default `30` days, `0` disables pruning):
+
+*   **Expiration Rule:** Active unpinned clipboard items where `updated_at < (now - CLIPBOARD_RETENTION_DAYS)` are automatically expired.
+*   **Pinning Immunity:** Pinned items (`is_pinned = True`) are completely immune to age-based pruning and are kept permanently until explicitly unpinned or deleted.
+*   **Grace Period on Unpin:** Unpinning an item (`PATCH /api/v1/clipboard/{clipboard_id}/pin`) resets its `updated_at` timestamp to the current server time, granting a fresh 30-day retention window.
+*   **Tombstone Generation & Broadcast:** Pruned items are soft-deleted (`is_deleted = True`, `ciphertext = None`, `nonce = None`, `deleted_at = now`) and broadcasted as `clipboard_sync` tombstone events over WebSockets to synchronize connected client devices.
+*   **Trigger Points:** Pruning runs automatically during clipboard write operations (`POST /api/v1/clipboard`) and during periodic background maintenance (`run_all_cleanup`).
+
+---
+
 ### Rate Limiting & API Safety
 
 To protect the server from abuse, rate limits are applied to sensitive endpoints (e.g., registrations, logins, clipboard writes) using the `FastAPILimiter` middleware.
@@ -854,7 +879,7 @@ When a client exceeds the request limit (typically 5 to 30 requests per minute d
 ### Core Setup & Configurations (`app/core/`)
 
 #### [config.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/core/config.py)
-Loads environment configurations from `.env` files into a static `Settings` class. It performs startup security assertions, validating keys such as `SECRET_KEY` and HMAC keys.
+Loads environment configurations from `.env` files into a static `Settings` class. It performs startup security assertions, validating keys such as `SECRET_KEY`, `REFRESH_TOKEN_HASH_KEY`, `CLIPBOARD_RETENTION_DAYS`, and `HTTPS_ONLY`.
 
 #### [constants.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/core/constants.py)
 Defines project-wide size constraints (e.g. max ciphertext length of 64KB, salt lengths) and lists valid protocol and KDF versions.
@@ -876,7 +901,7 @@ Initializes Prometheus instrumentation middleware and exposes the `/metrics` end
 Declares database entities mapping users, devices, refresh tokens, blacklisted tokens, and clipboard tables.
 
 #### [schemas.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/schemas/schemas.py)
-Defines Pydantic v2 schemas used to filter and validate request JSON bodies and serialize responses.
+Defines Pydantic v2 schemas used to filter and validate request JSON bodies, push URLs, and serialize responses.
 
 ---
 
@@ -892,7 +917,7 @@ Calculates HMAC-SHA256 hashes of refresh tokens to secure database storage again
 Converts raw database byte fields (e.g., binary ciphertext, salt blobs) into base64-encoded strings for JSON serializations.
 
 #### [utils.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/utils.py)
-Defines scheduled database housekeeping routines: clearing revoked tokens, expired refresh sessions, old tombstone entries, and auto-pruning clipboard history beyond user quota limits.
+Defines scheduled database housekeeping routines: clearing revoked tokens, expired refresh sessions, old tombstone entries (`TOMBSTONE_RETENTION_DAYS`), and server-wide age-based clipboard history pruning (`CLIPBOARD_RETENTION_DAYS`).
 
 #### [push_service.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/push_service.py)
 Dispatches asynchronous zero-knowledge push notifications (`{"type": "push"}`) to UnifiedPush/FCM distributors with 5s timeout and automatic 400/404/410 stale subscription self-healing.
@@ -902,7 +927,7 @@ Dispatches asynchronous zero-knowledge push notifications (`{"type": "push"}`) t
 ### API Routers & Endpoints (`app/endpoints/`)
 
 #### [auth_endpoints.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/endpoints/auth_endpoints.py)
-Processes accounts, sessions, password changes, token rotations, logouts, user deletions, profile retrievals, and username/email/limit updates.
+Processes accounts, sessions, password changes, token rotations, logouts, user deletions, profile retrievals, and username/email updates.
 
 #### [device_endpoints.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/endpoints/device_endpoints.py)
 Manages device list registries, device renaming, push subscription management, and remote device exclusions.
@@ -911,7 +936,7 @@ Manages device list registries, device renaming, push subscription management, a
 Manages manual HTTP clipboard operations, delta updates, item pinning, history clears, and deletes.
 
 #### [websocket_endpoints.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/endpoints/websocket_endpoints.py)
-Handles client WebSocket upgrades, handles heartbeat protocols, receives writes/deletes, processes database saves asynchronously via `asyncio.to_thread` pools, and broadcasts updates.
+Handles client WebSocket upgrades (including TLS/WSS enforcement), heartbeat protocols, writes/deletes, asynchronous database saves via `asyncio.to_thread` pools, and broadcasts.
 
 ---
 
@@ -925,7 +950,7 @@ Monitors connection sockets in a thread-safe nested dictionary. Integrates Redis
 ### Application Entry Point
 
 #### [main.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/main.py)
-Initializes the FastAPI application instance. Configures automatic migrations (`alembic upgrade head`), configures Redis connection pools, initializes rate limits, attaches Prometheus telemetry instrumentation (`/metrics`), starts the 24h periodic cleanup loop, and sets up global exception handlers.
+Initializes the FastAPI application instance. Configures transport security middleware (`https_enforcement_middleware`), automatic migrations (`alembic upgrade head`), Redis connection pools, rate limits, Prometheus telemetry instrumentation (`/metrics`), periodic background cleanup loops, and global exception handlers.
 
 ## 7. Database Schema Reference
 
@@ -1063,7 +1088,7 @@ Synclo exposes operational metrics for real-time monitoring via Prometheus and G
 | `http_requests_total` | Counter | `handler`, `method`, `status` | Total HTTP requests processed across API endpoints. |
 | `http_request_duration_seconds` | Histogram | `handler`, `method` | HTTP request processing latency distribution. |
 | `synclo_active_websockets` | Gauge | *None* | Current number of active local WebSocket client connections on the server node. |
-| `synclo_websocket_events_total` | Counter | `event_type` | Total WebSocket messages broadcasted across the cluster, labeled only by generic event type (`clipboard_sync`, `clipboard_pin`, `device_updated`, `user_settings_updated`). |
+| `synclo_websocket_events_total` | Counter | `event_type` | Total WebSocket messages broadcasted across the cluster, labeled only by generic event type (`clipboard_sync`, `clipboard_pin`, `device_updated`, `device_added`). |
 | `synclo_push_dispatches_total` | Counter | `status` | Total background push notifications dispatched, labeled by outcome status (`success`, `stale_pruned`, `timeout`, `error`). |
 | `synclo_push_duration_seconds` | Histogram | *None* | Latency of outbound push notification triggers to external distributor endpoints. |
 

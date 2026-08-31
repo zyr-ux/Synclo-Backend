@@ -103,6 +103,20 @@ The following core features establish the production-ready foundation for multi-
   * **Zero-Knowledge & Privacy Guarantee**: Absolutely NO user-identifying data (user IDs, usernames, emails, device IDs, IP addresses, tokens, distributor URLs, or ciphertext payloads) is tracked or exposed.
   * **Custom Gauges & Counters**:
     * `synclo_active_websockets`: Real-time gauge of currently connected WebSocket client devices.
-    * `synclo_websocket_events_total`: Event counter labeled strictly by generic event type (`clipboard_sync`, `clipboard_pin`, `device_updated`, `user_settings_updated`).
+    * `synclo_websocket_events_total`: Event counter labeled strictly by generic event type (`clipboard_sync`, `clipboard_pin`, `device_updated`, `device_added`).
     * `synclo_push_dispatches_total`: Counter of push notification triggers labeled by outcome status (`success`, `stale_pruned`, `timeout`, `error`).
     * `synclo_push_duration_seconds`: Latency histogram tracking outbound HTTP push dispatch duration.
+
+---
+
+### ✅ HTTPS Mode & Transport Security (`HTTPS_ONLY`) — **[Implemented]**
+* **Status**: Complete (`HTTPS_ONLY=True`, `https_enforcement_middleware`)
+* **Why**: Ensures all in-transit clipboard payloads, session tokens, and authentication requests are strictly encrypted over TLS in production deployments.
+* **Architecture & Flow**:
+  * **Configurable Enforcement**: Configured via `HTTPS_ONLY` environment variable (`True` by default in production).
+  * **Automated HTTP-to-HTTPS Redirection**: Non-HTTPS ingress HTTP requests receive a `307 Temporary Redirect` to their HTTPS counterpart.
+  * **HSTS Injection**: Automatically injects `Strict-Transport-Security: max-age=31536000; includeSubDomains` header on all responses.
+  * **Reverse Proxy Support**: Detects TLS termination at ingress proxies via standard `X-Forwarded-Proto: https` header.
+  * **Loopback Development Exemption**: Local connections to `localhost`, `127.0.0.1`, `::1`, and `testserver` bypass redirection, simplifying local development and testing.
+  * **WebSocket WSS Enforcement**: Insecure `ws://` WebSocket upgrade requests from remote clients are immediately rejected with close code `1008` (Policy Violation).
+  * **Push Endpoint Validation**: Strict validation requiring HTTPS scheme for external push distributor URLs when `HTTPS_ONLY` is enabled.

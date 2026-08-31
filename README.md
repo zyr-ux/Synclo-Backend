@@ -19,7 +19,8 @@ It operates on a **Zero-Knowledge Architecture**, ensuring that all clipboard co
 *   🌐 **Multi-Instance Scalability:** Uses Redis Pub/Sub underneath to distribute WebSocket broadcasts, enabling the backend to scale across multiple server nodes.
 *   🔄 **Smart Delta Synchronization:** Employs a soft-delete (tombstone) strategy to support robust synchronization for devices transitioning between offline and online states.
 *   📌 **Granular Pin Management:** Lightweight dedicated pinning system ensuring pinned clipboard items are preserved during bulk history purges and immune to auto-pruning.
-*   📊 **Configurable Quota & Auto-Pruning:** User-customizable clipboard history depth limits with automatic background pruning of older unpinned entries.
+*   📊 **Age-Based Clipboard Retention & Auto-Pruning:** Server-wide configurable retention lifecycle (`CLIPBOARD_RETENTION_DAYS`) with automatic tombstone pruning for older unpinned entries while preserving pinned items.
+*   🔒 **HTTPS & Transport Security:** Strict HTTPS/WSS enforcement mode (`HTTPS_ONLY`) with automatic HTTP-to-HTTPS redirection, HSTS headers, reverse proxy support (`X-Forwarded-Proto`), and loopback development exemptions.
 *   📈 **Observability & Prometheus Telemetry:** Exposes anonymized, privacy-preserving operational metrics at `/metrics`.
 *   🛡️ **Advanced Session Security:** Uses Refresh Token Rotation, token reuse detection, and global rate limiting to protect against session theft and brute-force attacks.
 
