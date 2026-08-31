@@ -82,10 +82,8 @@ REDIS_URL=redis://localhost:6379
 # Soft Delete settings
 TOMBSTONE_RETENTION_DAYS=30
 
-# Clipboard History Limits
-DEFAULT_CLIPBOARD_LIMIT=100
-MIN_CLIPBOARD_LIMIT=10
-MAX_CLIPBOARD_LIMIT=1000
+# Clipboard Retention Policy (in days, 0 = disabled)
+CLIPBOARD_RETENTION_DAYS=30
 
 # Push Notification settings (set to true only for local development/testing over HTTP)
 ALLOW_INSECURE_PUSH_ENDPOINTS=false

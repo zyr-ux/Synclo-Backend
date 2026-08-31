@@ -26,43 +26,40 @@ def cleanup_expired_refresh_tokens(db: Session):
         # Table may not exist if migrations haven't run yet
         pass
 
-def prune_user_clipboard(user_id: str, db: Session, limit: Optional[int] = None) -> List[dict]:
+def prune_user_clipboard(user_id: str, db: Session, retention_days: Optional[int] = None) -> List[dict]:
     """
-    Prunes excess non-pinned active clipboard entries beyond the user's limit.
-    Soft-deletes excess items into tombstones and returns tombstone payloads for broadcasting.
-    A limit of 0 represents infinite history (no pruning).
+    Prunes expired non-pinned active clipboard entries older than retention_days (based on updated_at).
+    Soft-deletes expired items into tombstones and returns tombstone payloads for broadcasting.
+    A retention_days of 0 represents infinite history (no pruning).
     """
     try:
-        if limit is None:
-            user = db.query(User).filter_by(user_id=user_id).first()
-            if not user:
-                return []
-            _u: Any = user
-            limit = _u.clipboard_limit
+        from app.core.config import Settings
+        if retention_days is None:
+            retention_days = Settings.CLIPBOARD_RETENTION_DAYS
 
-        if limit == 0:
+        if retention_days <= 0:
             return []
 
-        # Get active, non-pinned items ordered newest first
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=retention_days)
+
+        # Get active, non-pinned items older than cutoff
         entries = (
             db.query(Clipboard)
             .filter(
                 Clipboard.user_id == user_id,
                 Clipboard.is_deleted.is_(False),
-                Clipboard.is_pinned.is_(False)
+                Clipboard.is_pinned.is_(False),
+                Clipboard.updated_at < cutoff
             )
-            .order_by(Clipboard.timestamp.desc())
             .all()
         )
 
-        if len(entries) <= limit:
+        if not entries:
             return []
 
-        to_prune = entries[limit:]
-        now = datetime.now(timezone.utc)
         tombstones = []
-
-        for item in to_prune:
+        for item in entries:
             _item: Any = item
             _item.is_deleted = True
             _item.deleted_at = now
@@ -92,15 +89,15 @@ def prune_user_clipboard(user_id: str, db: Session, limit: Optional[int] = None)
         db.rollback()
         return []
 
-def prune_all_users_clipboard(db: Session):
+def prune_all_users_clipboard(db: Session, retention_days: Optional[int] = None):
     """
-    Iterates over all users and prunes their excess non-pinned clipboard entries.
+    Iterates over all users and prunes their expired non-pinned clipboard entries.
     """
     try:
         users = db.query(User).all()
         for user in users:
             _u: Any = user
-            prune_user_clipboard(_u.user_id, db, limit=_u.clipboard_limit)
+            prune_user_clipboard(_u.user_id, db, retention_days=retention_days)
     except Exception as e:
         logger.error(f"Global clipboard pruning failed: {e}")
         db.rollback()

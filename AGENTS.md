@@ -27,8 +27,10 @@ Before editing any code, please review the **[ARCHITECTURE.md](file:///E:/Files/
 *   **Retention Cleanup:** Tombstones are automatically cleaned up after 30 days (`TOMBSTONE_RETENTION_DAYS`). If you modify the cleanup logic or the database models, ensure the 30-day cutoff logic remains correct to prevent synchronization anomalies.
 *   **Pin System Preservation:** Bulk deletion requests (`DELETE /api/v1/clipboard`) must preserve items that are pinned (`is_pinned = True`). Pinned items can only be deleted via targeted single-item deletion (`DELETE /api/v1/clipboard/{id}`), which soft-deletes the item and sets `is_pinned = False`.
 *   **Auto-Pruning Invariants:**
-    *   Pinned items (`is_pinned = True`) are strictly immune to quota auto-pruning.
-    *   Pruned items must be soft-deleted (`is_deleted = True`, `deleted_at = now`, `ciphertext = None`, `nonce = None`) and broadcasted to clients as tombstones.
+    *   Unpinned items older than `CLIPBOARD_RETENTION_DAYS` (based on `updated_at`) are automatically pruned.
+    *   Pinned items (`is_pinned = True`) are strictly immune to auto-pruning.
+    *   Unpinning an item resets its `updated_at` to the current timestamp, granting a fresh retention cycle (grace period).
+    *   Pruned items must be soft-deleted (`is_deleted = True`, `deleted_at = now`, `updated_at = now`, `ciphertext = None`, `nonce = None`) and broadcasted to clients as tombstones.
 *   **Deletion Broadcasts:** When a soft delete is triggered (either via REST API, WebSocket, or auto-pruning), a deletion notification must be broadcasted via WebSocket to all other connected client devices for that user:
   ```json
   {

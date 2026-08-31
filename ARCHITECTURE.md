@@ -253,15 +253,6 @@ Pushed to other connected user devices when the user successfully changes their 
 }
 ```
 
-#### L. User Settings Updated Notification (Server ➔ Other Clients)
-Pushed to other connected user devices when clipboard history quota settings are modified:
-```json
-{
-  "type": "user_settings_updated",
-  "clipboard_limit": 50
-}
-```
-
 ### WebSocket Close Status Codes
 
 *   `1000`: Normal closure.
@@ -432,8 +423,7 @@ Retrieves safe profile information for the authenticated user (no passwords or p
       "user_id": "c1f77d33-bc42-4916-b847-ec4b868e4bf9",
       "email": "user@example.com",
       "username": "Alice",
-      "kdf_version": 1,
-      "clipboard_limit": 100
+      "kdf_version": 1
     }
     ```
 
@@ -487,31 +477,6 @@ Updates the email address associated with the user account. Because tokens and K
 *   **Errors:**
     *   `401 Unauthorized`: Invalid `auth_key`.
     *   `409 Conflict`: Email already in use by another account.
-
----
-
-#### `PUT /api/v1/user/clipboard-limit` & `PATCH /api/v1/user/clipboard-limit`
-Configures the cloud clipboard history quota limit for the user account. Automatically triggers background auto-pruning if the new limit is lower than the current unpinned entry count.
-> [!NOTE]
-> On successful update, the server broadcasts a `"user_settings_updated"` event over WebSockets to all connected client devices for this user.
-*   **Headers:** `Authorization: Bearer <access_token>`
-*   **Request Body:**
-    ```json
-    {
-      "clipboard_limit": 50
-    }
-    ```
-    *(Set `clipboard_limit` to `0` for unlimited history, or an integer between `10` and `1000`)*
-*   **Response (200 OK):**
-    ```json
-    {
-      "status": "success",
-      "clipboard_limit": 50,
-      "pruned_count": 5
-    }
-    ```
-*   **Errors:**
-    *   `422 Unprocessable Entity`: `clipboard_limit` outside allowed range (`0` or `10`-`1000`).
 
 ---
 
@@ -977,7 +942,6 @@ erDiagram
         binary encrypted_master_key
         binary salt
         int kdf_version
-        int clipboard_limit
     }
     devices {
         int id PK
@@ -1034,7 +998,6 @@ erDiagram
 *   **`encrypted_master_key`** (`LargeBinary`, Not Null): Client-wrapped master decryption key (AES-256-GCM encrypted).
 *   **`salt`** (`LargeBinary`, Not Null): 16-byte KDF salt used during password hashing.
 *   **`kdf_version`** (`Integer`, Not Null, Default `1`): Argon2/PBKDF2 settings version.
-*   **`clipboard_limit`** (`Integer`, Not Null, Default `100`): User-configured maximum active clipboard history depth (`0` = unlimited).
 
 #### B. `devices` Table
 *   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary identifier.

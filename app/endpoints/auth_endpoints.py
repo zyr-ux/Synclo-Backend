@@ -39,8 +39,6 @@ from app.schemas.schemas import (
     UserResponse,
     EmailUpdate,
     EmailUpdateResponse,
-    ClipboardLimitUpdate,
-    ClipboardLimitResponse,
 )
 from app.services.auth import (
     create_access_token,
@@ -52,7 +50,7 @@ from app.services.auth import (
 )
 from app.services.crypto_utils import hash_refresh_token
 from app.services.serializers import user_to_e2ee_response
-from app.services.utils import cleanup_expired_refresh_tokens, prune_user_clipboard
+from app.services.utils import cleanup_expired_refresh_tokens
 from app.websockets.connection_manager import manager
 
 
@@ -128,8 +126,7 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
             auth_key_hash=auth_key_hash,
             encrypted_master_key=encrypted_mk_bytes,
             salt=salt_bytes,
-            kdf_version=user.kdf_version,
-            clipboard_limit=Settings.DEFAULT_CLIPBOARD_LIMIT
+            kdf_version=user.kdf_version
         )
 
         db.add(new_user)
@@ -650,59 +647,3 @@ def get_user_profile(current_user: User = Depends(get_current_user)):
     Retrieve current user's profile details.
     """
     return current_user
-
-
-@router.patch("/user/clipboard-limit", response_model=ClipboardLimitResponse, dependencies=[Depends(RateLimiter(times=5, seconds=60))])
-@router.put("/user/clipboard-limit", response_model=ClipboardLimitResponse, dependencies=[Depends(RateLimiter(times=5, seconds=60))])
-async def update_clipboard_limit(
-    data: ClipboardLimitUpdate,
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Update clipboard history retention limit for the user.
-    A value of 0 means infinite / unlimited quota.
-    """
-    # Decode token to extract device_id
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        device_id = payload.get("device_id")
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    if not device_id or not (MIN_DEVICE_ID_LEN <= len(device_id) <= MAX_DEVICE_ID_LEN):
-        raise HTTPException(status_code=400, detail="Invalid or missing device_id in token")
-
-    _cu: Any = current_user
-    _cu.clipboard_limit = data.clipboard_limit
-    db.commit()
-    db.refresh(current_user)
-
-    # Prune excess items if limit was lowered
-    tombstones = prune_user_clipboard(_cu.user_id, db, limit=data.clipboard_limit)
-
-    # Broadcast tombstones if any items were pruned
-    for tombstone in tombstones:
-        await manager.broadcast_to_user(
-            user_id=_cu.user_id,
-            message=tombstone
-        )
-
-    # Broadcast user_settings_updated event to other connected devices
-    await manager.broadcast_to_user(
-        user_id=_cu.user_id,
-        message={
-            "type": "user_settings_updated",
-            "settings": {
-                "clipboard_limit": data.clipboard_limit
-            }
-        },
-        exclude_device=device_id
-    )
-
-    return {
-        "status": "success",
-        "clipboard_limit": data.clipboard_limit,
-        "pruned_count": len(tombstones)
-    }

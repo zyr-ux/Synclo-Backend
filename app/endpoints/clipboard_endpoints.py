@@ -157,7 +157,7 @@ async def sync_clipboard(
 
     # Trigger auto-pruning and broadcast any tombstones only when adding new entries or un-deleting
     if not existing_entry or was_deleted:
-        tombstones = prune_user_clipboard(user_id, db, limit=_cu.clipboard_limit)
+        tombstones = prune_user_clipboard(user_id, db)
         for tombstone in tombstones:
             await manager.broadcast_to_user(
                 user_id=user_id,

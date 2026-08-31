@@ -94,29 +94,9 @@ class UserResponse(BaseModel):
     email: str
     username: Optional[str] = None
     kdf_version: int
-    clipboard_limit: int = 100
 
     class Config:
         from_attributes = True
-
-class ClipboardLimitUpdate(BaseModel):
-    clipboard_limit: int
-
-    @field_validator("clipboard_limit")
-    @classmethod
-    def validate_limit(cls, v: int) -> int:
-        if v == 0:
-            return v
-        if not (Settings.MIN_CLIPBOARD_LIMIT <= v <= Settings.MAX_CLIPBOARD_LIMIT):
-            raise ValueError(
-                f"clipboard_limit must be 0 (infinite) or between {Settings.MIN_CLIPBOARD_LIMIT} and {Settings.MAX_CLIPBOARD_LIMIT}"
-            )
-        return v
-
-class ClipboardLimitResponse(BaseModel):
-    status: str
-    clipboard_limit: int
-    pruned_count: int
 
 
 class UserWithE2EE(BaseModel):

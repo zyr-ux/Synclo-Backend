@@ -70,17 +70,17 @@ The following core features establish the production-ready foundation for multi-
 
 ---
 
-### ✅ User-Configurable History Quota & Auto-Pruning — **[Implemented]**
-* **Status**: Complete (`GET /api/v1/user`, `PUT /api/v1/user/clipboard-limit`, `PATCH /api/v1/user/clipboard-limit`)
-* **Why**: Prevents unbounded database growth while giving each user customizable control over their cloud clipboard history depth.
+### ✅ Server-Wide Age-Based Clipboard Retention & Auto-Pruning — **[Implemented]**
+* **Status**: Complete (`CLIPBOARD_RETENTION_DAYS=30`, `prune_user_clipboard`, `prune_all_users_clipboard`)
+* **Why**: Provides a predictable, natural clipboard retention model (e.g. 30 days of active history) without burdening clients with settings synchronization or storage management.
 * **Architecture & Flow**:
-  * **Config Defaults**: Global default defined in settings (`DEFAULT_CLIPBOARD_LIMIT=100`) with guardrails (`MIN_CLIPBOARD_LIMIT=10`, `MAX_CLIPBOARD_LIMIT=1000`, `0` = unlimited).
-  * **User Model**: `clipboard_limit` column in the `users` table, exposed via user profile endpoints.
-  * **Client Settings Endpoint**: `PUT/PATCH /api/v1/user/clipboard-limit` accepting `{"clipboard_limit": int}`. Broadcasts a `user_settings_updated` event over WebSockets.
+  * **Server-Side Environment Configuration**: Configured via `CLIPBOARD_RETENTION_DAYS=30` (`0` = disabled / infinite retention).
+  * **Universal Expiration Rule**: Unpinned entries are expired when `updated_at < (now - CLIPBOARD_RETENTION_DAYS)`.
+  * **Unpin Grace Period**: Unpinning an item refreshes its `updated_at` timestamp, providing a fresh 30-day lifecycle from the moment it is unpinned.
   * **Auto-Pruning Invariants**:
-    * **Pinned Items are Immune**: Pinned items (`is_pinned=True`) are exempt from quota limits and are never auto-pruned.
-    * **Tombstone Generation**: Pruned items are soft-deleted (`is_deleted=True`, `deleted_at=now`, `ciphertext=None`, `nonce=None`) and broadcasted as standard tombstones to connected devices.
-    * **Trigger Points**: Pruning triggers immediately upon new clipboard additions, when limit is lowered via settings, and during scheduled maintenance routines (`periodic_cleanup`).
+    * **Pinned Items are Immune**: Pinned items (`is_pinned=True`) are exempt from age expiration and are kept permanently until explicitly unpinned or deleted.
+    * **Tombstone Generation**: Pruned items are soft-deleted (`is_deleted=True`, `deleted_at=now`, `updated_at=now`, `ciphertext=None`, `nonce=None`) and broadcasted as standard `clipboard_sync` tombstones.
+    * **Trigger Points**: Pruning triggers upon new clipboard additions, during client synchronization, and in scheduled maintenance routines (`run_all_cleanup`).
 
 ---
 
