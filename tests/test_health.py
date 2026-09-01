@@ -19,3 +19,15 @@ def test_health_check_endpoint(client):
 def test_legacy_health_endpoint_is_not_found(client):
     resp = client.get("/health")
     assert resp.status_code == 404
+
+
+def test_api_docs_and_openapi_endpoints_accessible(client):
+    docs_resp = client.get("/api/docs")
+    assert docs_resp.status_code == 200
+    assert "redoc" in docs_resp.text.lower()
+
+    openapi_resp = client.get("/api/openapi.json")
+    assert openapi_resp.status_code == 200
+    assert "openapi" in openapi_resp.json()
+
+

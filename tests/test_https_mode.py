@@ -67,3 +67,13 @@ def test_websocket_insecure_rejected_when_https_only(client, monkeypatch, auth_u
         assert exc_info.value.code == 1008
 
 
+def test_global_security_headers_present_on_all_http_responses(client):
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.headers.get("X-Content-Type-Options") == "nosniff"
+    assert response.headers.get("X-Frame-Options") == "DENY"
+    assert response.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
+    assert response.headers.get("X-XSS-Protection") == "0"
+
+
+

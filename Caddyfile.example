@@ -1,0 +1,29 @@
+# Synclo Backend - Production & Reverse Proxy Caddyfile Example
+# Rename this file to 'Caddyfile' or integrate these blocks into your existing Caddy configuration.
+
+# Replace with your production domain name (e.g. synclo.yourdomain.com)
+synclo.example.com {
+    # Enable automatic HTTP compression
+    encode gzip zstd
+
+    # Match all Synclo REST endpoints, health checks, ReDoc docs (/api/docs), and WebSockets (/ws/*)
+    @backend {
+        path /api/* /ws/*
+    }
+
+    # Proxy matched traffic to Synclo Backend (default port 8000)
+    handle @backend {
+        reverse_proxy localhost:8000 {
+            # Forward client connection metadata for HTTPS enforcement and logging
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Fallback: Return 404 for any unmapped paths outside of /api/ and /ws/
+    handle {
+        error "Not Found" 404
+    }
+}
