@@ -182,7 +182,7 @@ def get_clipboard(
 
     entry = (
         db.query(Clipboard)
-        .filter_by(user_id=user_id)
+        .filter(Clipboard.user_id == user_id, Clipboard.is_deleted.is_(False))
         .order_by(Clipboard.timestamp.desc())
         .first()
     )
@@ -236,13 +236,14 @@ def get_sync_clipboard(
         since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since
         query = query.filter(Clipboard.updated_at > since_utc)
 
+    total_count = query.count()
     entries = query.order_by(Clipboard.updated_at.asc()).offset(offset).limit(limit).all()
 
     return {
         "entries": [clipboard_to_response(entry).model_dump() for entry in entries],
         "next_offset": offset + len(entries),
-        "has_more": len(entries) == limit,
-        "total_count": len(entries)
+        "has_more": (offset + len(entries)) < total_count,
+        "total_count": total_count
     }
 
 
