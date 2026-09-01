@@ -10,6 +10,7 @@ from redis.asyncio import Redis
 from app.core.database import SessionLocal
 from app.core.logging_config import logger
 from app.core.config import Settings
+from app.core.constants import LOOPBACK_HOSTS
 from app.core.metrics import setup_metrics
 from app.services.utils import run_all_cleanup
 from app.websockets.connection_manager import manager
@@ -40,16 +41,20 @@ app.include_router(websocket_router, prefix="/ws/v1")
 @app.middleware("http")
 async def https_enforcement_middleware(request: Request, call_next):
     if Settings.HTTPS_ONLY:
+        # SECURITY NOTE: In reverse-proxy setups (Nginx, Cloudflare, Caddy), the proxy terminates TLS
+        # and forwards X-Forwarded-Proto. Ensure untrusted external clients cannot spoof this header.
         forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
         is_https = request.url.scheme == "https" or forwarded_proto == "https"
-        is_loopback = request.url.hostname in {"localhost", "127.0.0.1", "::1", "testserver"}
+        is_loopback = request.url.hostname in LOOPBACK_HOSTS
 
         if not is_https and not is_loopback:
             https_url = request.url.replace(scheme="https")
             return RedirectResponse(url=str(https_url), status_code=307)
 
         response = await call_next(request)
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        # Only emit HSTS when the connection is genuinely secure to avoid poisoning localhost / LAN browser caches
+        if is_https:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
 
     return await call_next(request)

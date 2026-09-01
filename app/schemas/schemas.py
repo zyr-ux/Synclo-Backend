@@ -3,6 +3,7 @@ from typing import List, Optional
 from pydantic import BaseModel, EmailStr, field_validator, model_validator
 from datetime import datetime
 from app.core.config import Settings
+from app.core.constants import LOOPBACK_HOSTS
 
 
 class DeviceRegister(BaseModel):
@@ -39,7 +40,7 @@ class PushSubscription(BaseModel):
         
         # Enforce HTTPS unless HTTPS_ONLY is disabled or connecting to local loopback address
         if parsed.scheme == "http":
-            is_local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+            is_local = parsed.hostname in LOOPBACK_HOSTS
             if Settings.HTTPS_ONLY and not is_local:
                 raise ValueError("Push endpoint must use HTTPS when HTTPS_ONLY is enabled")
         elif parsed.scheme != "https":

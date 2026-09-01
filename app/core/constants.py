@@ -16,3 +16,6 @@ MIN_NONCE_LEN = 8
 ALLOWED_BLOB_VERSIONS = {1}
 ALLOWED_KDF_VERSIONS = {1}
 
+# Hostnames considered local loopback for development and testing exemptions
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "testserver"})
+

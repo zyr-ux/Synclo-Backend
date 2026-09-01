@@ -16,6 +16,7 @@ from app.core.constants import (
     MIN_NONCE_LEN,
     MAX_NONCE_LEN,
     MAX_CIPHERTEXT_LEN,
+    LOOPBACK_HOSTS,
 )
 from app.core.logging_config import logger
 from app.models.models import Clipboard, User, Device, BlacklistedToken
@@ -35,9 +36,10 @@ async def websocket_sync(websocket: WebSocket):
 
     # If HTTPS_ONLY is enabled, reject insecure WebSocket connections from non-loopback clients
     if Settings.HTTPS_ONLY:
+        # SECURITY NOTE: In reverse-proxy setups, the proxy terminates TLS and sets X-Forwarded-Proto.
         forwarded_proto = websocket.headers.get("x-forwarded-proto", "").lower()
         is_secure = websocket.url.scheme == "wss" or forwarded_proto in ("https", "wss")
-        is_loopback = websocket.url.hostname in {"localhost", "127.0.0.1", "::1", "testserver"}
+        is_loopback = websocket.url.hostname in LOOPBACK_HOSTS
         if not is_secure and not is_loopback:
             logger.warning("WebSocket connection rejected: HTTPS_ONLY is enabled and connection is insecure")
             await websocket.send_json({"type": "error", "message": "Insecure WebSocket connection rejected (WSS required)"})
