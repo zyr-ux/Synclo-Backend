@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional
+from uuid import uuid4
 from fastapi import WebSocket
 import asyncio
 import json
@@ -11,7 +12,7 @@ class ConnectionManager:
         self.active_connections: Dict[str, Dict[str, WebSocket]] = {}
         self.redis: Optional[Any] = None
         self._listener_task: Optional[asyncio.Task] = None
-        self._node_id = id(self)
+        self._node_id = uuid4().hex
 
     def _update_active_metric(self):
         total = sum(len(devices) for devices in self.active_connections.values())

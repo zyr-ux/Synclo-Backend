@@ -2,6 +2,7 @@
 
 import asyncio
 import traceback
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi_limiter import FastAPILimiter
@@ -22,6 +23,58 @@ from app.endpoints.device_endpoints import router as device_router
 from app.endpoints.clipboard_endpoints import router as clipboard_router
 from app.endpoints.websocket_endpoints import router as websocket_router
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Run Alembic migrations programmatically
+    try:
+        from alembic.config import Config
+        from alembic import command
+        
+        # Create Alembic configuration object
+        alembic_cfg = Config("alembic.ini")
+        # Run the upgrade command
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Database migrations applied successfully.")
+    except Exception as e:
+        import sys
+        print(f"CRITICAL STARTUP ERROR: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        logger.error(f"Failed to apply migrations: {e}")
+        raise RuntimeError(f"Database migration failed: {e}") from e
+
+    # Use configurable URL
+    redis = Redis.from_url(Settings.REDIS_URL, encoding="utf-8", decode_responses=True)
+    app.state.redis = redis
+    await FastAPILimiter.init(redis)
+    manager.set_redis(redis)
+    await manager.start_listener()
+    await push_service.start()
+    
+    # Start background cleanup task and keep a handle for shutdown
+    cleanup_task = asyncio.create_task(periodic_cleanup())
+    app.state.cleanup_task = cleanup_task
+
+    yield
+
+    # Graceful shutdown
+    await push_service.stop()
+    await manager.stop_listener()
+    redis_instance = getattr(app.state, "redis", None)
+    if redis_instance:
+        try:
+            await redis_instance.close()
+        except Exception as e:
+            logger.warning(f"Redis close failed: {e}")
+    # Cancel background cleanup task cleanly
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+
+
 app = FastAPI(
     title=Settings.PROJECT_NAME,
     version=Settings.VERSION,
@@ -29,6 +82,7 @@ app = FastAPI(
     docs_url=None,
     redoc_url="/api/docs",
     openapi_url="/api/openapi.json",
+    lifespan=lifespan,
 )
 
 # Setup Prometheus metrics & expose /metrics endpoint
@@ -71,56 +125,6 @@ async def security_headers_middleware(request: Request, call_next):
 
     return response
 
-
-@app.on_event("startup")
-async def startup():
-    # Run Alembic migrations programmatically
-    try:
-        from alembic.config import Config
-        from alembic import command
-        
-        # Create Alembic configuration object
-        alembic_cfg = Config("alembic.ini")
-        # Run the upgrade command
-        command.upgrade(alembic_cfg, "head")
-        logger.info("Database migrations applied successfully.")
-    except Exception as e:
-        import sys
-        print(f"CRITICAL STARTUP ERROR: {e}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        logger.error(f"Failed to apply migrations: {e}")
-        raise RuntimeError(f"Database migration failed: {e}") from e
-
-    # Use configurable URL
-    redis = Redis.from_url(Settings.REDIS_URL, encoding="utf-8", decode_responses=True)
-    app.state.redis = redis
-    await FastAPILimiter.init(redis)
-    manager.set_redis(redis)
-    await manager.start_listener()
-    await push_service.start()
-    
-    # Start background cleanup task and keep a handle for shutdown
-    app.state.cleanup_task = asyncio.create_task(periodic_cleanup())
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    await push_service.stop()
-    await manager.stop_listener()
-    redis = getattr(app.state, "redis", None)
-    if redis:
-        try:
-            await redis.close()
-        except Exception as e:
-            logger.warning(f"Redis close failed: {e}")
-    # Cancel background cleanup task cleanly
-    cleanup_task = getattr(app.state, "cleanup_task", None)
-    if cleanup_task:
-        cleanup_task.cancel()
-        try:
-            await cleanup_task
-        except asyncio.CancelledError:
-            pass
 
 
 # Background task that runs cleanup operations every 24 hours.

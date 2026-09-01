@@ -169,7 +169,7 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
 
         # Broadcast to other connected devices (will be empty for a new user, but kept for architectural consistency)
         await manager.broadcast_to_user(
-            user_id=new_user.id,
+            user_id=new_user.user_id,
             message={
                 "type": "device_added",
                 "device": {

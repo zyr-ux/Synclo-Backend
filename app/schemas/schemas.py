@@ -1,6 +1,6 @@
 from urllib.parse import urlparse
 from typing import List, Optional
-from pydantic import BaseModel, EmailStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, field_validator, model_validator
 from datetime import datetime
 from app.core.config import Settings
 from app.core.constants import LOOPBACK_HOSTS
@@ -15,15 +15,14 @@ class DeviceRename(BaseModel):
     device_name: str
 
 class DeviceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     device_id: str
     device_name: str
     os: Optional[str] = None
     last_seen: Optional[datetime] = None
     is_online: bool = False
     push_enabled: bool = False
-
-    class Config:
-        from_attributes = True
 
 class PushSubscription(BaseModel):
     push_subscription: str
@@ -91,13 +90,12 @@ class TokenWithE2EE(Token):
 
 class UserResponse(BaseModel):
     """Safe user serialization (no hashes/keys)"""
+    model_config = ConfigDict(from_attributes=True)
+
     user_id: str
     email: str
     username: Optional[str] = None
     kdf_version: int
-
-    class Config:
-        from_attributes = True
 
 
 class UserWithE2EE(BaseModel):
