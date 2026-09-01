@@ -1,6 +1,5 @@
-# app/main.py
-
 import asyncio
+import sys
 import traceback
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
@@ -17,7 +16,6 @@ from app.services.utils import run_all_cleanup
 from app.websockets.connection_manager import manager
 from app.services.push_service import push_service
 
-# Import routers
 from app.endpoints.auth_endpoints import router as auth_router
 from app.endpoints.device_endpoints import router as device_router
 from app.endpoints.clipboard_endpoints import router as clipboard_router
@@ -31,19 +29,15 @@ async def lifespan(app: FastAPI):
         from alembic.config import Config
         from alembic import command
         
-        # Create Alembic configuration object
         alembic_cfg = Config("alembic.ini")
-        # Run the upgrade command
         command.upgrade(alembic_cfg, "head")
         logger.info("Database migrations applied successfully.")
     except Exception as e:
-        import sys
         print(f"CRITICAL STARTUP ERROR: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         logger.error(f"Failed to apply migrations: {e}")
         raise RuntimeError(f"Database migration failed: {e}") from e
 
-    # Use configurable URL
     redis = Redis.from_url(Settings.REDIS_URL, encoding="utf-8", decode_responses=True)
     app.state.redis = redis
     await FastAPILimiter.init(redis)
@@ -51,13 +45,11 @@ async def lifespan(app: FastAPI):
     await manager.start_listener()
     await push_service.start()
     
-    # Start background cleanup task and keep a handle for shutdown
     cleanup_task = asyncio.create_task(periodic_cleanup())
     app.state.cleanup_task = cleanup_task
 
     yield
 
-    # Graceful shutdown
     await push_service.stop()
     await manager.stop_listener()
     redis_instance = getattr(app.state, "redis", None)
@@ -66,7 +58,6 @@ async def lifespan(app: FastAPI):
             await redis_instance.close()
         except Exception as e:
             logger.warning(f"Redis close failed: {e}")
-    # Cancel background cleanup task cleanly
     if cleanup_task:
         cleanup_task.cancel()
         try:
@@ -85,10 +76,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Setup Prometheus metrics & expose /metrics endpoint
 setup_metrics(app)
 
-# Include routers
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(device_router, prefix="/api/v1")
 app.include_router(clipboard_router, prefix="/api/v1")
@@ -97,9 +86,9 @@ app.include_router(websocket_router, prefix="/ws/v1")
 
 @app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
+    is_https = False
     if Settings.HTTPS_ONLY:
-        # SECURITY NOTE: In reverse-proxy setups (Nginx, Cloudflare, Caddy), the proxy terminates TLS
-        # and forwards X-Forwarded-Proto. Ensure untrusted external clients cannot spoof this header.
+        # Proxies terminate TLS and forward X-Forwarded-Proto
         forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
         is_https = request.url.scheme == "https" or forwarded_proto == "https"
         is_loopback = request.url.hostname in LOOPBACK_HOSTS
@@ -110,41 +99,35 @@ async def security_headers_middleware(request: Request, call_next):
 
     response = await call_next(request)
 
-    # Attach baseline security headers for defense-in-depth and browser client protection
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["X-XSS-Protection"] = "0"
 
-    # Only emit HSTS when the connection is genuinely secure to avoid poisoning localhost / LAN browser caches
-    if Settings.HTTPS_ONLY:
-        forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
-        is_https = request.url.scheme == "https" or forwarded_proto == "https"
-        if is_https:
-            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # Avoid HSTS caching on insecure connections or loopback
+    if Settings.HTTPS_ONLY and is_https:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
     return response
 
 
+def _execute_cleanup():
+    db = SessionLocal()
+    try:
+        run_all_cleanup(db)
+    finally:
+        db.close()
 
-# Background task that runs cleanup operations every 24 hours.
+
 async def periodic_cleanup():
     while True:
         try:
-            def run_cleanup():
-                db = SessionLocal()
-                try:
-                    run_all_cleanup(db)
-                finally:
-                    db.close()
-
-            await asyncio.to_thread(run_cleanup)
+            await asyncio.to_thread(_execute_cleanup)
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.error(f"Cleanup task failed: {e}")
         
-        # Wait for 24 hours before next cleanup
         await asyncio.sleep(86400)
 
 

@@ -1,14 +1,16 @@
 from datetime import datetime, timedelta, timezone
+from secrets import token_urlsafe
 from typing import Optional
+from uuid import uuid4
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
-from app.models.models import User, BlacklistedToken, Device
+from app.models.models import User, BlacklistedToken, Device, RefreshToken
 from app.core.config import Settings
+from app.services.crypto_utils import hash_refresh_token
 
-# SECRET_KEY is guaranteed non-None by Settings (raises RuntimeError at startup if missing)
 _raw_secret_key = Settings.SECRET_KEY
 assert _raw_secret_key is not None, "SECRET_KEY must be set"
 SECRET_KEY: str = _raw_secret_key
@@ -32,6 +34,29 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+def create_refresh_token(
+    db: Session,
+    user_id: str,
+    device_id: str,
+    token_id: Optional[str] = None
+) -> str:
+    plain_refresh_token = token_urlsafe(64)
+    hashed_refresh = hash_refresh_token(plain_refresh_token)
+    refresh_expiry = datetime.now(timezone.utc) + timedelta(days=Settings.REFRESH_TOKEN_EXPIRE_DAYS)
+
+    if token_id is None:
+        token_id = str(uuid4())
+
+    db.add(RefreshToken(
+        user_id=user_id,
+        token=hashed_refresh,
+        expiry=refresh_expiry,
+        device_id=device_id,
+        token_id=token_id,
+        is_revoked=False
+    ))
+    return plain_refresh_token
+
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -40,7 +65,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     )
 
     try:
-        # Decode JWT token
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: Optional[str] = payload.get("sub")
         exp: Optional[int] = payload.get("exp")
@@ -49,7 +73,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         if email is None or exp is None:
             raise credentials_exception
 
-        # Check if token is blacklisted
         if db.query(BlacklistedToken).filter_by(token=token).first():
             raise HTTPException(status_code=401, detail="Token has been revoked")
         
@@ -57,7 +80,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         if user is None:
             raise credentials_exception
         
-        # Verify that device is registered for the user
         if not db.query(Device).filter_by(user_id=user.user_id, device_id=device_id).first():
             raise HTTPException(status_code=403, detail="Unauthorized device")
         

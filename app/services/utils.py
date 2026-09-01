@@ -2,9 +2,31 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
 from sqlalchemy.orm import Session
+from app.core.config import Settings
 from app.models.models import BlacklistedToken, RefreshToken, Clipboard, User
 
 logger = logging.getLogger(__name__)
+
+def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+def to_iso_utc(dt: Optional[datetime]) -> Optional[str]:
+    if dt is None:
+        return None
+    if isinstance(dt, datetime):
+        utc_dt = ensure_utc(dt)
+        return utc_dt.isoformat().replace("+00:00", "Z") if utc_dt else None
+    if hasattr(dt, "isoformat"):
+        return dt.isoformat().replace("+00:00", "Z")
+    return str(dt)
+
+def parse_iso_utc(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
 
 def cleanup_expired_blacklisted_tokens(db: Session):
     try:
@@ -13,7 +35,6 @@ def cleanup_expired_blacklisted_tokens(db: Session):
         db.commit()
     except Exception:
         db.rollback()
-        # Table may not exist if migrations haven't run yet
         pass
 
 def cleanup_expired_refresh_tokens(db: Session):
@@ -23,17 +44,11 @@ def cleanup_expired_refresh_tokens(db: Session):
         db.commit()
     except Exception:
         db.rollback()
-        # Table may not exist if migrations haven't run yet
         pass
 
 def prune_user_clipboard(user_id: str, db: Session, retention_days: Optional[int] = None) -> List[dict]:
-    """
-    Prunes expired non-pinned active clipboard entries older than retention_days (based on updated_at).
-    Soft-deletes expired items into tombstones and returns tombstone payloads for broadcasting.
-    A retention_days of 0 represents infinite history (no pruning).
-    """
     try:
-        from app.core.config import Settings
+        from app.services.serializers import make_tombstone_payload
         if retention_days is None:
             retention_days = Settings.CLIPBOARD_RETENTION_DAYS
 
@@ -43,7 +58,6 @@ def prune_user_clipboard(user_id: str, db: Session, retention_days: Optional[int
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(days=retention_days)
 
-        # Get active, non-pinned items older than cutoff
         entries = (
             db.query(Clipboard)
             .filter(
@@ -60,27 +74,21 @@ def prune_user_clipboard(user_id: str, db: Session, retention_days: Optional[int
 
         tombstones = []
         for item in entries:
-            _item: Any = item
-            _item.is_deleted = True
-            _item.deleted_at = now
-            _item.updated_at = now
-            _item.ciphertext = None
-            _item.nonce = None
-            _item.is_pinned = False
-            _item.pinned_at = None
+            item.is_deleted = True
+            item.deleted_at = now
+            item.updated_at = now
+            item.ciphertext = None
+            item.nonce = None
+            item.is_pinned = False
+            item.pinned_at = None
 
-            ts_str = _item.timestamp.isoformat().replace("+00:00", "Z") if _item.timestamp else now.isoformat().replace("+00:00", "Z")
-            tombstones.append({
-                "type": "clipboard_sync",
-                "id": _item.clipboard_id,
-                "is_deleted": True,
-                "is_pinned": False,
-                "pinned_at": None,
-                "timestamp": ts_str,
-                "ciphertext": None,
-                "nonce": None,
-                "blob_version": _item.blob_version
-            })
+            tombstones.append(
+                make_tombstone_payload(
+                    clipboard_id=item.clipboard_id,
+                    blob_version=item.blob_version,
+                    timestamp=item.timestamp or now
+                )
+            )
 
         db.commit()
         return tombstones
@@ -90,21 +98,16 @@ def prune_user_clipboard(user_id: str, db: Session, retention_days: Optional[int
         return []
 
 def prune_all_users_clipboard(db: Session, retention_days: Optional[int] = None):
-    """
-    Iterates over all users and prunes their expired non-pinned clipboard entries.
-    """
     try:
         users = db.query(User).all()
         for user in users:
-            _u: Any = user
-            prune_user_clipboard(_u.user_id, db, retention_days=retention_days)
+            prune_user_clipboard(user.user_id, db, retention_days=retention_days)
     except Exception as e:
         logger.error(f"Global clipboard pruning failed: {e}")
         db.rollback()
 
 def cleanup_old_tombstones(db: Session):
     try:
-        from app.core.config import Settings
         retention_days = Settings.TOMBSTONE_RETENTION_DAYS
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
         
@@ -118,13 +121,6 @@ def cleanup_old_tombstones(db: Session):
         pass
 
 def run_all_cleanup(db: Session):
-    """
-    Runs all cleanup operations:
-    - Expired blacklisted tokens
-    - Expired refresh tokens
-    - Old tombstones (deleted clipboard entries older than retention period)
-    - Auto-prune excess clipboard entries for all users
-    """
     cleanup_expired_blacklisted_tokens(db)
     cleanup_expired_refresh_tokens(db)
     cleanup_old_tombstones(db)

@@ -1,5 +1,3 @@
-# app/core/constants.py
-
 MIN_DEVICE_ID_LEN = 3
 MAX_DEVICE_ID_LEN = 128
 MIN_DEVICE_NAME_LEN = 1
@@ -10,12 +8,11 @@ MIN_SALT_LEN = 16
 MAX_SALT_LEN = 256
 MIN_MK_LEN = 16
 MAX_MK_LEN = 8192
-MAX_CIPHERTEXT_LEN = 65536  # 64 KB
+MAX_CIPHERTEXT_LEN = 65536
 MAX_NONCE_LEN = 64
 MIN_NONCE_LEN = 8
 ALLOWED_BLOB_VERSIONS = {1}
 ALLOWED_KDF_VERSIONS = {1}
 
-# Hostnames considered local loopback for development and testing exemptions
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "testserver"})
 

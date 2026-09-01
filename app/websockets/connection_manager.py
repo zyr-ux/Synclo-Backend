@@ -1,14 +1,16 @@
+import asyncio
+import json
+import logging
 from typing import Any, Dict, Optional
 from uuid import uuid4
 from fastapi import WebSocket
-import asyncio
-import json
 
 from app.core.metrics import ACTIVE_WEBSOCKETS, WEBSOCKET_EVENTS_TOTAL
 
+logger = logging.getLogger("clipboard_sync")
+
 class ConnectionManager:
     def __init__(self):
-        # Structure: { user_id: { device_id: websocket } }
         self.active_connections: Dict[str, Dict[str, WebSocket]] = {}
         self.redis: Optional[Any] = None
         self._listener_task: Optional[asyncio.Task] = None
@@ -32,29 +34,22 @@ class ConnectionManager:
         self._update_active_metric()
 
     async def disconnect_device(self, user_id: str, device_id: str):
-        """Forcefully disconnect a specific device (e.g., when deleted remotely)."""
         if user_id in self.active_connections:
             ws = self.active_connections[user_id].get(device_id)
             if ws:
                 try:
-                    # Send notification before closing
                     await ws.send_json({
                         "type": "device_deleted",
                         "message": "This device has been removed from your account"
                     })
-                    # Close with specific code for remote deletion
                     await ws.close(code=4003)
                 except (RuntimeError, ConnectionError):
-                    # Connection already closed, ignore
                     pass
                 finally:
-                    # Always clean up the connection
                     self.disconnect(user_id, device_id)
 
     async def disconnect_user(self, user_id: str):
-        #Forcefully disconnect all devices for a user.
         if user_id in self.active_connections:
-            # Create a list of items to iterate safely while modifying the dict
             for device_id, ws in list(self.active_connections[user_id].items()):
                 await ws.close(code=4000)
                 self.disconnect(user_id, device_id)
@@ -81,18 +76,13 @@ class ConnectionManager:
             await self.redis.publish(self._channel(user_id), json.dumps(envelope))
 
     async def _broadcast_local(self, user_id: str, message: dict, exclude_device: Optional[str] = None):
-        # Iterate over a copy of items to prevent runtime errors if connections drop during broadcast
         for device_id, ws in list(self.get_user_devices(user_id).items()):
             if device_id != exclude_device:
                 try:
                     await ws.send_json(message)
                 except (RuntimeError, ConnectionError):
-                    # WebSocket connection is closed or broken, remove it
                     self.disconnect(user_id, device_id)
                 except Exception as e:
-                    # Unexpected error - log it and disconnect
-                    import logging
-                    logger = logging.getLogger("clipboard_sync")
                     logger.error(f"Unexpected error broadcasting to device {device_id}: {e}")
                     self.disconnect(user_id, device_id)
 
@@ -103,7 +93,7 @@ class ConnectionManager:
         if not self.redis or self._listener_task:
             return
 
-        redis = self.redis  # Capture as local so the nested closure sees a non-None type
+        redis = self.redis
 
         async def _listen():
             pubsub = redis.pubsub()

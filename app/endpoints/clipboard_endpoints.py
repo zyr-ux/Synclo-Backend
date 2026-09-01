@@ -1,11 +1,9 @@
-# app/endpoints/clipboard_endpoints.py
-
 import asyncio
 import base64
 from datetime import datetime, timedelta, timezone
-from typing import Any, List, Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi_limiter.depends import RateLimiter
 from sqlalchemy.orm import Session
 
@@ -20,84 +18,74 @@ from app.models.models import Clipboard, User
 from app.schemas.schemas import ClipboardIn, ClipboardOut, ClipboardPinUpdate, ClipboardSyncResponse
 from app.services.auth import get_db, get_current_user
 from app.services.push_service import launch_background_push
-from app.services.serializers import clipboard_to_response
-from app.services.utils import prune_user_clipboard
+from app.services.serializers import clipboard_to_response, make_tombstone_payload
+from app.services.utils import prune_user_clipboard, ensure_utc
 from app.websockets.connection_manager import manager
 
 
 router = APIRouter()
 
 
-@router.post("/clipboard", dependencies=[Depends(RateLimiter(times=30, seconds=60))])
-async def sync_clipboard(
+async def _handle_tombstone(
+    db: Session,
+    user_id: str,
     data: ClipboardIn,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    _cu: Any = current_user
-    user_id: str = _cu.user_id
-    new_timestamp = data.timestamp.replace(tzinfo=timezone.utc) if data.timestamp.tzinfo is None else data.timestamp
-
-    if data.is_deleted:
-        # Tombstone handling (mirroring WebSocket delete events)
-        existing_entry = db.query(Clipboard).filter_by(clipboard_id=data.id, user_id=user_id).first()
-
-        if existing_entry:
-            _e: Any = existing_entry
-            _e.ciphertext = None
-            _e.nonce = None
-            _e.blob_version = data.blob_version
-            _e.timestamp = new_timestamp
-            _e.is_deleted = True
-            _e.deleted_at = new_timestamp
-            _e.is_pinned = False
-            _e.pinned_at = None
-            _e.updated_at = datetime.now(timezone.utc)
-            db.commit()
-        else:
-            new_entry = Clipboard(
-                clipboard_id=data.id,
-                user_id=user_id,
-                ciphertext=None,
-                nonce=None,
-                blob_version=data.blob_version,
-                timestamp=new_timestamp,
-                is_deleted=True,
-                deleted_at=new_timestamp,
-                is_pinned=False,
-                pinned_at=None,
-                updated_at=datetime.now(timezone.utc)
-            )
-            db.add(new_entry)
-            db.commit()
-
-        # Broadcast deletion to all connected devices
-        await manager.broadcast_to_user(
+    new_timestamp: datetime,
+    caller_device_id: Optional[str]
+) -> dict:
+    existing_entry = db.query(Clipboard).filter_by(clipboard_id=data.id, user_id=user_id).first()
+    if existing_entry:
+        existing_entry.ciphertext = None
+        existing_entry.nonce = None
+        existing_entry.blob_version = data.blob_version
+        existing_entry.timestamp = new_timestamp
+        existing_entry.is_deleted = True
+        existing_entry.deleted_at = new_timestamp
+        existing_entry.is_pinned = False
+        existing_entry.pinned_at = None
+        existing_entry.updated_at = datetime.now(timezone.utc)
+        db.commit()
+    else:
+        new_entry = Clipboard(
+            clipboard_id=data.id,
             user_id=user_id,
-            message={
-                "type": "clipboard_sync",
-                "id": data.id,
-                "is_deleted": True,
-                "is_pinned": False,
-                "pinned_at": None,
-                "timestamp": new_timestamp.isoformat().replace("+00:00", "Z"),
-                "ciphertext": None,
-                "nonce": None,
-                "blob_version": data.blob_version
-            }
+            ciphertext=None,
+            nonce=None,
+            blob_version=data.blob_version,
+            timestamp=new_timestamp,
+            is_deleted=True,
+            deleted_at=new_timestamp,
+            is_pinned=False,
+            pinned_at=None,
+            updated_at=datetime.now(timezone.utc)
         )
+        db.add(new_entry)
+        db.commit()
 
-        # Trigger push notification dispatch to background devices (excluding sender)
-        caller_device_id = getattr(current_user, "current_device_id", None)
-        launch_background_push(user_id=user_id, exclude_device=caller_device_id)
+    await manager.broadcast_to_user(
+        user_id=user_id,
+        message=make_tombstone_payload(
+            clipboard_id=data.id,
+            blob_version=data.blob_version,
+            timestamp=new_timestamp
+        )
+    )
 
-        return {"status": "clipboard deleted", "id": data.id}
+    launch_background_push(user_id=user_id, exclude_device=caller_device_id)
 
-    # Active Entry Handling
+    return {"status": "clipboard deleted", "id": data.id}
+
+
+async def _handle_upsert(
+    db: Session,
+    user_id: str,
+    data: ClipboardIn,
+    new_timestamp: datetime,
+    caller_device_id: Optional[str]
+) -> dict:
     if data.ciphertext is None or data.nonce is None:
         raise HTTPException(status_code=400, detail="ciphertext and nonce are required for active entries")
 
-    # Decode base64 binary data
     try:
         ciphertext_bytes = base64.b64decode(data.ciphertext)
         nonce_bytes = base64.b64decode(data.nonce)
@@ -113,39 +101,32 @@ async def sync_clipboard(
 
     pinned_at = None
     if data.is_pinned:
-        if data.pinned_at:
-            pinned_at = data.pinned_at.replace(tzinfo=timezone.utc) if data.pinned_at.tzinfo is None else data.pinned_at
-        else:
-            pinned_at = datetime.now(timezone.utc)
+        pinned_at = ensure_utc(data.pinned_at) if data.pinned_at else datetime.now(timezone.utc)
 
-    # Upsert Logic: Check if ID exists
     existing_entry = db.query(Clipboard).filter_by(clipboard_id=data.id, user_id=user_id).first()
     ret_status = "clipboard synced"
     was_deleted = False
     if existing_entry:
-        _e: Any = existing_entry
-        was_deleted = bool(_e.is_deleted)
-        # Update existing
-        _e.ciphertext = ciphertext_bytes
-        _e.nonce = nonce_bytes
-        _e.blob_version = data.blob_version
-        _e.timestamp = new_timestamp
-        _e.is_deleted = False
-        _e.deleted_at = None
-        _e.is_pinned = data.is_pinned
-        _e.pinned_at = pinned_at
-        _e.updated_at = datetime.now(timezone.utc)
+        was_deleted = bool(existing_entry.is_deleted)
+        existing_entry.ciphertext = ciphertext_bytes
+        existing_entry.nonce = nonce_bytes
+        existing_entry.blob_version = data.blob_version
+        existing_entry.timestamp = new_timestamp
+        existing_entry.is_deleted = False
+        existing_entry.deleted_at = None
+        existing_entry.is_pinned = data.is_pinned
+        existing_entry.pinned_at = pinned_at
+        existing_entry.updated_at = datetime.now(timezone.utc)
         db.commit()
         ret_status = "clipboard updated"
     else:
-        # Insert new
         new_entry = Clipboard(
-            clipboard_id=data.id, # Use Client ID
+            clipboard_id=data.id,
             user_id=user_id,
             ciphertext=ciphertext_bytes,
             nonce=nonce_bytes,
             blob_version=data.blob_version,
-            timestamp=new_timestamp, # Use Client Timestamp
+            timestamp=new_timestamp,
             is_deleted=False,
             deleted_at=None,
             is_pinned=data.is_pinned,
@@ -155,7 +136,6 @@ async def sync_clipboard(
         db.add(new_entry)
         db.commit()
 
-    # Trigger auto-pruning and broadcast any tombstones only when adding new entries or un-deleting
     if not existing_entry or was_deleted:
         tombstones = prune_user_clipboard(user_id, db)
         for tombstone in tombstones:
@@ -164,12 +144,24 @@ async def sync_clipboard(
                 message=tombstone
             )
 
-    # Trigger push notification dispatch to background devices (excluding sender)
-    caller_device_id = getattr(current_user, "current_device_id", None)
     launch_background_push(user_id=user_id, exclude_device=caller_device_id)
 
     return {"status": ret_status, "id": data.id}
 
+
+@router.post("/clipboard", dependencies=[Depends(RateLimiter(times=30, seconds=60))])
+async def sync_clipboard(
+    data: ClipboardIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    user_id: str = current_user.user_id
+    new_timestamp = ensure_utc(data.timestamp)
+    caller_device_id = getattr(current_user, "current_device_id", None)
+
+    if data.is_deleted:
+        return await _handle_tombstone(db, user_id, data, new_timestamp, caller_device_id)
+    return await _handle_upsert(db, user_id, data, new_timestamp, caller_device_id)
 
 
 @router.get("/clipboard", response_model=ClipboardOut, dependencies=[Depends(RateLimiter(times=30, seconds=60))])
@@ -177,8 +169,7 @@ def get_clipboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    _cu: Any = current_user
-    user_id: str = _cu.user_id
+    user_id: str = current_user.user_id
 
     entry = (
         db.query(Clipboard)
@@ -198,10 +189,8 @@ def get_clipboard_all(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    _cu: Any = current_user
-    query = db.query(Clipboard).filter_by(user_id=_cu.user_id)
+    query = db.query(Clipboard).filter_by(user_id=current_user.user_id)
 
-    # Default behavior: exclude deleted items unless explicitly requested
     if not include_deleted:
         query = query.filter(Clipboard.is_deleted.is_(False))
 
@@ -220,27 +209,22 @@ def get_sync_clipboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    _cu: Any = current_user
-    user_id: str = _cu.user_id
+    user_id: str = current_user.user_id
 
-    # Safety Check: If 'since' is older than retention period, return 410 Gone
+    query = db.query(Clipboard).filter(Clipboard.user_id == user_id)
     if since:
-        since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since
+        since_utc = ensure_utc(since)
         retention_days = Settings.TOMBSTONE_RETENTION_DAYS
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         if since_utc < cutoff:
             raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
-
-    query = db.query(Clipboard).filter(Clipboard.user_id == user_id)
-    if since:
-        since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since
         query = query.filter(Clipboard.updated_at > since_utc)
 
     total_count = query.count()
     entries = query.order_by(Clipboard.updated_at.asc()).offset(offset).limit(limit).all()
 
     return {
-        "entries": [clipboard_to_response(entry).model_dump() for entry in entries],
+        "entries": [clipboard_to_response(entry) for entry in entries],
         "next_offset": offset + len(entries),
         "has_more": (offset + len(entries)) < total_count,
         "total_count": total_count
@@ -253,8 +237,7 @@ def get_clipboard_by_id(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    _cu: Any = current_user
-    user_id: str = _cu.user_id
+    user_id: str = current_user.user_id
     entry = db.query(Clipboard).filter_by(clipboard_id=clipboard_id, user_id=user_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Clipboard entry not found")
@@ -269,44 +252,40 @@ async def pin_clipboard_item(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    _cu: Any = current_user
-    user_id: str = _cu.user_id
+    user_id: str = current_user.user_id
 
     entry = db.query(Clipboard).filter_by(clipboard_id=clipboard_id, user_id=user_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Clipboard entry not found")
 
-    _entry: Any = entry
-    if _entry.is_deleted:
+    if entry.is_deleted:
         raise HTTPException(status_code=400, detail="Cannot pin or unpin a deleted clipboard entry")
 
     now = datetime.now(timezone.utc)
-    _entry.is_pinned = data.is_pinned
+    entry.is_pinned = data.is_pinned
     if data.is_pinned:
         if data.pinned_at:
-            _entry.pinned_at = data.pinned_at.replace(tzinfo=timezone.utc) if data.pinned_at.tzinfo is None else data.pinned_at
+            entry.pinned_at = ensure_utc(data.pinned_at)
         else:
-            _entry.pinned_at = now
+            entry.pinned_at = now
     else:
-        _entry.pinned_at = None
+        entry.pinned_at = None
 
-    _entry.updated_at = now
+    entry.updated_at = now
     db.commit()
     db.refresh(entry)
 
-    # Broadcast lightweight pin update event to all connected devices for this user
     await manager.broadcast_to_user(
         user_id=user_id,
         message={
             "type": "clipboard_pin",
             "id": clipboard_id,
-            "is_pinned": _entry.is_pinned,
-            "pinned_at": _entry.pinned_at.isoformat().replace("+00:00", "Z") if _entry.pinned_at else None,
-            "updated_at": _entry.updated_at.isoformat().replace("+00:00", "Z")
+            "is_pinned": entry.is_pinned,
+            "pinned_at": entry.pinned_at.isoformat().replace("+00:00", "Z") if entry.pinned_at else None,
+            "updated_at": entry.updated_at.isoformat().replace("+00:00", "Z")
         }
     )
 
-    # Trigger push notification dispatch to background devices (excluding sender)
     caller_device_id = getattr(current_user, "current_device_id", None)
     launch_background_push(user_id=user_id, exclude_device=caller_device_id)
 
@@ -319,47 +298,33 @@ async def delete_clipboard_item(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    _cu: Any = current_user
-    user_id: str = _cu.user_id
-    # Idempotency: Check if item exists (tombstone or active)
+    user_id: str = current_user.user_id
     entry = db.query(Clipboard).filter_by(clipboard_id=clipboard_id, user_id=user_id).first()
 
-    # If not found, return success (idempotent)
     if not entry:
         return {"message": "Clipboard entry deleted"}
 
-    # If already deleted, return success (idempotent)
-    _entry: Any = entry
-    if _entry.is_deleted:
+    if entry.is_deleted:
         return {"message": "Clipboard entry deleted"}
 
-    # Soft Delete
-    _entry.is_deleted = True
-    _entry.ciphertext = None
-    _entry.nonce = None
-    _entry.is_pinned = False
-    _entry.pinned_at = None
-    _entry.deleted_at = datetime.now(timezone.utc)
-    _entry.updated_at = datetime.now(timezone.utc)
+    entry.is_deleted = True
+    entry.ciphertext = None
+    entry.nonce = None
+    entry.is_pinned = False
+    entry.pinned_at = None
+    entry.deleted_at = datetime.now(timezone.utc)
+    entry.updated_at = datetime.now(timezone.utc)
     db.commit()
     
-    # Broadcast deletion to all connected devices
     await manager.broadcast_to_user(
         user_id=user_id,
-        message={
-            "type": "clipboard_sync",
-            "id": clipboard_id,
-            "is_deleted": True,
-            "is_pinned": False,
-            "pinned_at": None,
-            "timestamp": _entry.deleted_at.isoformat().replace("+00:00", "Z"),
-            "ciphertext": None,
-            "nonce": None,
-            "blob_version": _entry.blob_version
-        }
+        message=make_tombstone_payload(
+            clipboard_id=clipboard_id,
+            blob_version=entry.blob_version,
+            timestamp=entry.deleted_at
+        )
     )
     
-    # Trigger push notification dispatch to background devices (excluding sender)
     caller_device_id = getattr(current_user, "current_device_id", None)
     launch_background_push(user_id=user_id, exclude_device=caller_device_id)
     
@@ -368,13 +333,10 @@ async def delete_clipboard_item(
 
 @router.delete("/clipboard", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
 async def delete_clipboard_history(
-    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Soft delete all active entries
-    _cu: Any = current_user
-    user_id: str = _cu.user_id
+    user_id: str = current_user.user_id
     active_entries = db.query(Clipboard).filter_by(
         user_id=user_id,
         is_deleted=False,
@@ -385,40 +347,32 @@ async def delete_clipboard_history(
         return {"message": "No clipboard entries to delete."}
 
     now = datetime.now(timezone.utc)
-    deleted_entries = []  # (clipboard_id, blob_version) pairs
+    deleted_entries = []
 
     for entry in active_entries:
-        _e: Any = entry
-        _e.is_deleted = True
-        _e.ciphertext = None
-        _e.nonce = None
-        _e.is_pinned = False
-        _e.pinned_at = None
-        _e.deleted_at = now
-        _e.updated_at = now
-        deleted_entries.append((_e.clipboard_id, _e.blob_version))
+        entry.is_deleted = True
+        entry.ciphertext = None
+        entry.nonce = None
+        entry.is_pinned = False
+        entry.pinned_at = None
+        entry.deleted_at = now
+        entry.updated_at = now
+        deleted_entries.append((entry.clipboard_id, entry.blob_version))
         
     db.commit()
     
-    # Broadcast deletion of all entries
     for clipboard_id, blob_version in deleted_entries:
         await manager.broadcast_to_user(
             user_id=user_id,
-            message={
-                "type": "clipboard_sync",
-                "id": clipboard_id,
-                "is_deleted": True,
-                "is_pinned": False,
-                "pinned_at": None,
-                "timestamp": now.isoformat().replace("+00:00", "Z"),
-                "ciphertext": None,
-                "nonce": None,
-                "blob_version": blob_version
-            }
+            message=make_tombstone_payload(
+                clipboard_id=clipboard_id,
+                blob_version=blob_version,
+                timestamp=now
+            )
         )
     
-    # Trigger push notification dispatch to background devices (excluding sender)
     caller_device_id = getattr(current_user, "current_device_id", None)
     launch_background_push(user_id=user_id, exclude_device=caller_device_id)
     
     return {"message": f"{len(active_entries)} clipboard entries deleted."}
+

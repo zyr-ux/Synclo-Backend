@@ -37,7 +37,6 @@ class PushSubscription(BaseModel):
         if not parsed.scheme or not parsed.netloc:
             raise ValueError("Invalid URL format")
         
-        # Enforce HTTPS unless HTTPS_ONLY is disabled or connecting to local loopback address
         if parsed.scheme == "http":
             is_local = parsed.hostname in LOOPBACK_HOSTS
             if Settings.HTTPS_ONLY and not is_local:
@@ -49,19 +48,19 @@ class PushSubscription(BaseModel):
 
 
 class ClipboardIn(BaseModel):
-    id: str  # Client-generated UUID
-    ciphertext: Optional[str] = None # base64 encoded
-    nonce: Optional[str] = None # base64 encoded
+    id: str
+    ciphertext: Optional[str] = None
+    nonce: Optional[str] = None
     blob_version: int = 1
-    timestamp: datetime  # Client-generated timestamp (ISO 8601)
+    timestamp: datetime
     is_deleted: bool = False
     is_pinned: bool = False
     pinned_at: Optional[datetime] = None
 
 class ClipboardOut(BaseModel):
     id: str
-    ciphertext: Optional[str] = None # base64 encoded
-    nonce: Optional[str] = None # base64 encoded
+    ciphertext: Optional[str] = None
+    nonce: Optional[str] = None
     blob_version: int
     timestamp: datetime
     updated_at: datetime
@@ -84,12 +83,11 @@ class Token(BaseModel):
     username: Optional[str] = None
 
 class TokenWithE2EE(Token):
-    encrypted_master_key: str  # base64 encoded
-    salt: str  # base64 encoded
+    encrypted_master_key: str
+    salt: str
     kdf_version: int
 
 class UserResponse(BaseModel):
-    """Safe user serialization (no hashes/keys)"""
     model_config = ConfigDict(from_attributes=True)
 
     user_id: str
@@ -99,11 +97,10 @@ class UserResponse(BaseModel):
 
 
 class UserWithE2EE(BaseModel):
-    """User with encrypted material (for client-side decryption)"""
     email: str
     username: Optional[str] = None
-    encrypted_master_key: str  # base64 encoded
-    salt: str  # base64 encoded
+    encrypted_master_key: str
+    salt: str
     kdf_version: int
 
 class RefreshTokenRequest(BaseModel):
@@ -111,7 +108,7 @@ class RefreshTokenRequest(BaseModel):
 
 class UserLoginWithDevice(BaseModel):
     email: EmailStr
-    auth_key: str  # base64 encoded, client-derived HKDF-based authentication key
+    auth_key: str
     device_id: str
     device_name: Optional[str] = None
     os: Optional[str] = None
@@ -119,27 +116,27 @@ class UserLoginWithDevice(BaseModel):
 class UserRegisterWithDevice(BaseModel):
     email: EmailStr
     username: Optional[str] = None
-    auth_key: str  # base64 encoded, client-derived HKDF-based authentication key
+    auth_key: str
     device_id: str
     device_name: Optional[str] = "Unnamed Device"
     os: Optional[str] = None
-    encrypted_master_key: str  # base64 encoded client-wrapped MK
-    salt: str  # base64 encoded KDF salt
-    kdf_version: int = 1  # Argon2 parameters version
+    encrypted_master_key: str
+    salt: str
+    kdf_version: int = 1
 
 class SessionInfo(BaseModel):
     device_id: str
     expiry: datetime
 
 class PasswordChange(BaseModel):
-    old_auth_key: str  # base64 encoded
-    new_auth_key: str  # base64 encoded
-    new_encrypted_master_key: str  # base64 encoded, re-wrapped with new password
-    new_salt: str  # base64 encoded
+    old_auth_key: str
+    new_auth_key: str
+    new_encrypted_master_key: str
+    new_salt: str
     new_kdf_version: int = 1
 
 class SaltResponse(BaseModel):
-    salt: str  # base64 encoded
+    salt: str
     kdf_version: int
 
 class ClipboardSyncResponse(BaseModel):

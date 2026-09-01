@@ -10,7 +10,7 @@ class User(Base):
     user_id = Column(String, unique=True, index=True, nullable=False, default=lambda: str(uuid4()))
     email = Column(String, unique=True, index=True, nullable=False)
     username = Column(String, nullable=True)
-    auth_key_hash = Column(String, nullable=False)  # bcrypt hash of client-derived auth key
+    auth_key_hash = Column(String, nullable=False)
     encrypted_master_key = Column(LargeBinary, nullable=False)
     salt = Column(LargeBinary, nullable=False)
     kdf_version = Column(Integer, nullable=False, default=1)
@@ -26,16 +26,15 @@ class Device(Base):
     user_id = Column(String, ForeignKey("users.user_id"), index=True)
     last_seen = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=True, index=True)
 
-    # Push Notification fields
-    push_subscription = Column(String, nullable=True)  # UnifiedPush Webhook URL (e.g. https://ntfy.sh/up_...)
+    push_subscription = Column(String, nullable=True)
     push_subscription_updated_at = Column(DateTime(timezone=True), nullable=True)
 
     owner = relationship("User", back_populates="devices")
 
 class Clipboard(Base):
     __tablename__ = "clipboard"
-    id = Column(Integer, primary_key=True, index=True)  # Auto-increment database index
-    clipboard_id = Column(String, unique=True, index=True, nullable=False) # UUID business identifier
+    id = Column(Integer, primary_key=True, index=True)
+    clipboard_id = Column(String, unique=True, index=True, nullable=False)
     user_id = Column(String, ForeignKey("users.user_id"))
     ciphertext = Column(LargeBinary, nullable=True)
     nonce = Column(LargeBinary, nullable=True)
@@ -57,7 +56,6 @@ class RefreshToken(Base):
     expiry = Column(DateTime(timezone=True), index=True)
     device_id = Column(String, nullable=False)
     
-    # New fields for rotation & reuse detection
     token_id = Column(String, index=True, nullable=False)
     is_revoked = Column(Boolean, default=False)
 

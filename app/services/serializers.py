@@ -1,37 +1,66 @@
 import base64
-from typing import Any
-from app.models.models import User, Clipboard
-from app.schemas.schemas import UserWithE2EE, ClipboardOut
+from datetime import datetime, timezone
+from typing import Any, Optional
+from app.models.models import User, Clipboard, Device
+from app.schemas.schemas import UserWithE2EE, ClipboardOut, DeviceOut
+from app.services.utils import to_iso_utc
+from app.websockets.connection_manager import manager
 
 def user_to_e2ee_response(user: User) -> UserWithE2EE:
-    """
-    Extract user E2EE material with proper typing.
-    We cast internally to Any to prevent the type checker from 
-    complaining about SQLAlchemy Column descriptor types.
-    """
-    u: Any = user
     return UserWithE2EE(
-        email=u.email,
-        username=u.username,
-        encrypted_master_key=base64.b64encode(u.encrypted_master_key).decode('utf-8'),
-        salt=base64.b64encode(u.salt).decode('utf-8'),
-        kdf_version=u.kdf_version
+        email=user.email,
+        username=user.username,
+        encrypted_master_key=base64.b64encode(user.encrypted_master_key).decode('utf-8'),
+        salt=base64.b64encode(user.salt).decode('utf-8'),
+        kdf_version=user.kdf_version
     )
 
 def clipboard_to_response(entry: Clipboard) -> ClipboardOut:
-    """
-    Extract clipboard with proper typing.
-    """
-    e: Any = entry
     return ClipboardOut(
-        id=e.clipboard_id,
-        ciphertext=base64.b64encode(e.ciphertext).decode('utf-8') if e.ciphertext else None,
-        nonce=base64.b64encode(e.nonce).decode('utf-8') if e.nonce else None,
-        blob_version=e.blob_version,
-        timestamp=e.timestamp,
-        updated_at=e.updated_at,
-        is_deleted=e.is_deleted,
-        deleted_at=e.deleted_at,
-        is_pinned=e.is_pinned if getattr(e, 'is_pinned', None) is not None else False,
-        pinned_at=getattr(e, 'pinned_at', None)
+        id=entry.clipboard_id,
+        ciphertext=base64.b64encode(entry.ciphertext).decode('utf-8') if entry.ciphertext else None,
+        nonce=base64.b64encode(entry.nonce).decode('utf-8') if entry.nonce else None,
+        blob_version=entry.blob_version,
+        timestamp=entry.timestamp,
+        updated_at=entry.updated_at,
+        is_deleted=entry.is_deleted,
+        deleted_at=entry.deleted_at,
+        is_pinned=entry.is_pinned if getattr(entry, 'is_pinned', None) is not None else False,
+        pinned_at=getattr(entry, 'pinned_at', None)
     )
+
+def device_to_response(device: Device, user_id: Optional[str] = None) -> DeviceOut:
+    uid = user_id or getattr(device, "user_id", None)
+    return DeviceOut(
+        device_id=device.device_id,
+        device_name=device.device_name,
+        os=device.os,
+        last_seen=device.last_seen,
+        is_online=manager.is_device_online(uid, device.device_id) if uid else False,
+        push_enabled=bool(getattr(device, "push_subscription", None))
+    )
+
+def make_tombstone_payload(
+    clipboard_id: str,
+    blob_version: int = 1,
+    timestamp: Optional[Any] = None
+) -> dict:
+    if timestamp is None:
+        ts_str = to_iso_utc(datetime.now(timezone.utc))
+    elif isinstance(timestamp, str):
+        ts_str = timestamp
+    else:
+        ts_str = to_iso_utc(timestamp)
+
+    return {
+        "type": "clipboard_sync",
+        "id": clipboard_id,
+        "is_deleted": True,
+        "is_pinned": False,
+        "pinned_at": None,
+        "timestamp": ts_str,
+        "ciphertext": None,
+        "nonce": None,
+        "blob_version": blob_version
+    }
+

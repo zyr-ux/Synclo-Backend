@@ -4,11 +4,10 @@ import tomllib
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()  # Loads from .env file
+load_dotenv()
 
 _logger = logging.getLogger(__name__)
 
-# Load project metadata from pyproject.toml (required)
 _pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
 if not _pyproject_path.exists():
     raise RuntimeError(f"pyproject.toml not found at {_pyproject_path}")
@@ -25,7 +24,6 @@ class Settings:
     VERSION: str = _pyproject_data["version"]
     DESCRIPTION: str = _pyproject_data["description"]
 
-    # JWT
     SECRET_KEY = os.getenv("SECRET_KEY")
     if not SECRET_KEY:
         raise RuntimeError("SECRET_KEY environment variable is required for token signing")
@@ -36,7 +34,6 @@ class Settings:
     REFRESH_TOKEN_HASH_KEY = os.getenv("REFRESH_TOKEN_HASH_KEY")
     if not REFRESH_TOKEN_HASH_KEY:
         raise RuntimeError("REFRESH_TOKEN_HASH_KEY environment variable is required for refresh token HMAC")
-    # Enforce minimum length to avoid weak HMAC keys
     if len(REFRESH_TOKEN_HASH_KEY) < 16:
         raise RuntimeError("REFRESH_TOKEN_HASH_KEY must be at least 16 characters long")
     REFRESH_TOKEN_HASH_KEY = REFRESH_TOKEN_HASH_KEY.encode("utf-8")
@@ -44,13 +41,10 @@ class Settings:
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 30))
     TOMBSTONE_RETENTION_DAYS = int(os.getenv("TOMBSTONE_RETENTION_DAYS", "30"))
 
-    # Server-wide Clipboard Retention Policy (in days, 0 = disabled)
     CLIPBOARD_RETENTION_DAYS = int(os.getenv("CLIPBOARD_RETENTION_DAYS", "30"))
 
-    # DB
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/clipboard.db")
-    REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379") # Default to docker service name; override for local
+    REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 
-    # Security & Transport Mode
     HTTPS_ONLY = os.getenv("HTTPS_ONLY", "true").lower() in ("true", "1", "yes")
 
