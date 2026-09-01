@@ -10,6 +10,8 @@ Scenarios Targeted:
 6. Connection rejection (error frame / close 1008) when authentication credentials are missing.
 """
 
+import pytest
+from starlette.websockets import WebSocketDisconnect
 from tests.conftest import make_clipboard_payload
 
 
@@ -130,10 +132,57 @@ def test_websocket_clipboard_broadcast_to_other_devices(client, user_factory):
 
 
 def test_websocket_rejects_missing_auth(client):
+    from starlette.websockets import WebSocketDisconnect
     with client.websocket_connect("/ws/v1/sync") as ws:
         msg = ws.receive_json()
         assert msg.get("type") == "error"
         assert "Authorization" in msg.get("message", "")
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            ws.receive_json()
+        assert exc_info.value.code == 1008
+
+
+def test_websocket_rejects_expired_token(client, auth_user):
+    from starlette.websockets import WebSocketDisconnect
+    from app.services.auth import create_access_token
+    import datetime
+
+    # Create an expired token (-1 minute)
+    expired_token = create_access_token(
+        data={"sub": auth_user["email"], "device_id": auth_user["device_id"]},
+        expires_delta=datetime.timedelta(minutes=-1)
+    )
+
+    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {expired_token}"}) as ws:
+        # Should be rejected
+        msg = ws.receive_json()
+        assert msg.get("type") == "error"
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            ws.receive_json()
+        assert exc_info.value.code in (1008, 4001)
+
+
+def test_websocket_rejects_blacklisted_token(client, auth_user):
+    from starlette.websockets import WebSocketDisconnect
+    token = auth_user["access_token"]
+    refresh_token = auth_user["refresh_token"]
+
+    # Logout to blacklist the access token
+    res_logout = client.post(
+        "/api/v1/logout",
+        json={"refresh_token": refresh_token},
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert res_logout.status_code == 200
+
+    # Attempt to connect to WebSocket with the blacklisted token
+    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}) as ws:
+        msg = ws.receive_json()
+        assert msg.get("type") == "error"
+        assert "Token has been revoked" in msg.get("message", "")
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            ws.receive_json()
+        assert exc_info.value.code == 1008
 
 
 def test_websocket_broadcast_on_pin_update(client, user_factory):

@@ -32,6 +32,31 @@ def test_create_and_fetch_clipboard_item(client, auth_headers):
     assert res_by_id.json()["id"] == clip_id
 
 
+def test_get_latest_clipboard_skips_deleted_tombstones(client, auth_headers):
+    # 1. Create an older active item
+    client.post("/api/v1/clipboard", json=make_clipboard_payload("item_older", timestamp="2026-08-01T10:00:00Z"), headers=auth_headers)
+
+    # 2. Create a newer item
+    client.post("/api/v1/clipboard", json=make_clipboard_payload("item_newer", timestamp="2026-08-01T11:00:00Z"), headers=auth_headers)
+
+    # 3. Delete the newer item
+    client.delete("/api/v1/clipboard/item_newer", headers=auth_headers)
+
+    # 4. GET /api/v1/clipboard should return the older active item, skipping the newer deleted tombstone
+    res = client.get("/api/v1/clipboard", headers=auth_headers)
+    assert res.status_code == 200
+    assert res.json()["id"] == "item_older"
+    assert res.json()["is_deleted"] is False
+
+    # 5. Delete the remaining active item
+    client.delete("/api/v1/clipboard/item_older", headers=auth_headers)
+
+    # 6. Now that all items are deleted, GET /api/v1/clipboard should return 404
+    res_empty = client.get("/api/v1/clipboard", headers=auth_headers)
+    assert res_empty.status_code == 404
+    assert res_empty.json()["detail"] == "No clipboard found"
+
+
 def test_pinned_clipboard_preserved_on_bulk_delete(client, auth_headers):
     # 1. Create regular unpinned item
     client.post("/api/v1/clipboard",
@@ -52,6 +77,32 @@ def test_pinned_clipboard_preserved_on_bulk_delete(client, auth_headers):
     assert len(items) == 1
     assert items[0]["id"] == "item_pinned"
     assert items[0]["is_pinned"] is True
+
+
+def test_bulk_delete_broadcasts_tombstones_for_unpinned_items(client, auth_headers, mocker):
+    mock_broadcast = mocker.patch("app.endpoints.clipboard_endpoints.manager.broadcast_to_user", new_callable=mocker.AsyncMock)
+
+    # Create 2 unpinned items and 1 pinned item
+    client.post("/api/v1/clipboard", json=make_clipboard_payload("unpinned_1"), headers=auth_headers)
+    client.post("/api/v1/clipboard", json=make_clipboard_payload("unpinned_2"), headers=auth_headers)
+    client.post("/api/v1/clipboard", json=make_clipboard_payload("pinned_1", is_pinned=True), headers=auth_headers)
+
+    mock_broadcast.reset_mock()
+
+    # Bulk delete
+    res = client.delete("/api/v1/clipboard", headers=auth_headers)
+    assert res.status_code == 200
+
+    # Verify broadcast messages were sent for the 2 unpinned items
+    assert mock_broadcast.call_count == 2
+    broadcasted_ids = {call.kwargs.get("message", {}).get("id") or (call.args[1].get("id") if len(call.args) > 1 else None) for call in mock_broadcast.call_args_list}
+    assert broadcasted_ids == {"unpinned_1", "unpinned_2"}
+
+    for call in mock_broadcast.call_args_list:
+        msg = call.kwargs.get("message") or call.args[1]
+        assert msg["is_deleted"] is True
+        assert msg["is_pinned"] is False
+        assert msg["ciphertext"] is None
 
 
 def test_single_delete_soft_deletes_and_unpins(client, auth_headers):

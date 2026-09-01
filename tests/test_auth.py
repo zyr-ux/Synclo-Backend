@@ -149,6 +149,36 @@ def test_update_email_flow(client, user_factory):
     assert res_prof.json()["email"] == new_email
 
 
+def test_login_with_invalid_credentials_fails(client, user_factory):
+    email = "neg_auth_test@synclo.app"
+    u = user_factory(email=email)
+
+    # 1. Invalid auth_key (wrong password key) -> 401
+    wrong_key = generate_random_base64(32)
+    res_wrong_pw = client.post("/api/v1/login", json={
+        "email": email,
+        "auth_key": wrong_key,
+        "device_id": "test_dev",
+    })
+    assert res_wrong_pw.status_code == 401
+
+    # 2. Non-existent email -> 401
+    res_no_user = client.post("/api/v1/login", json={
+        "email": "non_existent_user_999@synclo.app",
+        "auth_key": u["auth_key"],
+        "device_id": "test_dev",
+    })
+    assert res_no_user.status_code == 401
+
+    # 3. Malformed base64 auth_key -> 401
+    res_bad_b64 = client.post("/api/v1/login", json={
+        "email": email,
+        "auth_key": "not-valid-base64!",
+        "device_id": "test_dev",
+    })
+    assert res_bad_b64.status_code == 401
+
+
 def test_refresh_token_flow(client, auth_user):
     refresh_tok = auth_user["refresh_token"]
     res = client.post("/api/v1/refresh", json={"refresh_token": refresh_tok})
@@ -161,6 +191,24 @@ def test_refresh_token_flow(client, auth_user):
     # Verify new access token works
     res_prof = client.get("/api/v1/user", headers={"Authorization": f"Bearer {new_access_token}"})
     assert res_prof.status_code == 200
+
+
+def test_refresh_token_reuse_revokes_entire_token_family(client, auth_user):
+    r1 = auth_user["refresh_token"]
+
+    # 1. Normal refresh: R1 -> R2 (R1 becomes revoked)
+    res1 = client.post("/api/v1/refresh", json={"refresh_token": r1})
+    assert res1.status_code == 200
+    r2 = res1.json()["refresh_token"]
+
+    # 2. Attacker / replay attempt with old R1 -> should detect reuse and revoke entire family
+    res_reuse = client.post("/api/v1/refresh", json={"refresh_token": r1})
+    assert res_reuse.status_code == 401
+    assert "Refresh token reused" in res_reuse.json()["detail"]
+
+    # 3. Legitimate client tries to use R2 -> should also fail because family was terminated
+    res_victim = client.post("/api/v1/refresh", json={"refresh_token": r2})
+    assert res_victim.status_code == 401
 
 
 def test_account_deletion(client, auth_user):

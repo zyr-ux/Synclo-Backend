@@ -151,6 +151,51 @@ def test_unpinning_grants_fresh_lifecycle_grace_period(client, auth_user, db_ses
     assert active_item.is_pinned is False
 
 
+def test_update_clipboard_resets_updated_at_and_extends_retention(client, auth_user, db_session):
+    headers = auth_user["headers"]
+    user = db_session.query(User).filter_by(email=auth_user["email"]).first()
+    user_id = user.user_id
+
+    now = datetime.now(timezone.utc)
+    old_time = now - timedelta(days=25)  # 25 days old (approaching 30 days retention limit)
+
+    cid = str(uuid4())
+    item = Clipboard(
+        clipboard_id=cid,
+        user_id=user_id,
+        ciphertext=b"old_data",
+        nonce=b"old_nonce_12",
+        blob_version=1,
+        timestamp=old_time,
+        updated_at=old_time,
+        is_deleted=False,
+        is_pinned=False
+    )
+    db_session.add(item)
+    db_session.commit()
+
+    # Update the item via POST /api/v1/clipboard (which resets updated_at to now)
+    new_payload = {
+        "id": cid,
+        "ciphertext": generate_random_base64(32),
+        "nonce": generate_random_base64(12),
+        "blob_version": 1,
+        "timestamp": now.isoformat(),
+        "is_pinned": False
+    }
+    update_res = client.post("/api/v1/clipboard", json=new_payload, headers=headers)
+    assert update_res.status_code == 200
+    assert update_res.json()["status"] == "clipboard updated"
+
+    # Run pruning with 30-day retention
+    tombstones = prune_user_clipboard(user_id, db_session, retention_days=30)
+    assert len(tombstones) == 0
+
+    # Ensure item remains active and not deleted
+    db_item = db_session.query(Clipboard).filter_by(clipboard_id=cid).first()
+    assert db_item.is_deleted is False
+
+
 def test_zero_retention_days_disables_pruning(client, auth_user, db_session):
     user = db_session.query(User).filter_by(email=auth_user["email"]).first()
     user_id = user.user_id

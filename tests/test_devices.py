@@ -86,6 +86,38 @@ def test_device_online_presence_and_token_invalidation(client, user_factory):
     assert auth_check.status_code == 403
 
 
+def test_remote_device_deletion_closes_websocket_with_code_4003(client, user_factory):
+    from starlette.websockets import WebSocketDisconnect
+    import pytest
+
+    user = user_factory()
+
+    # Register device 2
+    dev2_res = client.post("/api/v1/login", json={
+        "email": user["email"],
+        "auth_key": user["auth_key"],
+        "device_id": "dev_to_be_remotely_deleted",
+        "device_name": "Second Phone",
+        "os": "Android",
+    })
+    token_dev2 = dev2_res.json()["access_token"]
+
+    # Device 2 connects to WebSocket
+    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}) as ws_dev2:
+        # Device 1 remotely deletes Device 2 via REST
+        res_del = client.delete("/api/v1/devices/dev_to_be_remotely_deleted", headers=user["headers"])
+        assert res_del.status_code == 200
+
+        # Device 2 should receive 'device_deleted' message and then be disconnected with code 4003
+        msg = ws_dev2.receive_json()
+        assert msg.get("type") == "device_deleted"
+        assert "removed from your account" in msg.get("message", "")
+
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            ws_dev2.receive_json()
+        assert exc_info.value.code == 4003
+
+
 def test_rename_device_success(client, auth_user):
     dev_id = auth_user["device_id"]
     res = client.patch(

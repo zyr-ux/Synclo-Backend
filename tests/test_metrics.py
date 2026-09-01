@@ -56,6 +56,12 @@ async def test_websocket_active_connections_and_event_metrics():
 
 @pytest.mark.asyncio
 async def test_push_service_metrics_recording():
+    from app.core.metrics import PUSH_DISPATCHES_TOTAL
+
+    # Sample baseline metrics
+    success_before = PUSH_DISPATCHES_TOTAL.labels(status="success")._value.get()
+    timeout_before = PUSH_DISPATCHES_TOTAL.labels(status="timeout")._value.get()
+
     mock_response = httpx.Response(200, request=httpx.Request("POST", "https://push.example.com/endpoint"))
     with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock, return_value=mock_response):
         success = await push_service.send_push_notification(
@@ -65,6 +71,9 @@ async def test_push_service_metrics_recording():
         )
         assert success is True
 
+    success_after = PUSH_DISPATCHES_TOTAL.labels(status="success")._value.get()
+    assert success_after == success_before + 1
+
     with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock, side_effect=httpx.TimeoutException("Timeout")):
         success = await push_service.send_push_notification(
             device_id="dev-push-2",
@@ -72,6 +81,9 @@ async def test_push_service_metrics_recording():
             user_id="user-push-2",
         )
         assert success is False
+
+    timeout_after = PUSH_DISPATCHES_TOTAL.labels(status="timeout")._value.get()
+    assert timeout_after == timeout_before + 1
 
 
 def test_zero_knowledge_anonymity_in_metrics(client, user_factory):

@@ -74,18 +74,21 @@ def test_delta_sync_pagination(client, auth_headers, clip_payload):
     # Fetch page 1 (limit 2, offset 0)
     page1 = client.get("/api/v1/clipboard/sync", params={"limit": 2, "offset": 0}, headers=auth_headers).json()
     assert len(page1["entries"]) == 2
+    assert page1["total_count"] == 5
     assert page1["next_offset"] == 2
     assert page1["has_more"] is True
 
     # Fetch page 2 (limit 2, offset 2)
     page2 = client.get("/api/v1/clipboard/sync", params={"limit": 2, "offset": page1["next_offset"]}, headers=auth_headers).json()
     assert len(page2["entries"]) == 2
+    assert page2["total_count"] == 5
     assert page2["next_offset"] == 4
     assert page2["has_more"] is True
 
     # Fetch page 3 (limit 2, offset 4) -> 1 remaining
     page3 = client.get("/api/v1/clipboard/sync", params={"limit": 2, "offset": page2["next_offset"]}, headers=auth_headers).json()
     assert len(page3["entries"]) == 1
+    assert page3["total_count"] == 5
     assert page3["next_offset"] == 5
     assert page3["has_more"] is False
 
@@ -94,3 +97,17 @@ def test_expired_sync_state_returns_410(client, auth_headers):
     old_time = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=35)).isoformat().replace("+00:00", "Z")
     res = client.get("/api/v1/clipboard/sync", params={"since": old_time}, headers=auth_headers)
     assert res.status_code == 410
+
+
+def test_delta_sync_boundary_condition_410(client, auth_headers):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
+    # 29.9 days ago (within 30 days retention cutoff) -> should succeed (200 OK)
+    valid_time = (now - datetime.timedelta(days=29, hours=20)).isoformat().replace("+00:00", "Z")
+    res_valid = client.get("/api/v1/clipboard/sync", params={"since": valid_time}, headers=auth_headers)
+    assert res_valid.status_code == 200
+
+    # 30.1 days ago (exceeds 30 days retention cutoff) -> should return 410 Gone
+    expired_time = (now - datetime.timedelta(days=30, hours=2)).isoformat().replace("+00:00", "Z")
+    res_expired = client.get("/api/v1/clipboard/sync", params={"since": expired_time}, headers=auth_headers)
+    assert res_expired.status_code == 410

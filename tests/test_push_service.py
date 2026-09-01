@@ -194,10 +194,17 @@ async def test_send_push_notification_stale_self_healing(client, auth_user, db_s
     result = await send_push_notification(device_id, f"https://ntfy.sh/up_stale_{status_code}", user_id)
     assert result is False
 
-    # Check that the device's push_subscription was pruned (self-healed)
+    # Check that the device's push_subscription was pruned (self-healed) in DB
     db_session.expire_all()
     device = db_session.query(Device).filter_by(device_id=device_id).first()
     assert device.push_subscription is None
+
+    # Also verify via public API GET /api/v1/devices
+    res_list = client.get("/api/v1/devices", headers=auth_user["headers"])
+    assert res_list.status_code == 200
+    devices = res_list.json()
+    matched_dev = next(d for d in devices if d["device_id"] == device_id)
+    assert matched_dev["push_enabled"] is False
 
 
 @pytest.mark.asyncio
