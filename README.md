@@ -69,7 +69,7 @@ Run it twice (once for each key) and insert the generated values into your confi
 | :--- | :--- | :--- |
 | `SECRET_KEY` | *(Required)* | Secret key used for signing JWT access tokens. |
 | `REFRESH_TOKEN_HASH_KEY` | *(Required)* | Secret key used for hashing refresh tokens in the database. |
-| `DATABASE_URL` | `sqlite:////app/data/clipboard.db` | SQLAlchemy database connection string. Default points to persistent SQLite inside container. |
+| `DATABASE_URL` | `sqlite:////app/data/synclo.db` | SQLAlchemy database connection string. Default points to persistent SQLite inside container. |
 | `REDIS_URL` | `redis://redis:6379` | Redis connection string for WebSocket pub/sub broadcasting and rate limiting. |
 | `HTTPS_ONLY` | `true` (prod) / `false` (dev) | Enforces strict HTTPS redirection (`307`), HSTS headers, and secure WebSockets (`WSS`). |
 | `SYNCLO_DOMAIN` | `synclo.yourdomain.com` | Public domain name used by Caddy for automatic Let's Encrypt / ZeroSSL certificates. |
@@ -105,7 +105,7 @@ services:
     environment:
       SECRET_KEY: "change_this_to_a_random_hex_key"
       REFRESH_TOKEN_HASH_KEY: "change_this_to_a_random_hex_key"
-      DATABASE_URL: "sqlite:////app/data/clipboard.db"
+      DATABASE_URL: "sqlite:////app/data/synclo.db"
       REDIS_URL: "redis://redis:6379"
       HTTPS_ONLY: "true"
       CLIPBOARD_RETENTION_DAYS: "30"
@@ -200,7 +200,7 @@ services:
     environment:
       SECRET_KEY: "change_this_to_a_random_hex_key"
       REFRESH_TOKEN_HASH_KEY: "change_this_to_a_random_hex_key"
-      DATABASE_URL: "sqlite:////app/data/clipboard.db"
+      DATABASE_URL: "sqlite:////app/data/synclo.db"
       REDIS_URL: "redis://redis:6379"
       HTTPS_ONLY: "true"
       CLIPBOARD_RETENTION_DAYS: "30"

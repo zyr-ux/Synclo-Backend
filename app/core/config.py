@@ -43,7 +43,7 @@ class Settings:
 
     CLIPBOARD_RETENTION_DAYS = int(os.getenv("CLIPBOARD_RETENTION_DAYS", "30"))
 
-    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/clipboard.db")
+    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/synclo.db")
     REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 
     HTTPS_ONLY = os.getenv("HTTPS_ONLY", "true").lower() in ("true", "1", "yes")
