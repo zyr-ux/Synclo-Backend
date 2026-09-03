@@ -1,9 +1,9 @@
-import os
 import sys
+import os
 
-# Route all Python bytecode (.pyc) files into a single root __pycache__ folder
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.pycache_prefix = os.path.join(ROOT_DIR, "__pycache__")
+# Prevent creation of bytecode (.pyc) files and __pycache__ directories
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 import base64
 import datetime
