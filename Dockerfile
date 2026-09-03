@@ -8,14 +8,11 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first (caches better)
-COPY requirements.txt .
-
-# Install dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the code
+# Copy the project files
 COPY . .
+
+# Install dependencies and project using pyproject.toml
+RUN pip install --no-cache-dir .
 
 # Create directory for logs
 RUN mkdir -p /app/logs

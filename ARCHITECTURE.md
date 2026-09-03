@@ -271,6 +271,11 @@ Pushed to other connected user devices when the user successfully changes their 
 
 All protected API endpoints require an Authorization Header: `Authorization: Bearer <access_token>`.
 
+> [!TIP]
+> **Interactive API Documentation (ReDoc):**
+> When the backend server is running, the complete interactive OpenAPI documentation is rendered via ReDoc at `/api/docs`. The raw OpenAPI JSON schema is accessible at `/api/openapi.json`.
+> You can also explore the live API documentation for the official hosted instance at [synclo.zyrux.dev/api/docs](https://synclo.zyrux.dev/api/docs).
+
 ### Authentication Endpoints
 
 #### `GET /api/v1/auth/salt`
@@ -1174,4 +1179,70 @@ Synclo exposes operational metrics for real-time monitoring via Prometheus and G
 | `synclo_websocket_events_total` | Counter | `event_type` | Total WebSocket messages broadcasted across the cluster, labeled only by generic event type (`clipboard_sync`, `clipboard_pin`, `device_updated`, `device_added`). |
 | `synclo_push_dispatches_total` | Counter | `status` | Total background push notifications dispatched, labeled by outcome status (`success`, `stale_pruned`, `timeout`, `error`). |
 | `synclo_push_duration_seconds` | Histogram | *None* | Latency of outbound push notification triggers to external distributor endpoints. |
+
+---
+
+## 10. Repository Directory Structure
+
+```text
+Synclo-Backend/
+├── .github/
+│   └── workflows/
+│       └── docker-publish.yml # CI/CD workflow building multi-arch images & publishing to GHCR
+├── alembic/                   # Database migration history and scripts
+│   ├── versions/              # Individual migration revisions
+│   └── env.py                 # Alembic migration runner configuration
+├── app/
+│   ├── core/                  # Core primitives (config, DB connection, constants, logging, metrics)
+│   │   ├── config.py          # Pydantic BaseSettings and runtime configuration
+│   │   ├── constants.py       # Global constants, close codes, and rate limits
+│   │   ├── database.py        # SQLAlchemy engine, session maker, and scoped sessions
+│   │   ├── logging_config.py  # Structured rotating file & console logging
+│   │   └── metrics.py         # Prometheus metrics instruments and registry
+│   ├── endpoints/             # FastAPI domain route controllers
+│   │   ├── auth_endpoints.py  # User authentication, registration, recovery, and token refresh
+│   │   ├── clipboard_endpoints.py # Clipboard sync, delta pagination, and pin toggles
+│   │   ├── device_endpoints.py # Device presence, renaming, revocation, and push tokens
+│   │   └── websocket_endpoints.py # Real-time WebSocket connection handling
+│   ├── models/                # SQLAlchemy database models
+│   │   └── models.py          # User, Device, Clipboard, RefreshToken, BlacklistedToken entities
+│   ├── schemas/               # Pydantic v2 request/response validation schemas
+│   │   └── schemas.py         # Data transfer objects and API schemas
+│   ├── services/              # Domain logic and background tasks
+│   │   ├── auth.py            # Password hashing, JWT creation, token rotation helpers
+│   │   ├── push_service.py    # UnifiedPush background dispatcher and self-healing cleanup
+│   │   └── utils.py           # Background pruning, maintenance tasks, token blacklist cleanup
+│   ├── websockets/            # Real-time WebSocket engine
+│   │   └── connection_manager.py # In-memory connection tracker & Redis Pub/Sub cluster bus
+│   └── main.py                # Application initialization, middleware, and startup lifecycles
+├── data/                      # Persistent SQLite database storage (host bind mount)
+├── logs/                      # Persistent rotating log files (host bind mount)
+├── tests/                     # Automated pytest test suite
+│   ├── conftest.py            # Test fixtures, in-memory DB, Redis mocks, and TestClient
+│   ├── test_auth.py           # User authentication and token family rotation tests
+│   ├── test_clipboard.py      # Clipboard CRUD and pin persistence tests
+│   ├── test_clipboard_retention.py # Age-based auto-pruning lifecycle tests
+│   ├── test_delta_sync.py     # Offline delta synchronization and pagination tests
+│   ├── test_devices.py        # Device management and session termination tests
+│   ├── test_health.py         # Health checks and OpenAPI documentation tests
+│   ├── test_https_mode.py     # HTTPS/WSS security and transport enforcement tests
+│   ├── test_metrics.py        # Prometheus telemetry metric tests
+│   ├── test_push_service.py   # UnifiedPush dispatch and stale endpoint recovery tests
+│   ├── test_recovery.py       # Zero-Knowledge account recovery tests
+│   └── test_websockets.py     # Real-time WebSocket communication and broadcast tests
+├── .dockerignore              # Exclusions for Docker image builds
+├── .env.example               # Template for local environment configuration
+├── .gitignore                 # Git ignore rules
+├── alembic.ini                # Alembic database migration configuration
+├── compose.yaml               # Docker Compose orchestration definition for local development
+├── Dockerfile                 # Multi-platform container build definition
+├── pyproject.toml             # Project metadata, dependencies, and build configuration
+├── pytest.ini                 # Pytest configuration and CLI flags
+├── AGENTS.md                  # Development guidelines and constraints for AI coding agents
+├── ARCHITECTURE.md            # Comprehensive architectural, protocol, and codebase guide
+├── CONTRIBUTING.md            # Contributor onboarding and local environment setup guide
+├── LICENSE                    # AGPL-3.0 open source license
+└── README.md                  # Project overview, quick start, and self-hosting guide
+```
+
 

@@ -1,7 +1,11 @@
 services:
-  api:
-    build: .
-    container_name: Synclo-Backend
+  synclo-backend:
+    build:
+      context: .
+      platforms:
+        - "linux/amd64"
+        - "linux/arm64"
+    image: synclo-backend
     env_file:
       - .env
     restart: unless-stopped

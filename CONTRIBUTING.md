@@ -100,7 +100,7 @@ Run the FastAPI development server:
 ```bash
 uvicorn app.main:app --reload --port 8000
 ```
-The server will start at `http://localhost:8000`. You can access the interactive API documentation at `http://localhost:8000/docs`.
+The server will start at `http://localhost:8000`. You can access the interactive API documentation (ReDoc) at `http://localhost:8000/api/docs`.
 
 ---
 

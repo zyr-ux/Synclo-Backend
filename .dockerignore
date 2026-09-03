@@ -1,26 +1,45 @@
-# Python cache
+# Python cache & build artifacts
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.egg-info/
+build/
+dist/
 
-# Virtual environment
+# Virtual environment & Environment variables
+.venv/
 venv/
 .env
+.env.example
 
-# Git files
+# Git & GitHub
 .git/
 .gitignore
+.github/
 
-# Logs
+# Documentation & Guidelines (README.md is kept for pyproject.toml)
+ARCHITECTURE.md
+ROADMAP.md
+CONTRIBUTING.md
+AGENTS.md
+Caddyfile.example
+
+# Testing & Coverage
+tests/
+pytest.ini
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs & Database
 logs/
 *.log
-
-# SQLite database
 data/
 
 # Docker-related
 Dockerfile
+compose.yaml
 docker-compose.yml
 
 # IDE files
