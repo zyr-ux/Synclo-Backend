@@ -59,6 +59,8 @@ The server does not know or store raw passwords or master decryption keys. All e
 | **Derived Key (DK)** | Client (computed) | None (never sent) | Encrypts Master Key locally | PBKDF2-HMAC-SHA256 or Argon2id |
 | **Auth Key (AK)** | Client (computed) | Bcrypt Hash only | Authenticates API requests | HMAC-SHA256 of DK |
 | **Encrypted MK** | Client (computed) | Ciphertext (stored) | Restores Master Key after login | AES-256-GCM of MK using DK |
+| **Recovery Key Verifier** | Client (computed) | Bcrypt Hash only | Authenticates account recovery requests | Bcrypt of HKDF(Recovery Key, "recovery_verify") |
+| **Recovery Wrapped MK** | Client (computed) | Ciphertext (stored) | Restores Master Key during emergency recovery | AES-256-GCM of MK using HKDF(Recovery Key, "recovery_wrap") |
 | **Clipboard Cipher** | Client (computed) | Ciphertext (stored) | Protects clipboard content | AES-256-GCM of payload using MK |
 
 ---
@@ -260,6 +262,7 @@ Pushed to other connected user devices when the user successfully changes their 
 *   `4001`: Token Expired. Perform token refresh and reconnect.
 *   `4002`: Ping/Pong Timeout. Reconnect (possible network drop).
 *   `4003`: Device Deleted Remotely. Clear local state, logout user, redirect to login.
+*   `4004`: Credentials Changed. Active sessions terminated when password or recovery key is rotated or used. Prompt user to re-authenticate.
 *   `1011`: Internal Server Error. Reconnect with exponential backoff.
 
 ---
@@ -287,6 +290,82 @@ Retrieves KDF parameters to begin key derivation for login.
 
 ---
 
+#### `POST /api/v1/auth/recovery-material`
+Retrieves the recovery-wrapped master key for account recovery (public, pre-auth endpoint).
+*   **Request Body:**
+    ```json
+    {
+      "email": "user@example.com"
+    }
+    ```
+*   **Response (200 OK):**
+    ```json
+    {
+      "recovery_wrapped_master_key": "base64_encoded_recovery_wrapped_master_key"
+    }
+    ```
+*   **Errors:**
+    *   `404 Not Found`: Recovery material not available or email not found.
+    *   `429 Too Many Requests`: Rate limit exceeded.
+
+---
+
+#### `POST /api/v1/auth/recover`
+Recovers an account using the Emergency Recovery Key and mandatory auto-rotation (burn-on-use).
+*   **Request Body:**
+    ```json
+    {
+      "email": "user@example.com",
+      "recovery_key_verifier": "base64_encoded_old_recovery_verifier",
+      "new_auth_key": "base64_encoded_new_auth_key",
+      "new_encrypted_master_key": "base64_encoded_new_wrapped_key",
+      "new_salt": "base64_encoded_new_salt",
+      "new_kdf_version": 1,
+      "new_recovery_wrapped_master_key": "base64_encoded_new_recovery_wrapped_key",
+      "new_recovery_key_verifier": "base64_encoded_new_recovery_verifier",
+      "device_id": "unique_device_id_string",
+      "device_name": "Recovered Device",
+      "os": "Linux"
+    }
+    ```
+*   **Response (200 OK):**
+    ```json
+    {
+      "access_token": "eyJhbGciOi...",
+      "refresh_token": "plain_refresh_token_string",
+      "token_type": "bearer",
+      "username": "tester"
+    }
+    ```
+*   **Errors:**
+    *   `400 Bad Request`: Validation failure (out of bounds or invalid base64).
+    *   `401 Unauthorized`: Invalid recovery credentials (old verifier mismatch).
+    *   `429 Too Many Requests`: Rate limit exceeded.
+
+---
+
+#### `POST /api/v1/auth/recovery-key/rotate`
+Manually regenerates and updates the recovery key for an authenticated user.
+*   **Headers:** `Authorization: Bearer <access_token>`
+*   **Request Body:**
+    ```json
+    {
+      "new_recovery_wrapped_master_key": "base64_encoded_new_recovery_wrapped_key",
+      "new_recovery_key_verifier": "base64_encoded_new_recovery_verifier"
+    }
+    ```
+*   **Response (200 OK):**
+    ```json
+    {
+      "message": "Recovery key regenerated and updated successfully"
+    }
+    ```
+*   **Errors:**
+    *   `400 Bad Request`: Validation failure.
+    *   `401 Unauthorized`: Missing or invalid authentication.
+
+---
+
 #### `POST /api/v1/register`
 Registers a new user and registers the first device (Async).
 > [!NOTE]
@@ -301,7 +380,9 @@ Registers a new user and registers the first device (Async).
       "os": "iOS",
       "encrypted_master_key": "base64_encoded_wrapped_key",
       "salt": "base64_encoded_salt",
-      "kdf_version": 1
+      "kdf_version": 1,
+      "recovery_wrapped_master_key": "base64_encoded_recovery_wrapped_key",
+      "recovery_key_verifier": "base64_encoded_recovery_verifier"
     }
     ```
 *   **Response (200 OK):**
@@ -400,7 +481,9 @@ Changes the user password and updates the wrapped master key.
       "new_auth_key": "base64_encoded_new_auth_key",
       "new_encrypted_master_key": "base64_encoded_rewrapped_key",
       "new_salt": "base64_encoded_new_salt",
-      "new_kdf_version": 1
+      "new_kdf_version": 1,
+      "new_recovery_wrapped_master_key": "base64_encoded_new_recovery_wrapped_key (optional)",
+      "new_recovery_key_verifier": "base64_encoded_new_recovery_verifier (optional)"
     }
     ```
 *   **Response (200 OK):**

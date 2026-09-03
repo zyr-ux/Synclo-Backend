@@ -48,11 +48,46 @@ class ConnectionManager:
                 finally:
                     self.disconnect(user_id, device_id)
 
-    async def disconnect_user(self, user_id: str):
+    async def disconnect_user(
+        self,
+        user_id: str,
+        code: int = 4000,
+        message: Optional[dict] = None,
+    ):
+        if message is None and code == 4004:
+            message = {"type": "session_invalidated", "reason": "credentials_changed"}
+
+        await self._disconnect_user_local(user_id, code=code, message=message)
+
+        if self.redis:
+            envelope = {
+                "action": "disconnect_user",
+                "user_id": user_id,
+                "code": code,
+                "message": message,
+                "sender": self._node_id,
+            }
+            await self.redis.publish(self._channel(user_id), json.dumps(envelope))
+
+    async def _disconnect_user_local(
+        self,
+        user_id: str,
+        code: int = 4000,
+        message: Optional[dict] = None,
+    ):
         if user_id in self.active_connections:
             for device_id, ws in list(self.active_connections[user_id].items()):
-                await ws.close(code=4000)
-                self.disconnect(user_id, device_id)
+                if message:
+                    try:
+                        await ws.send_json(message)
+                    except (RuntimeError, ConnectionError):
+                        pass
+                try:
+                    await ws.close(code=code)
+                except (RuntimeError, ConnectionError):
+                    pass
+                finally:
+                    self.disconnect(user_id, device_id)
 
     def get_user_devices(self, user_id: str) -> Dict[str, WebSocket]:
         return self.active_connections.get(user_id, {})
@@ -104,6 +139,15 @@ class ConnectionManager:
                         continue
                     data = json.loads(message.get("data"))
                     if data.get("sender") == self._node_id:
+                        continue
+                    if data.get("action") == "disconnect_user":
+                        user_id = data.get("user_id")
+                        if user_id:
+                            await self._disconnect_user_local(
+                                user_id,
+                                code=data.get("code", 4000),
+                                message=data.get("message"),
+                            )
                         continue
                     user_id = data.get("user_id")
                     payload = data.get("message")

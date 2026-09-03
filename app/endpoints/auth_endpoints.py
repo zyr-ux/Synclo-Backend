@@ -15,12 +15,16 @@ from app.core.config import Settings
 from app.core.constants import (
     MIN_DEVICE_ID_LEN,
     MAX_DEVICE_ID_LEN,
+    MIN_DEVICE_NAME_LEN,
+    MAX_DEVICE_NAME_LEN,
     MIN_AUTH_KEY_LEN,
     MAX_AUTH_KEY_LEN,
     MIN_SALT_LEN,
     MAX_SALT_LEN,
     MIN_MK_LEN,
     MAX_MK_LEN,
+    MIN_RECOVERY_KEY_VERIFIER_LEN,
+    MAX_RECOVERY_KEY_VERIFIER_LEN,
     ALLOWED_KDF_VERSIONS,
 )
 from app.core.logging_config import logger
@@ -37,6 +41,10 @@ from app.schemas.schemas import (
     UserResponse,
     EmailUpdate,
     EmailUpdateResponse,
+    RecoveryMaterialRequest,
+    RecoveryMaterialResponse,
+    AccountRecoveryRequest,
+    RecoveryKeyRotateRequest,
 )
 from app.services.auth import (
     create_access_token,
@@ -59,6 +67,19 @@ ACCESS_TOKEN_EXPIRE_MINUTES = Settings.ACCESS_TOKEN_EXPIRE_MINUTES
 REFRESH_TOKEN_EXPIRE_DAYS = Settings.REFRESH_TOKEN_EXPIRE_DAYS
 
 
+DUMMY_BCRYPT_HASH = bcrypt.hashpw(b"timing_attack_mitigation_dummy_hash", bcrypt.gensalt()).decode("utf-8")
+
+
+def decode_and_validate_blob(value: str, min_len: int, max_len: int, field_name: str) -> bytes:
+    try:
+        raw_bytes = base64.b64decode(value)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail=f"Invalid base64 encoding for {field_name}")
+    if not (min_len <= len(raw_bytes) <= max_len):
+        raise HTTPException(status_code=400, detail=f"{field_name} length out of bounds")
+    return raw_bytes
+
+
 @router.get("/auth/salt", response_model=SaltResponse, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
 def get_salt_for_email(email: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == email).first()
@@ -71,6 +92,108 @@ def get_salt_for_email(email: str, db: Session = Depends(get_db)):
     return {
         "salt": base64.b64encode(user.salt).decode('utf-8'),
         "kdf_version": user.kdf_version
+    }
+
+
+@router.post("/auth/recovery-material", response_model=RecoveryMaterialResponse, dependencies=[Depends(RateLimiter(times=5, seconds=60))])
+def get_recovery_material(request: RecoveryMaterialRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == request.email).first()
+    if not user or not user.recovery_wrapped_master_key:
+        raise HTTPException(status_code=404, detail="Recovery material not available")
+
+    return {
+        "recovery_wrapped_master_key": base64.b64encode(user.recovery_wrapped_master_key).decode('utf-8')
+    }
+
+
+@router.post("/auth/recover", response_model=Token, dependencies=[Depends(RateLimiter(times=3, seconds=60))])
+async def recover_account(data: AccountRecoveryRequest, db: Session = Depends(get_db)):
+    if not (MIN_DEVICE_ID_LEN <= len(data.device_id) <= MAX_DEVICE_ID_LEN):
+        raise HTTPException(status_code=400, detail="device_id length out of bounds")
+
+    if data.device_name and not (MIN_DEVICE_NAME_LEN <= len(data.device_name) <= MAX_DEVICE_NAME_LEN):
+        raise HTTPException(status_code=400, detail="device_name length out of bounds")
+
+    if data.new_kdf_version not in ALLOWED_KDF_VERSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported kdf_version")
+
+    recovery_verifier_bytes = decode_and_validate_blob(
+        data.recovery_key_verifier, MIN_RECOVERY_KEY_VERIFIER_LEN, MAX_RECOVERY_KEY_VERIFIER_LEN, "recovery_key_verifier"
+    )
+    new_auth_key_bytes = decode_and_validate_blob(
+        data.new_auth_key, MIN_AUTH_KEY_LEN, MAX_AUTH_KEY_LEN, "new_auth_key"
+    )
+    new_encrypted_mk_bytes = decode_and_validate_blob(
+        data.new_encrypted_master_key, MIN_MK_LEN, MAX_MK_LEN, "new_encrypted_master_key"
+    )
+    new_salt_bytes = decode_and_validate_blob(
+        data.new_salt, MIN_SALT_LEN, MAX_SALT_LEN, "new_salt"
+    )
+    new_recovery_wrapped_mk_bytes = decode_and_validate_blob(
+        data.new_recovery_wrapped_master_key, MIN_MK_LEN, MAX_MK_LEN, "new_recovery_wrapped_master_key"
+    )
+    new_recovery_verifier_bytes = decode_and_validate_blob(
+        data.new_recovery_key_verifier, MIN_RECOVERY_KEY_VERIFIER_LEN, MAX_RECOVERY_KEY_VERIFIER_LEN, "new_recovery_key_verifier"
+    )
+
+    user = db.query(User).filter(User.email == data.email).first()
+    if not user or not user.recovery_key_verifier:
+        bcrypt.checkpw(recovery_verifier_bytes, DUMMY_BCRYPT_HASH.encode("utf-8"))
+        raise HTTPException(status_code=401, detail="Invalid recovery credentials")
+
+    try:
+        if not bcrypt.checkpw(recovery_verifier_bytes, user.recovery_key_verifier.encode("utf-8")):
+            raise HTTPException(status_code=401, detail="Invalid recovery credentials")
+    except Exception as e:
+        logger.error(f"Recovery verifier check failed: {e}")
+        raise HTTPException(status_code=401, detail="Invalid recovery credentials")
+
+    new_auth_key_hash = bcrypt.hashpw(new_auth_key_bytes, bcrypt.gensalt()).decode("utf-8")
+    new_recovery_verifier_hash = bcrypt.hashpw(new_recovery_verifier_bytes, bcrypt.gensalt()).decode("utf-8")
+
+    user.auth_key_hash = new_auth_key_hash
+    user.encrypted_master_key = new_encrypted_mk_bytes
+    user.salt = new_salt_bytes
+    user.kdf_version = data.new_kdf_version
+    user.recovery_wrapped_master_key = new_recovery_wrapped_mk_bytes
+    user.recovery_key_verifier = new_recovery_verifier_hash
+
+    db.query(RefreshToken).filter(RefreshToken.user_id == user.user_id).update({"is_revoked": True})
+
+    device = db.query(Device).filter(Device.device_id == data.device_id).first()
+    if device:
+        if device.user_id != user.user_id:
+            raise HTTPException(status_code=403, detail="Device ID belongs to another user")
+        if data.device_name:
+            device.device_name = data.device_name
+        if data.os:
+            device.os = data.os
+        device.last_seen = datetime.now(timezone.utc)
+    else:
+        device = Device(
+            device_id=data.device_id,
+            device_name=data.device_name or "Recovered Device",
+            os=data.os,
+            user_id=user.user_id,
+            last_seen=datetime.now(timezone.utc),
+        )
+        db.add(device)
+    db.flush()
+
+    access_token = create_access_token(
+        data={"sub": user.email, "device_id": device.device_id},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+    plain_refresh_token = create_refresh_token(db, user_id=user.user_id, device_id=device.device_id)
+    db.commit()
+
+    await manager.disconnect_user(user.user_id, code=4004)
+
+    return {
+        "access_token": access_token,
+        "refresh_token": plain_refresh_token,
+        "token_type": "bearer",
+        "username": user.username,
     }
 
 
@@ -89,21 +212,14 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     if existing_device:
         raise HTTPException(status_code=409, detail="Device ID already in use. Please use a unique device ID.")
     
-    try:
-        encrypted_mk_bytes = base64.b64decode(user.encrypted_master_key)
-        salt_bytes = base64.b64decode(user.salt)
-        auth_key_bytes = base64.b64decode(user.auth_key)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid base64 encoding for key material")
+    encrypted_mk_bytes = decode_and_validate_blob(user.encrypted_master_key, MIN_MK_LEN, MAX_MK_LEN, "encrypted_master_key")
+    salt_bytes = decode_and_validate_blob(user.salt, MIN_SALT_LEN, MAX_SALT_LEN, "salt")
+    auth_key_bytes = decode_and_validate_blob(user.auth_key, MIN_AUTH_KEY_LEN, MAX_AUTH_KEY_LEN, "auth_key")
+    recovery_wrapped_mk_bytes = decode_and_validate_blob(user.recovery_wrapped_master_key, MIN_MK_LEN, MAX_MK_LEN, "recovery_wrapped_master_key")
+    recovery_verifier_bytes = decode_and_validate_blob(user.recovery_key_verifier, MIN_RECOVERY_KEY_VERIFIER_LEN, MAX_RECOVERY_KEY_VERIFIER_LEN, "recovery_key_verifier")
 
-    if not (MIN_AUTH_KEY_LEN <= len(auth_key_bytes) <= MAX_AUTH_KEY_LEN):
-        raise HTTPException(status_code=400, detail="auth_key length out of bounds")
-    if not (MIN_SALT_LEN <= len(salt_bytes) <= MAX_SALT_LEN):
-        raise HTTPException(status_code=400, detail="salt length out of bounds")
-    if not (MIN_MK_LEN <= len(encrypted_mk_bytes) <= MAX_MK_LEN):
-        raise HTTPException(status_code=400, detail="encrypted_master_key length out of bounds")
-    
     auth_key_hash = bcrypt.hashpw(auth_key_bytes, bcrypt.gensalt()).decode('utf-8')
+    recovery_key_verifier_hash = bcrypt.hashpw(recovery_verifier_bytes, bcrypt.gensalt()).decode('utf-8')
 
     try:
         new_user = User(
@@ -113,7 +229,9 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
             auth_key_hash=auth_key_hash,
             encrypted_master_key=encrypted_mk_bytes,
             salt=salt_bytes,
-            kdf_version=user.kdf_version
+            kdf_version=user.kdf_version,
+            recovery_wrapped_master_key=recovery_wrapped_mk_bytes,
+            recovery_key_verifier=recovery_key_verifier_hash,
         )
 
         db.add(new_user)
@@ -404,18 +522,63 @@ def change_password(
         raise HTTPException(status_code=400, detail="salt length out of bounds")
     if not (MIN_MK_LEN <= len(new_encrypted_mk_bytes) <= MAX_MK_LEN):
         raise HTTPException(status_code=400, detail="encrypted_master_key length out of bounds")
-    
+
+    has_wrapped = data.new_recovery_wrapped_master_key is not None
+    has_verifier = data.new_recovery_key_verifier is not None
+    if has_wrapped != has_verifier:
+        raise HTTPException(
+            status_code=400,
+            detail="Both new_recovery_wrapped_master_key and new_recovery_key_verifier must be provided together"
+        )
+
+    new_recovery_wrapped_bytes = None
+    new_recovery_verifier_hash = None
+    if has_wrapped and has_verifier:
+        new_recovery_wrapped_bytes = decode_and_validate_blob(
+            data.new_recovery_wrapped_master_key, MIN_MK_LEN, MAX_MK_LEN, "recovery_wrapped_master_key"
+        )
+        new_recovery_verifier_bytes = decode_and_validate_blob(
+            data.new_recovery_key_verifier, MIN_RECOVERY_KEY_VERIFIER_LEN, MAX_RECOVERY_KEY_VERIFIER_LEN, "recovery_key_verifier"
+        )
+        new_recovery_verifier_hash = bcrypt.hashpw(new_recovery_verifier_bytes, bcrypt.gensalt()).decode('utf-8')
+
     new_auth_key_hash = bcrypt.hashpw(new_auth_key_bytes, bcrypt.gensalt()).decode('utf-8')
-    
+
     current_user.auth_key_hash = new_auth_key_hash
     current_user.encrypted_master_key = new_encrypted_mk_bytes
     current_user.salt = new_salt_bytes
     current_user.kdf_version = data.new_kdf_version
+    if new_recovery_wrapped_bytes is not None:
+        current_user.recovery_wrapped_master_key = new_recovery_wrapped_bytes
+        current_user.recovery_key_verifier = new_recovery_verifier_hash
 
     db.commit()
     db.refresh(current_user)
-    
+
     return {"message": "Password changed successfully. Master key re-wrapped."}
+
+
+@router.post("/auth/recovery-key/rotate", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
+def rotate_recovery_key(
+    data: RecoveryKeyRotateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    new_recovery_wrapped_bytes = decode_and_validate_blob(
+        data.new_recovery_wrapped_master_key, MIN_MK_LEN, MAX_MK_LEN, "recovery_wrapped_master_key"
+    )
+    new_recovery_verifier_bytes = decode_and_validate_blob(
+        data.new_recovery_key_verifier, MIN_RECOVERY_KEY_VERIFIER_LEN, MAX_RECOVERY_KEY_VERIFIER_LEN, "recovery_key_verifier"
+    )
+    new_recovery_verifier_hash = bcrypt.hashpw(new_recovery_verifier_bytes, bcrypt.gensalt()).decode('utf-8')
+
+    current_user.recovery_wrapped_master_key = new_recovery_wrapped_bytes
+    current_user.recovery_key_verifier = new_recovery_verifier_hash
+
+    db.commit()
+    db.refresh(current_user)
+
+    return {"message": "Recovery key regenerated and updated successfully"}
 
 
 @router.put("/user/username", dependencies=[Depends(RateLimiter(times=5, seconds=60))])

@@ -112,6 +112,9 @@ def user_factory(client):
         enc_mk = generate_random_base64(32)
         salt = generate_random_base64(32)
 
+        recovery_wrapped_mk = generate_random_base64(32)
+        recovery_verifier = generate_random_base64(32)
+
         reg_payload = {
             "email": email,
             "username": username,
@@ -122,6 +125,8 @@ def user_factory(client):
             "encrypted_master_key": enc_mk,
             "salt": salt,
             "kdf_version": kdf_version,
+            "recovery_wrapped_master_key": recovery_wrapped_mk,
+            "recovery_key_verifier": recovery_verifier,
         }
 
         resp = client.post("/api/v1/register", json=reg_payload)
@@ -140,6 +145,8 @@ def user_factory(client):
             "encrypted_master_key": enc_mk,
             "salt": salt,
             "kdf_version": kdf_version,
+            "recovery_wrapped_master_key": recovery_wrapped_mk,
+            "recovery_key_verifier": recovery_verifier,
             "access_token": token,
             "refresh_token": data.get("refresh_token"),
             "headers": headers,

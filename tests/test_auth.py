@@ -33,6 +33,8 @@ def test_user_registration_success(client):
         "encrypted_master_key": enc_mk,
         "salt": salt,
         "kdf_version": 1,
+        "recovery_wrapped_master_key": generate_random_base64(32),
+        "recovery_key_verifier": generate_random_base64(32),
     }
 
     res = client.post("/api/v1/register", json=payload)
@@ -71,6 +73,8 @@ def test_duplicate_user_registration_fails(client, user_factory):
         "encrypted_master_key": generate_random_base64(32),
         "salt": generate_random_base64(32),
         "kdf_version": 1,
+        "recovery_wrapped_master_key": generate_random_base64(32),
+        "recovery_key_verifier": generate_random_base64(32),
     }
     res = client.post("/api/v1/register", json=payload)
     assert res.status_code == 409

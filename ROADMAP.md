@@ -23,13 +23,6 @@ These capabilities are planned for upcoming minor and major milestones following
 
 ### 2. Zero-Knowledge Security & Onboarding
 
-#### ⏳ 2.1 Emergency Recovery Key Kit — **[Planned]**
-* **Status**: Planned
-* **Why**: Under Zero-Knowledge encryption, forgetting the master password causes permanent data loss because the server cannot recover master keys.
-* **Architecture**:
-  * During user registration, generate a high-entropy 256-bit recovery key client-side (printable "Paper Key" format).
-  * Store a secondary copy of the `encrypted_master_key` wrapped by this recovery key on the server.
-  * Implement an account recovery endpoint allowing password resets without losing encrypted history.
 
 #### ⏳ 2.2 QR Code Device Pairing (Zero-Knowledge Key Handshake) — **[Planned]**
 * **Status**: Planned
@@ -50,6 +43,17 @@ These capabilities are planned for upcoming minor and major milestones following
 ## ✅ Completed & Implemented Features
 
 The following core features establish the production-ready foundation for multi-device zero-knowledge synchronization.
+
+### ✅ Mandatory Emergency Recovery Key Kit (Zero-Knowledge Account Recovery) — **[Implemented]**
+* **Status**: Complete (`POST /api/v1/auth/recovery-material`, `POST /api/v1/auth/recover`, `POST /api/v1/auth/recovery-key/rotate`)
+* **Why**: Under Zero-Knowledge encryption, forgetting the master password causes permanent data loss because the server cannot recover master keys. The Emergency Recovery Key Kit allows users to regain account access and retain existing encrypted history without external dependencies or cloud trust.
+* **Architecture & Flow**:
+  * **Zero-Knowledge Invariant**: The client generates a high-entropy 256-bit recovery key client-side. The raw recovery key never leaves the client device and is never sent to the server.
+  * **Master Key Re-Wrapping**: Master Key ($MK$) is wrapped using $K_{rec} = \text{HKDF}(\text{Recovery Key}, \text{"recovery\_wrap"})$ producing `recovery_wrapped_master_key`.
+  * **Verifier Authentication**: The client derives $V_{rec} = \text{HKDF}(\text{Recovery Key}, \text{"recovery\_verify"})$ which the server bcrypt-hashes and stores as `recovery_key_verifier`.
+  * **Burn-on-Use Auto-Rotation**: During account recovery (`POST /api/v1/auth/recover`), the client derives and submits a brand-new recovery key kit, permanently burning and invalidating the used key.
+  * **Session & Socket Invalidation**: Successful recovery revokes all existing refresh tokens and disconnects active WebSockets across all other devices with close code `4004` (Credentials Changed).
+  * **Manual Rotation**: Logged-in users can rotate their recovery key at any time via `POST /api/v1/auth/recovery-key/rotate` or optionally during `POST /api/v1/password/change`.
 
 ### ✅ Dedicated Pin / Unpin Endpoint — **[Implemented]**
 * **Status**: Complete (`PATCH /api/v1/clipboard/{id}/pin`)

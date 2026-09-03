@@ -14,6 +14,8 @@ class User(Base):
     encrypted_master_key = Column(LargeBinary, nullable=False)
     salt = Column(LargeBinary, nullable=False)
     kdf_version = Column(Integer, nullable=False, default=1)
+    recovery_wrapped_master_key = Column(LargeBinary, nullable=False)
+    recovery_key_verifier = Column(String, nullable=False)
     devices = relationship("Device", back_populates="owner")
 
 

@@ -123,6 +123,8 @@ class UserRegisterWithDevice(BaseModel):
     encrypted_master_key: str
     salt: str
     kdf_version: int = 1
+    recovery_wrapped_master_key: str
+    recovery_key_verifier: str
 
 class SessionInfo(BaseModel):
     device_id: str
@@ -134,6 +136,31 @@ class PasswordChange(BaseModel):
     new_encrypted_master_key: str
     new_salt: str
     new_kdf_version: int = 1
+    new_recovery_wrapped_master_key: Optional[str] = None
+    new_recovery_key_verifier: Optional[str] = None
+
+class RecoveryMaterialRequest(BaseModel):
+    email: EmailStr
+
+class RecoveryMaterialResponse(BaseModel):
+    recovery_wrapped_master_key: str
+
+class AccountRecoveryRequest(BaseModel):
+    email: EmailStr
+    recovery_key_verifier: str
+    new_auth_key: str
+    new_encrypted_master_key: str
+    new_salt: str
+    new_kdf_version: int = 1
+    new_recovery_wrapped_master_key: str
+    new_recovery_key_verifier: str
+    device_id: str
+    device_name: Optional[str] = "Recovered Device"
+    os: Optional[str] = None
+
+class RecoveryKeyRotateRequest(BaseModel):
+    new_recovery_wrapped_master_key: str
+    new_recovery_key_verifier: str
 
 class SaltResponse(BaseModel):
     salt: str
