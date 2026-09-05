@@ -131,6 +131,20 @@ def test_websocket_clipboard_broadcast_to_other_devices(client, user_factory):
             assert broadcast_msg.get("is_deleted") is False
 
 
+def test_replaced_websocket_disconnect_does_not_remove_current_connection():
+    from unittest.mock import MagicMock
+    from app.websockets.connection_manager import ConnectionManager
+
+    manager = ConnectionManager()
+    old_socket = MagicMock()
+    new_socket = MagicMock()
+    manager.active_connections["user"] = {"device": new_socket}
+
+    manager.disconnect("user", "device", old_socket)
+
+    assert manager.active_connections["user"]["device"] is new_socket
+
+
 def test_websocket_rejects_missing_auth(client):
     from starlette.websockets import WebSocketDisconnect
     with client.websocket_connect("/ws/v1/sync") as ws:

@@ -35,12 +35,13 @@ graph TD
     WS_End --> PushServ
     PushServ --> Dist["UnifiedPush Distributors / Webhooks"]
     
-    Manager ---|"Redis Pub/Sub"| Redis[("Redis Cache & Pub/Sub")]
+    Manager ---|"Redis Pub/Sub"| Redis[("Authenticated Redis (ephemeral)")]
 ```
 
 *   **REST HTTP Endpoints:** Handle authentication, session tokens, device registrations, and fallback manual clipboard transfers.
 *   **WebSocket Endpoints:** Maintain persistent connections for low-latency, real-time clipboard sync.
-*   **ConnectionManager:** Coordinates WebSocket sessions. Uses Redis Pub/Sub underneath to distribute sync events across horizontally scaled server instances.
+*   **ConnectionManager:** Coordinates WebSocket sessions. Uses Redis Pub/Sub to relay sync events between backend worker processes (and across nodes if the deployment is later expanded).
+*   **Redis:** Provides Pub/Sub, distributed rate-limit counters, and the periodic-cleanup lock. It is authenticated, health-checked, memory-bounded, and intentionally ephemeral; Redis is not a source of durable application data.
 *   **Database (SQLite):** Stores user login hashes, device registries, session tokens, and encrypted clipboard entry history (tombstones).
 *   **Cleanup Service:** Background workers running periodic purges on old expired data and tombstones.
 
@@ -115,6 +116,18 @@ sequenceDiagram
 
 > [!WARNING]
 > Do not change the `Master Key` during a password change. Doing so will invalidate all existing clipboard history stored in the database, making it impossible to decrypt them. Only re-wrap the existing Master Key using the new Derived Key.
+
+### User Account Observability & Anti-Enumeration Design
+
+In conventional multi-tenant web applications, user enumeration is typically masked using out-of-band communication channels (e.g., asynchronous transactional emails such as *"If an account exists with this email, a reset link has been sent"*). Because **Synclo does not feature an email delivery infrastructure** and operates under a **Zero-Knowledge Architecture**, account existence is observable at ingress boundaries by structural necessity:
+
+1. **Registration Collisions (`POST /register`):** The server must return an immediate `409 Conflict ("Email already registered")`. Without an email system, returning a generic 200 would leave the user permanently stranded without access to the account credentials.
+2. **Cryptographic Salt Retrieval (`GET /auth/salt`):** The server returns `404 Not Found ("Email not found")` when an email is unregistered. Providing a synthetic/dummy salt would provide zero real security (attackers could still probe `/register`) while forcing legitimate users who mistype their email to burn client device CPU and battery computing expensive Argon2id hashes locally.
+3. **Protection Strategy:** Automated enumeration and dictionary scanning are strictly bounded by Redis-backed per-IP rate limiters (`FastAPILimiter`) across all authentication endpoints (`/register`: 3/min, `/auth/salt`: 10/min, `/login`: 5/min, `/auth/recover`: 3/min).
+4. **Credential & Recovery Uniformity:** To prevent secondary side-channel disclosure and provide clean user experiences, authentication and recovery endpoints return uniform error responses:
+   - `POST /login`: Uniformly returns `401 Unauthorized ("Invalid credentials")` across missing users, incorrect passwords, and malformed auth keys.
+   - `POST /auth/recovery-material` & `POST /auth/recover`: Both uniformly return `401 Unauthorized ("Could not recover account")`.
+   - `POST /password/change`: Returns `401 Unauthorized ("Incorrect current password")`.
 
 ---
 
@@ -433,7 +446,7 @@ Logs in a user and registers/updates the device connection (Async).
     ```
 *   **Errors:**
     *   `401 Unauthorized`: Invalid credentials.
-    *   `403 Forbidden`: Device ID belongs to another user.
+    *   `400 Bad Request`: Device ID length out of bounds.
 
 ---
 
@@ -607,7 +620,7 @@ Manually adds a new device connection to the user account (Async).
     }
     ```
 *   **Errors:**
-    *   `403 Forbidden`: Device ID belongs to another user.
+    *   `400 Bad Request`: Device ID length out of bounds.
 
 ---
 
@@ -906,7 +919,7 @@ Soft-deletes all currently active, unpinned clipboard entries (history clearing)
 ---
 
 #### `GET /api/health`
-Public health status check. Used by client applications to verify server status and check that the target endpoint runs a genuine Synclo server.
+Single canonical health status check. Used by client applications to verify server status and check that the target endpoint runs a genuine Synclo server, and by container runtimes (Docker/Compose) to verify process liveness without emitting noisy log entries.
 *   **Response Headers:**
     *   `Synclo-Server`: `genuine` (used for client-side server identity verification)
 *   **Response Body (200 OK):**
@@ -946,7 +959,7 @@ The server enforces a server-wide retention policy for unpinned clipboard histor
 
 ### Rate Limiting & API Safety
 
-To protect the server from abuse, rate limits are applied to sensitive endpoints (e.g., registrations, logins, clipboard writes) using the `FastAPILimiter` middleware.
+To protect the server from abuse, rate limits are applied to sensitive endpoints (e.g., registrations, logins, clipboard writes) using the `FastAPILimiter` middleware. Redis stores the rate-limit counters; these counters may reset if the ephemeral Redis service restarts.
 
 #### Expected Behavior on Limit Exceeded
 When a client exceeds the request limit (typically 5 to 30 requests per minute depending on the endpoint), the server responds with:
@@ -998,17 +1011,21 @@ Defines Pydantic v2 schemas used to filter and validate request JSON bodies, pus
 #### [auth.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/auth.py)
 Coordinates JWT token encoding/decoding, password validation, and request authentication dependencies (`get_current_user`).
 
-#### [crypto_utils.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/crypto_utils.py)
-Calculates HMAC-SHA256 hashes of refresh tokens to secure database storage against key leakage.
+#### [clipboard_service.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/clipboard_service.py)
+Encapsulates clipboard entry persistence, optimistic concurrency checks, sequence allocation, pinning, soft-deletion, and push dispatches.
 
 #### [serializers.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/serializers.py)
 Converts raw database byte fields (e.g., binary ciphertext, salt blobs) into base64-encoded strings for JSON serializations.
 
-#### [utils.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/utils.py)
-Defines scheduled database housekeeping routines: clearing revoked tokens, expired refresh sessions, old tombstone entries (`TOMBSTONE_RETENTION_DAYS`), and server-wide age-based clipboard history pruning (`CLIPBOARD_RETENTION_DAYS`).
-
 #### [push_service.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/push_service.py)
 Dispatches asynchronous zero-knowledge push notifications (`{"type": "push"}`) to UnifiedPush/FCM distributors with 5s timeout and automatic 400/404/410 stale subscription self-healing.
+
+---
+
+### Operational Utilities (`app/utilities/`)
+
+#### [helpers.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/utilities/helpers.py)
+Provides cryptographic helpers (`hash_refresh_token`, `strict_b64decode`), ISO 8601 UTC date formatting, and database maintenance routines (expired token revocations, tombstone purges, and clipboard pruning).
 
 ---
 
@@ -1031,7 +1048,7 @@ Handles client WebSocket upgrades (including TLS/WSS enforcement), heartbeat pro
 ### WebSocket Connection Management
 
 #### [connection_manager.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/websockets/connection_manager.py)
-Monitors connection sockets in a thread-safe nested dictionary. Integrates Redis Pub/Sub channels to distribute broadcasts across clustered deployment nodes.
+Monitors connection sockets in a thread-safe nested dictionary. Integrates authenticated Redis Pub/Sub channels to distribute broadcasts between backend worker processes. Pub/Sub events are transient; clients recover missed changes through SQLite-backed delta sync.
 
 ---
 
@@ -1155,8 +1172,8 @@ erDiagram
 ## 8. Database Schema Migration & Infrastructure
 
 - **[alembic.ini](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/alembic.ini):** Configures Alembic migration routes.
-- **[Dockerfile](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/Dockerfile):** Builds the standard Docker image using a `python:3.12-slim` base image.
-- **[compose.yaml](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/compose.yaml):** Orchestrates multi-container runs (FastAPI App + Redis alpine instance) mapping storage folders to host paths.
+- **[Dockerfile](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/Dockerfile):** Hardened multi-stage build (builder stage with compiler toolchain &rarr; minimal runtime stage without build tools) based on `python:3.12.9-slim-bookworm` with unprivileged non-root execution (`USER appuser`, UID/GID 10001) and integrated `HEALTHCHECK` probing `/api/health`.
+- **[compose.yaml](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/compose.yaml):** Production-hardened orchestration for single-node FastAPI + Redis deployment. Synclo backend runs as non-root (`user: "10001:10001"`), with `init: true` (tini process reaper), `security_opt: [no-new-privileges:true]`, log rotation caps, and a universal Python `urllib.request` healthcheck against `/api/health`. Redis is isolated in the `synclo-network` bridge, password-protected via `REDIS_PASSWORD`, resource-capped (`--maxmemory 256mb --maxmemory-policy noeviction`), and health-checked (`redis-cli ping`), ensuring Synclo backend only starts after Redis is ready (`condition: service_healthy`).
 - **[tests/](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/tests/):** Standardized pytest integration test suite targeting delta sync limits, device creation/revocation, pagination, pin toggles, and push services (executed via the `.venv` virtual environment).
 
 ---

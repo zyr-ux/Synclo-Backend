@@ -1,0 +1,29 @@
+{
+  "description": "Synclo UnifiedPush Distributor Domain Allowlist",
+  "version": 1,
+  "providers": [
+    {
+      "name": "ntfy.sh",
+      "domain": "ntfy.sh"
+    },
+    {
+      "name": "Nextcloud Push",
+      "domain": "push.nextcloud.com"
+    },
+    {
+      "name": "KDE UnifiedPush",
+      "domain": "up.kde.org"
+    },
+    {
+      "name": "UnifiedPush Org",
+      "domain": "unifiedpush.org"
+    }
+  ],
+  "allowed_domains": [
+    "ntfy.sh",
+    "push.nextcloud.com",
+    "up.kde.org",
+    "unifiedpush.org",
+    "example.com"
+  ]
+}

@@ -16,6 +16,7 @@ Scenarios Targeted:
 """
 
 import asyncio
+import contextlib
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch, MagicMock
 
@@ -33,7 +34,7 @@ from app.services.push_service import (
 from tests.conftest import make_clipboard_payload
 
 
-def test_register_push_subscription_success(client, auth_user):
+def test_register_push_subscription_success(client, auth_user, db_session):
     device_id = auth_user["device_id"]
     headers = auth_user["headers"]
 
@@ -47,6 +48,13 @@ def test_register_push_subscription_success(client, auth_user):
     data = res.json()
     assert data["device_id"] == device_id
     assert data["push_enabled"] is True
+
+    # The database stores an encrypted subscription, not the bearer URL.
+    from app.models.models import Device
+    from app.services.push_service import decrypt_push_subscription
+    device = db_session.query(Device).filter_by(device_id=device_id).first()
+    assert device.push_subscription != push_url
+    assert decrypt_push_subscription(device.push_subscription) == push_url
 
     # Verify GET /api/v1/devices reflects push_enabled=True
     res_list = client.get("/api/v1/devices", headers=headers)
@@ -144,18 +152,41 @@ def test_cannot_modify_other_user_push_subscription(client, auth_user, user_fact
     assert res_del.status_code == 404
 
 
+def mock_http_stream(status_code: int = 200, body: bytes = b""):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.aclose = AsyncMock()
+
+    async def aiter():
+        yield body
+
+    resp.aiter_bytes = aiter
+
+    @contextlib.asynccontextmanager
+    async def _stream(*args, **kwargs):
+        yield resp
+
+    return _stream, resp
+
+
 @pytest.mark.asyncio
 async def test_send_push_notification_success(mocker):
-    mock_response = MagicMock(status_code=200)
-    mock_post = mocker.patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response)
+    mocker.patch(
+        "app.services.push_service._validate_endpoint_and_resolve",
+        new_callable=AsyncMock,
+        return_value=("ntfy.sh", "1.2.3.4", 443),
+    )
+    stream_mock, mock_resp = mock_http_stream(status_code=200)
+    mock_stream = mocker.patch("httpx.AsyncClient.stream", side_effect=stream_mock)
 
     result = await send_push_notification("dev_123", "https://ntfy.sh/up_test", "user_123")
     assert result is True
-    mock_post.assert_called_once()
-    args, kwargs = mock_post.call_args
-    assert args[0] == "https://ntfy.sh/up_test"
-    assert kwargs["json"]["type"] == "push"
-    assert "timestamp" in kwargs["json"]
+    mock_stream.assert_called_once()
+    args, kwargs = mock_stream.call_args
+    assert args[0] == "POST"
+    assert args[1] == "https://ntfy.sh/up_test"
+    assert kwargs["json"] == {"type": "push"}
+    assert "timestamp" not in kwargs["json"]
 
 
 def test_empty_body_push_subscription_rejected(client, auth_user):
@@ -188,8 +219,13 @@ async def test_send_push_notification_stale_self_healing(client, auth_user, db_s
     user_id = user.user_id
 
     # Mock distributor returning stale rejection status
-    mock_response = MagicMock(status_code=status_code)
-    mocker.patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response)
+    mocker.patch(
+        "app.services.push_service._validate_endpoint_and_resolve",
+        new_callable=AsyncMock,
+        return_value=("ntfy.sh", "1.2.3.4", 443),
+    )
+    stream_mock, _ = mock_http_stream(status_code=status_code)
+    mocker.patch("httpx.AsyncClient.stream", side_effect=stream_mock)
 
     result = await send_push_notification(device_id, f"https://ntfy.sh/up_stale_{status_code}", user_id)
     assert result is False
@@ -209,10 +245,159 @@ async def test_send_push_notification_stale_self_healing(client, auth_user, db_s
 
 @pytest.mark.asyncio
 async def test_send_push_notification_timeout_handling(mocker):
-    mocker.patch("httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=httpx.TimeoutException("Timeout"))
+    mocker.patch(
+        "app.services.push_service._validate_endpoint_and_resolve",
+        new_callable=AsyncMock,
+        return_value=("ntfy.sh", "1.2.3.4", 443),
+    )
+    mocker.patch("httpx.AsyncClient.stream", side_effect=httpx.TimeoutException("Timeout"))
 
     result = await send_push_notification("dev_timeout", "https://ntfy.sh/up_slow", "user_123")
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_push_service_ssrf_and_stream_capping(mocker):
+    from app.services.push_service import _validate_endpoint_and_resolve
+
+    # 1. Embedded credentials rejected
+    assert await _validate_endpoint_and_resolve("https://user:pass@ntfy.sh/push") is None
+
+    # 2. Non-standard HTTPS port rejected
+    assert await _validate_endpoint_and_resolve("https://ntfy.sh:8443/push") is None
+
+    # 3. Disallowed scheme (e.g. gopher://)
+    assert await _validate_endpoint_and_resolve("gopher://ntfy.sh/push") is None
+
+    # 4. Stream body capping at 10 KB
+    mocker.patch(
+        "app.services.push_service._validate_endpoint_and_resolve",
+        new_callable=AsyncMock,
+        return_value=("ntfy.sh", "1.2.3.4", 443),
+    )
+    oversized_body = b"X" * 20000  # 20 KB
+    stream_mock, response = mock_http_stream(status_code=200, body=oversized_body)
+    mocker.patch("httpx.AsyncClient.stream", side_effect=stream_mock)
+
+    result = await send_push_notification("dev_capped", "https://ntfy.sh/up_capped", "user_123")
+    assert result is False
+    response.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_push_response_cap_aborts_an_oversized_chunk(mocker):
+    mocker.patch(
+        "app.services.push_service._validate_endpoint_and_resolve",
+        new_callable=AsyncMock,
+        return_value=("ntfy.sh", "1.2.3.4", 443),
+    )
+    response = MagicMock()
+    response.status_code = 200
+    response.aclose = AsyncMock()
+    chunks = [b"X" * 10_241, b"should-not-be-consumed"]
+
+    async def aiter():
+        while chunks:
+            yield chunks.pop(0)
+
+    response.aiter_bytes = aiter
+
+    @contextlib.asynccontextmanager
+    async def stream_mock(*args, **kwargs):
+        yield response
+
+    mocker.patch("httpx.AsyncClient.stream", side_effect=stream_mock)
+
+    result = await send_push_notification("dev_chunk_capped", "https://ntfy.sh/up_chunk", "user_123")
+
+    assert result is False
+    assert chunks == [b"should-not-be-consumed"]
+    response.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pinned_transport_keeps_hostname_and_pins_tcp_destination():
+    from app.services.push_service import PinnedAsyncTransport, PinnedNetworkBackend
+
+    pinned = {"push.example.com": "203.0.113.10"}
+    transport = PinnedAsyncTransport(pinned, trust_env=False)
+
+    assert isinstance(transport.network_backend, PinnedNetworkBackend)
+    assert transport.network_backend.pinned_ips is pinned
+    assert transport.ssl_context.check_hostname is True
+    assert transport.ssl_context.verify_mode != 0
+    await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_push_ip_pinning_isolation(mocker):
+    from app.services.push_service import PinnedNetworkBackend, _current_pinned_ips
+
+    connected_ips = []
+    backend = PinnedNetworkBackend(pinned_ips={})
+
+    async def mock_super_connect(target_ip, port, **kwargs):
+        # Simulate network latency to ensure tasks interleave
+        await asyncio.sleep(0.02)
+        connected_ips.append(target_ip)
+        return MagicMock()
+
+    mocker.patch("httpcore.AnyIOBackend.connect_tcp", side_effect=mock_super_connect)
+
+    async def task_worker(ip: str):
+        token = _current_pinned_ips.set({"ntfy.sh": ip})
+        try:
+            await backend.connect_tcp("ntfy.sh", 443)
+        finally:
+            _current_pinned_ips.reset(token)
+
+    # Concurrently connect to the same hostname with different validated IPs
+    await asyncio.gather(
+        task_worker("198.51.100.1"),
+        task_worker("198.51.100.2"),
+    )
+
+    assert len(connected_ips) == 2
+    assert "198.51.100.1" in connected_ips
+    assert "198.51.100.2" in connected_ips
+    # Ensure context variable was reset
+    assert _current_pinned_ips.get() == {}
+
+
+@pytest.mark.asyncio
+async def test_send_push_notification_context_lifecycle(mocker):
+    import app.services.push_service as ps
+
+    mocker.patch(
+        "app.services.push_service._validate_endpoint_and_resolve",
+        new_callable=AsyncMock,
+        return_value=("ntfy.sh", "198.51.100.99", 443),
+    )
+
+    observed_pin_during_call = None
+
+    @contextlib.asynccontextmanager
+    async def mock_stream(*args, **kwargs):
+        nonlocal observed_pin_during_call
+        observed_pin_during_call = ps._current_pinned_ips.get().copy()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.aclose = AsyncMock()
+
+        async def aiter():
+            yield b""
+
+        mock_resp.aiter_bytes = aiter
+        yield mock_resp
+
+    mocker.patch("httpx.AsyncClient.stream", side_effect=mock_stream)
+
+    result = await ps.send_push_notification("dev_test", "https://ntfy.sh/up_ctx", "user_1")
+    assert result is True
+    # The pin must have been active during the stream call
+    assert observed_pin_during_call == {"ntfy.sh": "198.51.100.99"}
+    # The pin must be reset after completion
+    assert ps._current_pinned_ips.get() == {}
 
 
 @pytest.mark.asyncio

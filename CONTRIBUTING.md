@@ -78,6 +78,8 @@ REFRESH_TOKEN_EXPIRE_DAYS=30
 # DB settings
 DATABASE_URL=sqlite:///./data/synclo.db
 REDIS_URL=redis://localhost:6379
+# Required by the production Compose stack; use a strong random value.
+REDIS_PASSWORD=change_this_to_a_strong_random_password
 
 # Soft Delete settings
 TOMBSTONE_RETENTION_DAYS=30
@@ -88,6 +90,8 @@ CLIPBOARD_RETENTION_DAYS=30
 # Security & HTTPS Mode (set to false only for local development/self-hosting without SSL)
 HTTPS_ONLY=true
 ```
+
+Registration and email changes intentionally return a conflict when an email is already registered. This is an accepted account-enumeration tradeoff for immediate client feedback; both endpoints are tightly rate-limited. A future verification-email flow could replace these distinguishable responses.
 
 ### Step 5: Run Database Migrations
 Migrations run automatically on application startup. However, you can also run them manually using:

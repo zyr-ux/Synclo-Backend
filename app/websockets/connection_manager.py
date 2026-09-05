@@ -5,7 +5,11 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 from fastapi import WebSocket
 
-from app.core.metrics import ACTIVE_WEBSOCKETS, WEBSOCKET_EVENTS_TOTAL
+from app.core.metrics import (
+    ACTIVE_WEBSOCKETS,
+    WEBSOCKET_BROADCAST_FAILURES_TOTAL,
+    WEBSOCKET_EVENTS_TOTAL,
+)
 
 logger = logging.getLogger("clipboard_sync")
 
@@ -26,11 +30,18 @@ class ConnectionManager:
         self.active_connections[user_id][device_id] = websocket
         self._update_active_metric()
 
-    def disconnect(self, user_id: str, device_id: str):
-        if user_id in self.active_connections:
-            self.active_connections[user_id].pop(device_id, None)
-            if not self.active_connections[user_id]:
-                self.active_connections.pop(user_id, None)
+    def disconnect(self, user_id: str, device_id: str, websocket: Optional[WebSocket] = None):
+        devices = self.active_connections.get(user_id)
+        if devices is None:
+            return
+
+        current = devices.get(device_id)
+        if websocket is not None and current is not websocket:
+            return
+
+        devices.pop(device_id, None)
+        if not devices:
+            self.active_connections.pop(user_id, None)
         self._update_active_metric()
 
     async def disconnect_device(self, user_id: str, device_id: str):
@@ -67,7 +78,11 @@ class ConnectionManager:
                 "message": message,
                 "sender": self._node_id,
             }
-            await self.redis.publish(self._channel(user_id), json.dumps(envelope))
+            try:
+                await self.redis.publish(self._channel(user_id), json.dumps(envelope))
+            except Exception as exc:
+                WEBSOCKET_BROADCAST_FAILURES_TOTAL.labels(operation="disconnect_publish").inc()
+                logger.warning("WebSocket disconnect publication failed: %s", exc)
 
     async def _disconnect_user_local(
         self,
@@ -108,7 +123,11 @@ class ConnectionManager:
                 "message": message,
                 "sender": self._node_id,
             }
-            await self.redis.publish(self._channel(user_id), json.dumps(envelope))
+            try:
+                await self.redis.publish(self._channel(user_id), json.dumps(envelope))
+            except Exception as exc:
+                WEBSOCKET_BROADCAST_FAILURES_TOTAL.labels(operation="broadcast_publish").inc()
+                logger.warning("WebSocket broadcast publication failed: %s", exc)
 
     async def _broadcast_local(self, user_id: str, message: dict, exclude_device: Optional[str] = None):
         for device_id, ws in list(self.get_user_devices(user_id).items()):
@@ -173,4 +192,4 @@ class ConnectionManager:
         return f"clipboard:user:{user_id}"
 
 
-manager = ConnectionManager()
+manager = ConnectionManager()

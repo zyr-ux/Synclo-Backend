@@ -26,6 +26,7 @@ Built on a **Zero-Knowledge Architecture**, the backend acts strictly as an encr
 *   🔒 **HTTPS & Transport Security:** Strict HTTPS/WSS enforcement mode (`HTTPS_ONLY`) with automatic HTTP-to-HTTPS redirection, HSTS headers, reverse proxy support (`X-Forwarded-Proto`), and loopback development exemptions.
 *   📈 **Observability & Prometheus Telemetry:** Exposes anonymized, privacy-preserving operational metrics at `/metrics`.
 *   🛡️ **Advanced Session Security:** Uses Refresh Token Rotation, token reuse detection, and global rate limiting to protect against session theft and brute-force attacks.
+*   🔐 **Zero-Knowledge User Observability Design:** Structural email-less design where public ingress points (`/register`, `/auth/salt`) provide immediate, honest client feedback bounded by Redis rate limiters, while internal auth and recovery endpoints return uniform error responses (`401`) to prevent side-channel disclosures.
 
 ---
 
@@ -67,14 +68,26 @@ Run it twice (once for each key) and insert the generated values into your confi
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `SECRET_KEY` | *(Required)* | Secret key used for signing JWT access tokens. |
-| `REFRESH_TOKEN_HASH_KEY` | *(Required)* | Secret key used for hashing refresh tokens in the database. |
-| `DATABASE_URL` | `sqlite:////app/data/synclo.db` | SQLAlchemy database connection string. Default points to persistent SQLite inside container. |
-| `REDIS_URL` | `redis://redis:6379` | Redis connection string for WebSocket pub/sub broadcasting and rate limiting. |
-| `HTTPS_ONLY` | `true` (prod) / `false` (dev) | Enforces strict HTTPS redirection (`307`), HSTS headers, and secure WebSockets (`WSS`). |
-| `SYNCLO_DOMAIN` | `synclo.yourdomain.com` | Public domain name used by Caddy for automatic Let's Encrypt / ZeroSSL certificates. |
-| `CLIPBOARD_RETENTION_DAYS` | `30` | Auto-pruning retention lifecycle in days for unpinned clipboard items. Pinned items are immune. |
+| `SECRET_KEY` | *(Required)* | Secret key used for signing JWT access tokens (minimum 32 characters). |
+| `REFRESH_TOKEN_HASH_KEY` | *(Required)* | Secret key used for HMAC hashing of refresh tokens (minimum 16 characters). |
+| `ALGORITHM` | `HS256` | JWT signing algorithm (`HS256`, `HS384`, or `HS512`). |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | JWT access token expiration time in minutes. |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `30` | Refresh token lifespan in days before re-authentication is required. |
+| `DATABASE_URL` | `sqlite:///./data/synclo.db` | SQLAlchemy database connection string (`sqlite:////app/data/synclo.db` in container setups). |
+| `REDIS_URL` | `redis://redis:6379` | Redis connection string for WebSocket pub/sub broadcasting and rate limiting. Production Compose uses authenticated Redis. |
+| `REDIS_PASSWORD` | *(Required in Compose)* | Password for the production Compose Redis service. Use a strong random value. |
+| `HTTPS_ONLY` | `false` | Enforces strict HTTPS redirection (`307`), HSTS headers, and secure WebSockets (`WSS`). Defaults to `false` if omitted. |
+| `ENVIRONMENT` | `development` | Deployment environment (`development` or `production`). Production enforces strict push endpoint security constraints. |
+| `ALLOW_ARBITRARY_PUSH_ENDPOINTS` | `false` | Allows UnifiedPush subscriptions to non-whitelisted domains. Strictly forbidden in production. |
+| `ALLOW_LOCAL_PUSH_ENDPOINTS` | `false` | Allows UnifiedPush subscriptions to local/private IP addresses and loopback. Strictly forbidden in production. |
+| `PUSH_PROVIDERS_FILE` | `app/utilities/push_providers.json` | Path to the JSON file listing trusted UnifiedPush provider domains. |
+| `TRUSTED_PROXIES` | `127.0.0.1,::1` | Comma-separated list of trusted upstream reverse proxy IP addresses. |
+| `CLIPBOARD_RETENTION_DAYS` | `30` | Auto-pruning retention lifecycle in days for unpinned clipboard items (`0` to disable). Pinned items are immune. |
 | `TOMBSTONE_RETENTION_DAYS` | `30` | Retention duration in days for deletion records (tombstones) enabling offline client synchronization. |
+| `BACKUP_ENCRYPTION_KEY` | `None` *(unset)* | Optional Fernet key used by operational backup utilities (`backup_db.py`) to encrypt SQLite database snapshots (`.db.enc`). |
+| `BACKUP_RETENTION_DAYS` | `30` | Retention duration in days for database backup snapshots before automatic pruning. |
+| `BACKUP_DIR` | `data/backups` | Directory path where SQLite database backups are stored. |
+| `SYNCLO_DOMAIN` | `synclo.yourdomain.com` | Public domain name used by Caddy in Docker Compose for automatic Let's Encrypt / ZeroSSL certificates. |
 
 ---
 
@@ -106,22 +119,47 @@ services:
       SECRET_KEY: "change_this_to_a_random_hex_key"
       REFRESH_TOKEN_HASH_KEY: "change_this_to_a_random_hex_key"
       DATABASE_URL: "sqlite:////app/data/synclo.db"
-      REDIS_URL: "redis://redis:6379"
+      REDIS_URL: "redis://:${REDIS_PASSWORD}@redis:6379/0"
+      REDIS_PASSWORD: "change_this_to_a_strong_random_password"
       HTTPS_ONLY: "true"
       CLIPBOARD_RETENTION_DAYS: "30"
       TOMBSTONE_RETENTION_DAYS: "30"
+    user: "10001:10001"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
     container_name: redis
     restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
+    command:
+      - redis-server
+      - --requirepass
+      - "${REDIS_PASSWORD}"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
     expose:
       - 6379
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
   caddy:
     image: caddy:2-alpine
@@ -139,7 +177,8 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - synclo-backend
+      synclo-backend:
+        condition: service_healthy
 
 configs:
   caddyfile:
@@ -196,28 +235,52 @@ services:
     image: ghcr.io/zyr-ux/synclo-backend:latest
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       SECRET_KEY: "change_this_to_a_random_hex_key"
       REFRESH_TOKEN_HASH_KEY: "change_this_to_a_random_hex_key"
       DATABASE_URL: "sqlite:////app/data/synclo.db"
-      REDIS_URL: "redis://redis:6379"
+      REDIS_URL: "redis://:${REDIS_PASSWORD}@redis:6379/0"
+      REDIS_PASSWORD: "change_this_to_a_strong_random_password"
       HTTPS_ONLY: "true"
       CLIPBOARD_RETENTION_DAYS: "30"
       TOMBSTONE_RETENTION_DAYS: "30"
+    user: "10001:10001"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
     container_name: redis
     restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
+    command:
+      - redis-server
+      - --requirepass
+      - "${REDIS_PASSWORD}"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
     expose:
       - 6379
-```
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
 Start the containers:
 ```bash
@@ -254,6 +317,38 @@ Reload Caddy to apply changes:
 ```bash
 sudo systemctl reload caddy
 ```
+
+---
+
+## 🛠️ Operational Utilities
+
+The `app/utilities/` folder provides administrative tools and helper routines for database maintenance and disaster recovery:
+
+### 1. Database Backups (`app/utilities/backup_db.py`)
+Performs transaction-safe online SQLite backups with integrity verification, optional Fernet encryption, and automatic retention pruning:
+```bash
+# Create standard .db snapshot:
+python app/utilities/backup_db.py
+
+# Create encrypted .db.enc snapshot (recommended for defense-in-depth against metadata exposure):
+python app/utilities/backup_db.py --key "<fernet-key>"
+
+# Dry-run test restoration into a sandboxed temporary directory:
+python app/utilities/backup_db.py --verify-restore data/backups/synclo_backup_YYYYMMDD_HHMMSS.db.enc --key "<fernet-key>"
+
+# Restore backup to active database:
+python app/utilities/backup_db.py --restore data/backups/synclo_backup_YYYYMMDD_HHMMSS.db.enc --key "<fernet-key>"
+```
+
+### 2. Manual Backup Decryption (`app/utilities/decrypt_db.py`)
+Dedicated, standalone CLI utility allowing administrators to decrypt any `.db.enc` backup file into a standard SQLite `.db` database without running the backend:
+```bash
+python app/utilities/decrypt_db.py data/backups/synclo_backup_YYYYMMDD_HHMMSS.db.enc --output restored.db --key "<fernet-key>"
+```
+
+### 3. Push Distributor Domain Allowlist (`app/utilities/push_providers.json`)
+Lists trusted UnifiedPush provider domains (`ntfy.sh`, `push.nextcloud.com`, `up.kde.org`, `unifiedpush.org`). You can add custom self-hosted distributor domains by updating this file or mounting a custom JSON file.
+
 
 ---
 

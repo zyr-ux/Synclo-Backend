@@ -1,26 +1,20 @@
 import asyncio
-import base64
 from datetime import datetime, timezone
 import traceback
 from typing import Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
 
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, run_in_write_transaction
 from app.core.config import Settings
-from app.core.constants import (
-    ALLOWED_BLOB_VERSIONS,
-    MIN_NONCE_LEN,
-    MAX_NONCE_LEN,
-    MAX_CIPHERTEXT_LEN,
-    LOOPBACK_HOSTS,
-)
+from app.core.constants import LOOPBACK_HOSTS
 from app.core.logging_config import logger
-from app.models.models import Clipboard, User, Device, BlacklistedToken
+from app.models.models import User, Device, BlacklistedToken
+from app.schemas.schemas import ClipboardIn
 from app.services.auth import SECRET_KEY, ALGORITHM
+from app.services.clipboard_service import upsert_clipboard, soft_delete_clipboard
 from app.services.push_service import launch_background_push
-from app.services.utils import prune_user_clipboard, parse_iso_utc, to_iso_utc
 from app.websockets.connection_manager import manager
 
 
@@ -29,8 +23,10 @@ router = APIRouter()
 
 async def _validate_ws_security(websocket: WebSocket) -> bool:
     if Settings.HTTPS_ONLY:
-        # Proxies terminate TLS and forward X-Forwarded-Proto
-        forwarded_proto = websocket.headers.get("x-forwarded-proto", "").lower()
+        client_ip = websocket.client.host if websocket.client else ""
+        forwarded_proto = ""
+        if client_ip in Settings.TRUSTED_PROXIES or client_ip in LOOPBACK_HOSTS:
+            forwarded_proto = websocket.headers.get("x-forwarded-proto", "").lower()
         is_secure = websocket.url.scheme == "wss" or forwarded_proto in ("https", "wss")
         is_loopback = websocket.url.hostname in LOOPBACK_HOSTS
         if not is_secure and not is_loopback:
@@ -56,9 +52,10 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
         email = payload.get("sub")
         exp = payload.get("exp")
         device_id = payload.get("device_id")
+        epoch = payload.get("epoch")
 
-        if not email or not exp or not device_id:
-            logger.warning(f"WebSocket token missing required fields: email={email}, exp={exp}, device_id={device_id}")
+        if not email or not exp or not device_id or epoch is None:
+            logger.warning(f"WebSocket token missing required fields: email={email}, exp={exp}, device_id={device_id}, epoch={epoch}")
             await websocket.send_json({"type": "error", "message": "Invalid token: missing required fields"})
             await websocket.close(code=1008)
             return None
@@ -83,6 +80,12 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
             await websocket.close(code=1008)
             return None
 
+        if epoch != user.session_epoch:
+            logger.warning(f"WebSocket token session_epoch mismatch for {email}: {epoch} vs {user.session_epoch}")
+            await websocket.send_json({"type": "session_invalidated", "reason": "credentials_changed"})
+            await websocket.close(code=4004)
+            return None
+
         device = db.query(Device).filter_by(user_id=user.user_id, device_id=device_id).first()
         if not device:
             logger.warning(f"WebSocket connection attempted with unauthorized device {device_id} for user {email}")
@@ -98,95 +101,13 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
 def _update_device_last_seen(user_id: str, device_id: str):
     session = SessionLocal()
     try:
-        dev = session.query(Device).filter_by(user_id=user_id, device_id=device_id).first()
-        if dev:
-            dev.last_seen = datetime.now(timezone.utc)
-            session.commit()
+        def mutate():
+            dev = session.query(Device).filter_by(user_id=user_id, device_id=device_id).first()
+            if dev:
+                dev.last_seen = datetime.now(timezone.utc)
+        run_in_write_transaction(session, mutate)
     except Exception as err:
-        session.rollback()
         logger.warning(f"Failed to update device last_seen: {err}")
-    finally:
-        session.close()
-
-
-def _save_clipboard_entry(
-    user_id: str,
-    msg_id: str,
-    msg_ts: datetime,
-    is_deleted: bool,
-    is_pinned: bool,
-    pinned_at_val: Optional[datetime],
-    ciphertext_bytes: Optional[bytes],
-    nonce_bytes: Optional[bytes],
-    blob_version: int
-) -> dict:
-    session = SessionLocal()
-    try:
-        existing = session.query(Clipboard).filter_by(clipboard_id=msg_id, user_id=user_id).first()
-
-        if existing:
-            existing.is_deleted = is_deleted
-            existing.timestamp = msg_ts
-            existing.blob_version = blob_version
-
-            if is_deleted:
-                existing.ciphertext = None
-                existing.nonce = None
-                existing.is_pinned = False
-                existing.pinned_at = None
-                existing.deleted_at = msg_ts
-                existing.updated_at = datetime.now(timezone.utc)
-            else:
-                existing.ciphertext = ciphertext_bytes
-                existing.nonce = nonce_bytes
-                existing.is_pinned = is_pinned
-                existing.pinned_at = pinned_at_val
-                existing.deleted_at = None
-                existing.updated_at = datetime.now(timezone.utc)
-
-            session.commit()
-            entry_resp = {
-                "id": existing.clipboard_id,
-                "timestamp": existing.timestamp,
-                "is_deleted": existing.is_deleted,
-                "is_pinned": existing.is_pinned,
-                "pinned_at": existing.pinned_at,
-                "blob_version": existing.blob_version
-            }
-        else:
-            new_entry = Clipboard(
-                clipboard_id=msg_id,
-                user_id=user_id,
-                ciphertext=ciphertext_bytes,
-                nonce=nonce_bytes,
-                blob_version=blob_version,
-                timestamp=msg_ts,
-                is_deleted=is_deleted,
-                is_pinned=is_pinned if not is_deleted else False,
-                pinned_at=pinned_at_val if not is_deleted else None,
-                deleted_at=msg_ts if is_deleted else None,
-                updated_at=datetime.now(timezone.utc)
-            )
-            session.add(new_entry)
-            session.commit()
-            entry_resp = {
-                "id": new_entry.clipboard_id,
-                "timestamp": new_entry.timestamp,
-                "is_deleted": new_entry.is_deleted,
-                "is_pinned": new_entry.is_pinned,
-                "pinned_at": new_entry.pinned_at,
-                "blob_version": new_entry.blob_version
-            }
-
-        pruned_tombstones = []
-        if not is_deleted and not existing:
-            pruned_tombstones = prune_user_clipboard(user_id, session)
-
-        entry_resp["pruned_tombstones"] = pruned_tombstones
-        return entry_resp
-    except Exception as e:
-        session.rollback()
-        return {"error": str(e)}
     finally:
         session.close()
 
@@ -198,115 +119,63 @@ async def _process_clipboard_message(
     data: dict
 ):
     msg_id = data.get("id")
-    is_deleted = data.get("is_deleted", False)
-    is_pinned = data.get("is_pinned", False)
-    pinned_at_str = data.get("pinned_at")
+    msg_ts = data.get("timestamp")
 
-    msg_ts_str = data.get("timestamp")
-    ciphertext = data.get("ciphertext")
-    nonce = data.get("nonce")
-    blob_version = data.get("blob_version", 1)
-
-    if not msg_id or not msg_ts_str:
+    if not msg_id or not msg_ts:
         await websocket.send_json({"type": "error", "message": "Missing required fields (id, timestamp)"})
         return
 
-    if not is_deleted:
-        if not ciphertext or not nonce:
-            await websocket.send_json({"type": "error", "message": "Missing ciphertext/nonce for active entry"})
-            return
-    else:
-        ciphertext = None
-        nonce = None
-
     try:
-        msg_ts = parse_iso_utc(msg_ts_str)
-    except ValueError:
-        await websocket.send_json({"type": "error", "message": "Invalid timestamp format (ISO8601 required)"})
+        clipboard_in = ClipboardIn.model_validate(data)
+    except Exception as err:
+        await websocket.send_json({"type": "error", "message": f"Invalid payload: {err}"})
         return
 
-    pinned_at_val = None
-    if is_pinned and not is_deleted:
-        if pinned_at_str:
-            try:
-                pinned_at_val = parse_iso_utc(pinned_at_str)
-            except ValueError:
-                await websocket.send_json({"type": "error", "message": "Invalid pinned_at format (ISO8601 required)"})
-                return
+    session = SessionLocal()
+    try:
+        if clipboard_in.is_deleted:
+            await soft_delete_clipboard(
+                db=session,
+                user_id=user_id,
+                clipboard_id=msg_id,
+                caller_device_id=device_id,
+                client_timestamp=clipboard_in.timestamp,
+            )
         else:
-            pinned_at_val = datetime.now(timezone.utc)
+            await upsert_clipboard(
+                db=session,
+                user_id=user_id,
+                data=clipboard_in,
+                caller_device_id=device_id,
+            )
 
-    ciphertext_bytes = None
-    nonce_bytes = None
+        launch_background_push(user_id=user_id, exclude_device=device_id)
 
-    if not is_deleted:
-        if ciphertext is None or nonce is None:
-            await websocket.send_json({"type": "error", "message": "Missing ciphertext/nonce"})
-            return
-        try:
-            ciphertext_bytes = base64.b64decode(ciphertext)
-            nonce_bytes = base64.b64decode(nonce)
-        except Exception:
-            await websocket.send_json({"type": "error", "message": "Invalid base64 encoding"})
-            return
-
-        if blob_version not in ALLOWED_BLOB_VERSIONS:
-            await websocket.send_json({"type": "error", "message": "Unsupported blob_version"})
-            return
-        if not (MIN_NONCE_LEN <= len(nonce_bytes) <= MAX_NONCE_LEN):
-            await websocket.send_json({"type": "error", "message": "nonce length out of bounds"})
-            return
-        if len(ciphertext_bytes) > MAX_CIPHERTEXT_LEN:
-            await websocket.send_json({"type": "error", "message": "ciphertext too large"})
-            return
-
-    entry_data = await asyncio.to_thread(
-        _save_clipboard_entry,
-        user_id,
-        msg_id,
-        msg_ts,
-        is_deleted,
-        is_pinned,
-        pinned_at_val,
-        ciphertext_bytes,
-        nonce_bytes,
-        blob_version
-    )
-
-    if "error" in entry_data:
-        logger.error(f"DB Error processing clipboard item: {entry_data['error']}")
-        return
-
-    broadcast_payload = {
-        "type": "clipboard_sync",
-        "id": entry_data["id"],
-        "timestamp": to_iso_utc(entry_data["timestamp"]),
-        "is_deleted": entry_data["is_deleted"],
-        "is_pinned": entry_data["is_pinned"],
-        "pinned_at": to_iso_utc(entry_data.get("pinned_at")),
-        "blob_version": entry_data["blob_version"],
-        "ciphertext": ciphertext if not entry_data["is_deleted"] else None,
-        "nonce": nonce if not entry_data["is_deleted"] else None,
-    }
-
-    await manager.broadcast_to_user(
-        user_id=user_id,
-        message=broadcast_payload,
-        exclude_device=device_id
-    )
-
-    launch_background_push(user_id=user_id, exclude_device=device_id)
-
-    for tombstone in entry_data.get("pruned_tombstones", []):
-        await manager.broadcast_to_user(
-            user_id=user_id,
-            message=tombstone
-        )
-
-    await websocket.send_json({
-        "type": "ack",
-        "id": entry_data["id"]
-    })
+        await websocket.send_json({
+            "type": "ack",
+            "id": msg_id,
+        })
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            await websocket.send_json({
+                "type": "error",
+                "id": msg_id,
+                "code": "conflict",
+                "message": exc.detail,
+            })
+        else:
+            await websocket.send_json({
+                "type": "error",
+                "message": exc.detail,
+            })
+    except Exception as exc:
+        logger.error(f"Error processing websocket clipboard item: {exc}")
+        await websocket.send_json({
+            "type": "error",
+            "message": "Internal error processing clipboard item",
+        })
+    finally:
+        session.close()
 
 
 @router.websocket("/sync")
@@ -371,5 +240,5 @@ async def websocket_sync(websocket: WebSocket):
         except RuntimeError:
             pass
     finally:
-        manager.disconnect(user_id, device_id)
+        manager.disconnect(user_id, device_id, websocket)
         await asyncio.to_thread(_update_device_last_seen, user_id, device_id)

@@ -84,7 +84,8 @@ Refer to this map to find where to add code:
 * `app/endpoints/`: FastAPI routers split by domain (`auth_endpoints.py`, `device_endpoints.py`, `clipboard_endpoints.py`, `websocket_endpoints.py`).
 * `app/models/`: SQLAlchemy database models (`models.py`).
 * `app/schemas/`: Pydantic input/output schemas (`schemas.py` using Pydantic v2).
-* `app/services/`: Core logic (such as `auth.py` helpers, background `utils.py` tasks, and `push_service.py`).
+* `app/services/`: Core logic (such as `auth.py` helpers, `clipboard_service.py`, and `push_service.py`).
+* `app/utilities/`: Operational scripts and helpers (`helpers.py`, `backup_db.py`, `decrypt_db.py`, `push_providers.json`).
 * `app/websockets/`: Real-time WebSocket connection handling and Redis Pub/Sub listener (`connection_manager.py`).
 * `tests/`: Standardized pytest test suite.
 

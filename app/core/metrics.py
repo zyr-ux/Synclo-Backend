@@ -13,6 +13,18 @@ WEBSOCKET_EVENTS_TOTAL = Counter(
     ["event_type"],
 )
 
+WEBSOCKET_BROADCAST_FAILURES_TOTAL = Counter(
+    "synclo_websocket_broadcast_failures_total",
+    "Best-effort WebSocket publication failures.",
+    ["operation"],
+)
+
+CLEANUP_FAILURES_TOTAL = Counter(
+    "synclo_cleanup_failures_total",
+    "Cleanup operation failures.",
+    ["operation"],
+)
+
 PUSH_DISPATCHES_TOTAL = Counter(
     "synclo_push_dispatches_total",
     "Total background push notifications dispatched, labeled only by generic outcome status.",

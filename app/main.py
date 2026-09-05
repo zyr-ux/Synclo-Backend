@@ -2,6 +2,7 @@ import asyncio
 import sys
 import traceback
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi_limiter import FastAPILimiter
@@ -12,9 +13,9 @@ from app.core.logging_config import logger
 from app.core.config import Settings
 from app.core.constants import LOOPBACK_HOSTS
 from app.core.metrics import setup_metrics
-from app.services.utils import run_all_cleanup
+from app.utilities.helpers import CleanupResult, run_all_cleanup
 from app.websockets.connection_manager import manager
-from app.services.push_service import push_service
+from app.services.push_service import launch_background_push, push_service
 
 from app.endpoints.auth_endpoints import router as auth_router
 from app.endpoints.device_endpoints import router as device_router
@@ -30,6 +31,7 @@ async def lifespan(app: FastAPI):
         from alembic import command
         
         alembic_cfg = Config("alembic.ini")
+        alembic_cfg.set_main_option("sqlalchemy.url", Settings.DATABASE_URL)
         command.upgrade(alembic_cfg, "head")
         logger.info("Database migrations applied successfully.")
     except Exception as e:
@@ -66,13 +68,15 @@ async def lifespan(app: FastAPI):
             pass
 
 
+is_prod = Settings.ENVIRONMENT.lower() == "production"
+
 app = FastAPI(
     title=Settings.PROJECT_NAME,
     version=Settings.VERSION,
     description=Settings.DESCRIPTION,
-    docs_url=None,
-    redoc_url="/api/docs",
-    openapi_url="/api/openapi.json",
+    docs_url=None if is_prod else "/docs",
+    redoc_url=None if is_prod else "/api/docs",
+    openapi_url=None if is_prod else "/api/openapi.json",
     lifespan=lifespan,
 )
 
@@ -88,8 +92,10 @@ app.include_router(websocket_router, prefix="/ws/v1")
 async def security_headers_middleware(request: Request, call_next):
     is_https = False
     if Settings.HTTPS_ONLY:
-        # Proxies terminate TLS and forward X-Forwarded-Proto
-        forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+        client_ip = request.client.host if request.client else ""
+        forwarded_proto = ""
+        if client_ip in Settings.TRUSTED_PROXIES or client_ip in LOOPBACK_HOSTS:
+            forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
         is_https = request.url.scheme == "https" or forwarded_proto == "https"
         is_loopback = request.url.hostname in LOOPBACK_HOSTS
 
@@ -111,23 +117,47 @@ async def security_headers_middleware(request: Request, call_next):
     return response
 
 
-def _execute_cleanup():
+def _execute_cleanup() -> CleanupResult:
     db = SessionLocal()
     try:
-        run_all_cleanup(db)
+        return run_all_cleanup(db)
     finally:
         db.close()
 
 
 async def periodic_cleanup():
     while True:
+        lock = None
+        acquired = False
         try:
-            await asyncio.to_thread(_execute_cleanup)
+            redis = getattr(app.state, "redis", None)
+            if redis:
+                lock = redis.lock("synclo:cleanup", timeout=3600, blocking=False)
+                acquired = await lock.acquire()
+                if not acquired:
+                    await asyncio.sleep(86400)
+                    continue
+
+            cleanup_result = await asyncio.to_thread(_execute_cleanup)
+            if cleanup_result.failures:
+                logger.error("Cleanup completed with %d failed operations", cleanup_result.failures)
+            affected_users = set()
+            for user_id, tombstone in cleanup_result.tombstones:
+                await manager.broadcast_to_user(user_id=user_id, message=tombstone)
+                affected_users.add(user_id)
+            for user_id in affected_users:
+                launch_background_push(user_id=user_id)
         except asyncio.CancelledError:
             break
-        except Exception as e:
-            logger.error(f"Cleanup task failed: {e}")
-        
+        except Exception as exc:
+            logger.error("Cleanup task failed: %s", exc)
+        finally:
+            if lock is not None and acquired:
+                try:
+                    await lock.release()
+                except Exception as exc:
+                    logger.warning("Cleanup lock release failed: %s", exc)
+
         await asyncio.sleep(86400)
 
 
@@ -152,7 +182,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.get("/api/health")
 def health_check():
-    logger.info("Health check pinged")
     return JSONResponse(
         content={
             "status": "ok",

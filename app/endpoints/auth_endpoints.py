@@ -2,7 +2,7 @@ import base64
 import bcrypt
 from datetime import datetime, timedelta, timezone
 from secrets import token_urlsafe
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -28,6 +28,7 @@ from app.core.constants import (
     ALLOWED_KDF_VERSIONS,
 )
 from app.core.logging_config import logger
+from app.core.database import run_in_write_transaction
 from app.models.models import User, Device, RefreshToken, BlacklistedToken, Clipboard
 from app.schemas.schemas import (
     Token,
@@ -55,9 +56,8 @@ from app.services.auth import (
     SECRET_KEY,
     ALGORITHM,
 )
-from app.services.crypto_utils import hash_refresh_token
 from app.services.serializers import user_to_e2ee_response
-from app.services.utils import cleanup_expired_refresh_tokens
+from app.utilities.helpers import cleanup_expired_refresh_tokens, hash_refresh_token, strict_b64decode
 from app.websockets.connection_manager import manager
 
 
@@ -72,8 +72,8 @@ DUMMY_BCRYPT_HASH = bcrypt.hashpw(b"timing_attack_mitigation_dummy_hash", bcrypt
 
 def decode_and_validate_blob(value: str, min_len: int, max_len: int, field_name: str) -> bytes:
     try:
-        raw_bytes = base64.b64decode(value)
-    except (ValueError, TypeError):
+        raw_bytes = strict_b64decode(value, field_name)
+    except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid base64 encoding for {field_name}")
     if not (min_len <= len(raw_bytes) <= max_len):
         raise HTTPException(status_code=400, detail=f"{field_name} length out of bounds")
@@ -99,7 +99,7 @@ def get_salt_for_email(email: str, db: Session = Depends(get_db)):
 def get_recovery_material(request: RecoveryMaterialRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == request.email).first()
     if not user or not user.recovery_wrapped_master_key:
-        raise HTTPException(status_code=404, detail="Recovery material not available")
+        raise HTTPException(status_code=401, detail="Could not recover account")
 
     return {
         "recovery_wrapped_master_key": base64.b64encode(user.recovery_wrapped_master_key).decode('utf-8')
@@ -139,53 +139,55 @@ async def recover_account(data: AccountRecoveryRequest, db: Session = Depends(ge
     user = db.query(User).filter(User.email == data.email).first()
     if not user or not user.recovery_key_verifier:
         bcrypt.checkpw(recovery_verifier_bytes, DUMMY_BCRYPT_HASH.encode("utf-8"))
-        raise HTTPException(status_code=401, detail="Invalid recovery credentials")
+        raise HTTPException(status_code=401, detail="Could not recover account")
 
-    try:
-        if not bcrypt.checkpw(recovery_verifier_bytes, user.recovery_key_verifier.encode("utf-8")):
-            raise HTTPException(status_code=401, detail="Invalid recovery credentials")
-    except Exception as e:
-        logger.error(f"Recovery verifier check failed: {e}")
-        raise HTTPException(status_code=401, detail="Invalid recovery credentials")
+    if not bcrypt.checkpw(recovery_verifier_bytes, user.recovery_key_verifier.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Could not recover account")
 
     new_auth_key_hash = bcrypt.hashpw(new_auth_key_bytes, bcrypt.gensalt()).decode("utf-8")
     new_recovery_verifier_hash = bcrypt.hashpw(new_recovery_verifier_bytes, bcrypt.gensalt()).decode("utf-8")
 
-    user.auth_key_hash = new_auth_key_hash
-    user.encrypted_master_key = new_encrypted_mk_bytes
-    user.salt = new_salt_bytes
-    user.kdf_version = data.new_kdf_version
-    user.recovery_wrapped_master_key = new_recovery_wrapped_mk_bytes
-    user.recovery_key_verifier = new_recovery_verifier_hash
-
-    db.query(RefreshToken).filter(RefreshToken.user_id == user.user_id).update({"is_revoked": True})
-
-    device = db.query(Device).filter(Device.device_id == data.device_id).first()
-    if device:
-        if device.user_id != user.user_id:
-            raise HTTPException(status_code=403, detail="Device ID belongs to another user")
-        if data.device_name:
-            device.device_name = data.device_name
-        if data.os:
-            device.os = data.os
-        device.last_seen = datetime.now(timezone.utc)
-    else:
-        device = Device(
-            device_id=data.device_id,
-            device_name=data.device_name or "Recovered Device",
-            os=data.os,
-            user_id=user.user_id,
-            last_seen=datetime.now(timezone.utc),
+    def mutate() -> tuple[Device, str]:
+        user.auth_key_hash = new_auth_key_hash
+        user.encrypted_master_key = new_encrypted_mk_bytes
+        user.salt = new_salt_bytes
+        user.kdf_version = data.new_kdf_version
+        user.recovery_wrapped_master_key = new_recovery_wrapped_mk_bytes
+        user.recovery_key_verifier = new_recovery_verifier_hash
+        db.query(RefreshToken).filter(RefreshToken.user_id == user.user_id).update(
+            {"is_revoked": True}
         )
-        db.add(device)
-    db.flush()
 
+        device = db.query(Device).filter_by(
+            device_id=data.device_id, user_id=user.user_id
+        ).first()
+        if device:
+            if data.device_name:
+                device.device_name = data.device_name
+            if data.os:
+                device.os = data.os
+            device.last_seen = datetime.now(timezone.utc)
+        else:
+            device = Device(
+                device_id=data.device_id,
+                device_name=data.device_name or "Recovered Device",
+                os=data.os,
+                user_id=user.user_id,
+                last_seen=datetime.now(timezone.utc),
+            )
+            db.add(device)
+        user.session_epoch += 1
+        db.flush()
+        refresh_token = create_refresh_token(
+            db, user_id=user.user_id, device_id=device.device_id
+        )
+        return device, refresh_token
+
+    device, plain_refresh_token = run_in_write_transaction(db, mutate)
     access_token = create_access_token(
-        data={"sub": user.email, "device_id": device.device_id},
+        data={"sub": user.email, "device_id": device.device_id, "epoch": user.session_epoch},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
-    plain_refresh_token = create_refresh_token(db, user_id=user.user_id, device_id=device.device_id)
-    db.commit()
 
     await manager.disconnect_user(user.user_id, code=4004)
 
@@ -208,10 +210,7 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == user.email).first():
         raise HTTPException(status_code=409, detail="Email already registered")
     
-    existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
-    if existing_device:
-        raise HTTPException(status_code=409, detail="Device ID already in use. Please use a unique device ID.")
-    
+
     encrypted_mk_bytes = decode_and_validate_blob(user.encrypted_master_key, MIN_MK_LEN, MAX_MK_LEN, "encrypted_master_key")
     salt_bytes = decode_and_validate_blob(user.salt, MIN_SALT_LEN, MAX_SALT_LEN, "salt")
     auth_key_bytes = decode_and_validate_blob(user.auth_key, MIN_AUTH_KEY_LEN, MAX_AUTH_KEY_LEN, "auth_key")
@@ -221,7 +220,7 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     auth_key_hash = bcrypt.hashpw(auth_key_bytes, bcrypt.gensalt()).decode('utf-8')
     recovery_key_verifier_hash = bcrypt.hashpw(recovery_verifier_bytes, bcrypt.gensalt()).decode('utf-8')
 
-    try:
+    def mutate() -> tuple[User, Device, str]:
         new_user = User(
             user_id=str(uuid4()),
             email=user.email,
@@ -233,7 +232,6 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
             recovery_wrapped_master_key=recovery_wrapped_mk_bytes,
             recovery_key_verifier=recovery_key_verifier_hash,
         )
-
         db.add(new_user)
         db.flush()
 
@@ -241,42 +239,38 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
             device_id=user.device_id,
             device_name=user.device_name,
             os=user.os,
-            user_id=new_user.user_id
+            user_id=new_user.user_id,
         )
         db.add(new_device)
         db.flush()
 
-        access_token = create_access_token(
-            data={"sub": new_user.email, "device_id": user.device_id},
-            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        )
+        plain_refresh = create_refresh_token(db, user_id=new_user.user_id, device_id=user.device_id)
+        return new_user, new_device, plain_refresh
 
-        plain_refresh_token = create_refresh_token(db, user_id=new_user.user_id, device_id=user.device_id)
-        db.commit()
-
-        await manager.broadcast_to_user(
-            user_id=new_user.user_id,
-            message={
-                "type": "device_added",
-                "device": {
-                    "device_id": new_device.device_id,
-                    "device_name": new_device.device_name,
-                    "os": new_device.os
-                }
-            },
-            exclude_device=user.device_id
-        )
-
+    try:
+        new_user, new_device, plain_refresh_token = run_in_write_transaction(db, mutate)
     except IntegrityError:
-        db.rollback()
-        if db.query(Device).filter(Device.device_id == user.device_id).first():
-            raise HTTPException(status_code=409, detail="Device ID already in use. Please use a unique device ID.")
         if db.query(User).filter(User.email == user.email).first():
             raise HTTPException(status_code=409, detail="Email already registered")
         raise HTTPException(status_code=400, detail="Registration failed")
-    except Exception:
-        db.rollback()
-        raise
+
+    access_token = create_access_token(
+        data={"sub": new_user.email, "device_id": user.device_id, "epoch": new_user.session_epoch},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+
+    await manager.broadcast_to_user(
+        user_id=new_user.user_id,
+        message={
+            "type": "device_added",
+            "device": {
+                "device_id": new_device.device_id,
+                "device_name": new_device.device_name,
+                "os": new_device.os
+            }
+        },
+        exclude_device=user.device_id
+    )
 
     return {
         "access_token": access_token,
@@ -296,61 +290,72 @@ async def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="device_id length out of bounds")
     
     try:
-        auth_key_bytes = base64.b64decode(user.auth_key)
+        auth_key_bytes = strict_b64decode(user.auth_key, "auth_key")
         if not (MIN_AUTH_KEY_LEN <= len(auth_key_bytes) <= MAX_AUTH_KEY_LEN):
             raise HTTPException(status_code=401, detail="Invalid credentials")
         if not bcrypt.checkpw(auth_key_bytes, db_user.auth_key_hash.encode('utf-8')):
             raise HTTPException(status_code=401, detail="Invalid credentials")
-    except Exception as e:
-        logger.error(f"Auth key verification failed: {e}")
+    except ValueError:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     cleanup_expired_refresh_tokens(db)
 
     db_user_id: str = db_user.user_id
 
-    device = db.query(Device).filter_by(device_id=user.device_id, user_id=db_user_id).first()
-    if not device:
-        existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
-        if existing_device and existing_device.user_id != db_user_id:
-            raise HTTPException(status_code=403, detail="Device ID belongs to another user")
-
-        device = Device(
-            device_id=user.device_id,
-            device_name=user.device_name or "Dev Device",
-            os=user.os,
-            user_id=db_user_id
-        )
-        try:
-            db.add(device)
-            db.commit()
-            db.refresh(device)
-            await manager.broadcast_to_user(
+    def mutate() -> tuple[Device, bool, bool, str]:
+        device = db.query(Device).filter_by(device_id=user.device_id, user_id=db_user_id).first()
+        is_new = False
+        os_updated = False
+        if not device:
+            device = Device(
+                device_id=user.device_id,
+                device_name=user.device_name or "Dev Device",
+                os=user.os,
                 user_id=db_user_id,
-                message={
-                    "type": "device_added",
-                    "device": {
-                        "device_id": device.device_id,
-                        "device_name": device.device_name,
-                        "os": device.os
-                    }
-                },
-                exclude_device=user.device_id
+                last_seen=datetime.now(timezone.utc),
             )
-        except IntegrityError:
-            db.rollback()
-            existing_device = db.query(Device).filter(Device.device_id == user.device_id).first()
-            if existing_device and existing_device.user_id != db_user_id:
-                raise HTTPException(status_code=403, detail="Device ID belongs to another user")
-            if existing_device:
-                device = existing_device
-            else:
-                raise HTTPException(status_code=400, detail="Device registration failed")
+            db.add(device)
+            db.flush()
+            is_new = True
+        else:
+            if user.os and device.os != user.os:
+                device.os = user.os
+                os_updated = True
+            device.last_seen = datetime.now(timezone.utc)
 
-    if user.os and device.os != user.os:
-        device.os = user.os
-        db.commit()
+        db.query(RefreshToken).filter_by(
+            user_id=db_user_id,
+            device_id=user.device_id
+        ).delete()
+
+        plain_refresh = create_refresh_token(db, user_id=db_user_id, device_id=device.device_id)
+        return device, is_new, os_updated, plain_refresh
+
+    try:
+        device, is_new, os_updated, plain_refresh_token = run_in_write_transaction(db, mutate)
         db.refresh(device)
+    except IntegrityError:
+        raise HTTPException(status_code=400, detail="Device registration failed")
+
+    access_token = create_access_token(
+        data={"sub": user.email, "device_id": device.device_id, "epoch": db_user.session_epoch},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+
+    if is_new:
+        await manager.broadcast_to_user(
+            user_id=db_user_id,
+            message={
+                "type": "device_added",
+                "device": {
+                    "device_id": device.device_id,
+                    "device_name": device.device_name,
+                    "os": device.os
+                }
+            },
+            exclude_device=user.device_id
+        )
+    elif os_updated:
         await manager.broadcast_to_user(
             user_id=db_user_id,
             message={
@@ -363,19 +368,6 @@ async def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
             },
             exclude_device=user.device_id
         )
-
-    access_token = create_access_token(
-        data={"sub": user.email, "device_id": device.device_id},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
-
-    db.query(RefreshToken).filter_by(
-        user_id=db_user_id,
-        device_id=user.device_id
-    ).delete()
-
-    plain_refresh_token = create_refresh_token(db, user_id=db_user_id, device_id=user.device_id)
-    db.commit()
 
     e2ee_data = user_to_e2ee_response(db_user)
 
@@ -396,13 +388,10 @@ def logout(
     try:
         payload = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM])
         exp = payload.get("exp")
-        if not exp:
+        sub = payload.get("sub")
+        device_id = payload.get("device_id")
+        if not exp or not sub:
             raise HTTPException(status_code=400, detail="Invalid access token")
-
-        if not db.query(BlacklistedToken).filter(BlacklistedToken.token == access_token).first():
-            db.add(BlacklistedToken(token=access_token, expiry=datetime.fromtimestamp(exp, tz=timezone.utc)))
-        db.commit()
-
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid access token")
 
@@ -411,9 +400,22 @@ def logout(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid refresh token")
 
-    db.query(RefreshToken).filter(RefreshToken.token == hashed_refresh).delete()
+    def mutate() -> None:
+        if not db.query(BlacklistedToken).filter(BlacklistedToken.token == access_token).first():
+            db.add(BlacklistedToken(token=access_token, expiry=datetime.fromtimestamp(exp, tz=timezone.utc)))
 
-    db.commit()
+        user = db.query(User).filter(User.email == sub).first()
+        if user:
+            token_query = db.query(RefreshToken).filter(
+                RefreshToken.token == hashed_refresh,
+                RefreshToken.user_id == user.user_id
+            )
+            if device_id:
+                token_query = token_query.filter(RefreshToken.device_id == device_id)
+            token_query.delete()
+
+    run_in_write_transaction(db, mutate)
+
     return {"message": "Logged out successfully"}
 
 
@@ -427,44 +429,57 @@ def refresh_token(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid refresh token")
 
-    token_entry = db.query(RefreshToken).filter(
-        RefreshToken.token == hashed_input
-    ).first()
+    def mutate() -> tuple[str, Optional[str], Optional[User], Optional[str]]:
+        # Atomic conditional update: only one request can rotate an active token
+        rows_updated = db.query(RefreshToken).filter(
+            RefreshToken.token == hashed_input,
+            RefreshToken.is_revoked.is_(False)
+        ).update({"is_revoked": True}, synchronize_session=False)
 
-    if not token_entry:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+        if rows_updated == 0:
+            existing = db.query(RefreshToken).filter(RefreshToken.token == hashed_input).first()
+            if existing:
+                db.query(RefreshToken).filter(RefreshToken.token_id == existing.token_id).update(
+                    {"is_revoked": True}, synchronize_session=False
+                )
+                return "reused", None, None, None
+            return "invalid", None, None, None
 
-    if token_entry.is_revoked:
-        db.query(RefreshToken).filter(RefreshToken.token_id == token_entry.token_id).delete()
-        db.commit()
+        token_entry = db.query(RefreshToken).filter(RefreshToken.token == hashed_input).first()
+        if not token_entry:
+            return "invalid", None, None, None
+
+        expiry_utc = token_entry.expiry.replace(tzinfo=timezone.utc) if token_entry.expiry.tzinfo is None else token_entry.expiry
+        if expiry_utc < datetime.now(timezone.utc):
+            return "expired", None, None, None
+
+        user = db.query(User).filter(User.user_id == token_entry.user_id).first()
+        if not user:
+            return "user_not_found", None, None, None
+
+        new_refresh = create_refresh_token(
+            db,
+            user_id=token_entry.user_id,
+            device_id=token_entry.device_id,
+            token_id=token_entry.token_id
+        )
+        return "ok", new_refresh, user, token_entry.device_id
+
+    outcome, new_refresh_plain, user, device_id = run_in_write_transaction(db, mutate)
+
+    if outcome == "reused":
         raise HTTPException(status_code=401, detail="Refresh token reused. Security alert: Session terminated.")
-
-    expiry_utc = token_entry.expiry.replace(tzinfo=timezone.utc) if token_entry.expiry.tzinfo is None else token_entry.expiry
-
-    if expiry_utc < datetime.now(timezone.utc):
+    if outcome == "invalid":
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    if outcome == "expired":
         raise HTTPException(status_code=401, detail="Expired refresh token")
-
-    user_id: str = token_entry.user_id
-    device_id: str = token_entry.device_id
-
-    user = db.query(User).filter(User.user_id == user_id).first()
-    if not user:
+    if outcome == "user_not_found" or user is None or device_id is None or new_refresh_plain is None:
         raise HTTPException(status_code=404, detail="User not found")
 
     access_token = create_access_token(
-        data={"sub": user.email, "device_id": device_id},
+        data={"sub": user.email, "device_id": device_id, "epoch": user.session_epoch},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-
-    token_entry.is_revoked = True
-
-    new_refresh_plain = create_refresh_token(
-        db,
-        user_id=user_id,
-        device_id=device_id,
-        token_id=token_entry.token_id
-    )
-    db.commit()
 
     return {
         "access_token": access_token,
@@ -480,12 +495,14 @@ async def delete_account(
     current_user: User = Depends(get_current_user)
 ):
     user_id: str = current_user.user_id
-    db.query(Clipboard).filter_by(user_id=user_id).delete()
-    db.query(Device).filter_by(user_id=user_id).delete()
-    db.query(RefreshToken).filter_by(user_id=user_id).delete()
-    db.query(User).filter_by(user_id=user_id).delete()
 
-    db.commit()
+    def mutate() -> None:
+        db.query(Clipboard).filter_by(user_id=user_id).delete()
+        db.query(Device).filter_by(user_id=user_id).delete()
+        db.query(RefreshToken).filter_by(user_id=user_id).delete()
+        db.query(User).filter_by(user_id=user_id).delete()
+
+    run_in_write_transaction(db, mutate)
 
     await manager.disconnect_user(user_id)
 
@@ -493,24 +510,23 @@ async def delete_account(
 
 
 @router.post("/password/change", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
-def change_password(
+async def change_password(
     data: PasswordChange,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     try:
-        old_auth_key_bytes = base64.b64decode(data.old_auth_key)
+        old_auth_key_bytes = strict_b64decode(data.old_auth_key, "old_auth_key")
         if not bcrypt.checkpw(old_auth_key_bytes, current_user.auth_key_hash.encode('utf-8')):
-            raise HTTPException(status_code=401, detail="Incorrect authentication key")
-    except Exception as e:
-        logger.error(f"Auth key verification failed: {e}")
-        raise HTTPException(status_code=401, detail="Incorrect authentication key")
+            raise HTTPException(status_code=401, detail="Incorrect current password")
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Incorrect current password")
     
     try:
-        new_auth_key_bytes = base64.b64decode(data.new_auth_key)
-        new_encrypted_mk_bytes = base64.b64decode(data.new_encrypted_master_key)
-        new_salt_bytes = base64.b64decode(data.new_salt)
-    except (ValueError, TypeError) as e:
+        new_auth_key_bytes = strict_b64decode(data.new_auth_key, "new_auth_key")
+        new_encrypted_mk_bytes = strict_b64decode(data.new_encrypted_master_key, "new_encrypted_master_key")
+        new_salt_bytes = strict_b64decode(data.new_salt, "new_salt")
+    except ValueError as e:
         logger.error(f"Base64 decoding failed in password change: {e}")
         raise HTTPException(status_code=400, detail="Invalid base64 encoding")
 
@@ -544,16 +560,26 @@ def change_password(
 
     new_auth_key_hash = bcrypt.hashpw(new_auth_key_bytes, bcrypt.gensalt()).decode('utf-8')
 
-    current_user.auth_key_hash = new_auth_key_hash
-    current_user.encrypted_master_key = new_encrypted_mk_bytes
-    current_user.salt = new_salt_bytes
-    current_user.kdf_version = data.new_kdf_version
-    if new_recovery_wrapped_bytes is not None:
-        current_user.recovery_wrapped_master_key = new_recovery_wrapped_bytes
-        current_user.recovery_key_verifier = new_recovery_verifier_hash
+    def mutate() -> None:
+        current_user.auth_key_hash = new_auth_key_hash
+        current_user.encrypted_master_key = new_encrypted_mk_bytes
+        current_user.salt = new_salt_bytes
+        current_user.kdf_version = data.new_kdf_version
+        if new_recovery_wrapped_bytes is not None:
+            current_user.recovery_wrapped_master_key = new_recovery_wrapped_bytes
+            current_user.recovery_key_verifier = new_recovery_verifier_hash
 
-    db.commit()
+        current_user.session_epoch += 1
+
+        # Revoke all existing refresh tokens across all devices for this user
+        db.query(RefreshToken).filter(
+            RefreshToken.user_id == current_user.user_id
+        ).update({"is_revoked": True}, synchronize_session=False)
+
+    run_in_write_transaction(db, mutate)
     db.refresh(current_user)
+
+    await manager.disconnect_user(current_user.user_id, code=4004)
 
     return {"message": "Password changed successfully. Master key re-wrapped."}
 
@@ -572,10 +598,11 @@ def rotate_recovery_key(
     )
     new_recovery_verifier_hash = bcrypt.hashpw(new_recovery_verifier_bytes, bcrypt.gensalt()).decode('utf-8')
 
-    current_user.recovery_wrapped_master_key = new_recovery_wrapped_bytes
-    current_user.recovery_key_verifier = new_recovery_verifier_hash
+    def mutate() -> None:
+        current_user.recovery_wrapped_master_key = new_recovery_wrapped_bytes
+        current_user.recovery_key_verifier = new_recovery_verifier_hash
 
-    db.commit()
+    run_in_write_transaction(db, mutate)
     db.refresh(current_user)
 
     return {"message": "Recovery key regenerated and updated successfully"}
@@ -589,8 +616,10 @@ async def update_username(
 ):
     device_id = getattr(current_user, "current_device_id", None)
 
-    current_user.username = data.username
-    db.commit()
+    def mutate() -> None:
+        current_user.username = data.username
+
+    run_in_write_transaction(db, mutate)
     db.refresh(current_user)
 
     await manager.broadcast_to_user(
@@ -622,26 +651,25 @@ async def update_email(
     if existing_user:
         raise HTTPException(status_code=409, detail="Email already registered")
 
-    current_user.email = data.email
+    def mutate() -> str:
+        current_user.email = data.email
+        current_user.session_epoch += 1
+        db.query(RefreshToken).filter_by(user_id=current_user.user_id).update(
+            {"is_revoked": True}, synchronize_session=False
+        )
+        refresh = create_refresh_token(db, user_id=current_user.user_id, device_id=device_id)
+        return refresh
+
     try:
-        db.commit()
+        plain_refresh_token = run_in_write_transaction(db, mutate)
         db.refresh(current_user)
     except IntegrityError:
-        db.rollback()
         raise HTTPException(status_code=409, detail="Email already registered")
 
     access_token = create_access_token(
-        data={"sub": current_user.email, "device_id": device_id},
+        data={"sub": current_user.email, "device_id": device_id, "epoch": current_user.session_epoch},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-
-    db.query(RefreshToken).filter_by(
-        user_id=current_user.user_id,
-        device_id=device_id
-    ).delete()
-
-    plain_refresh_token = create_refresh_token(db, user_id=current_user.user_id, device_id=device_id)
-    db.commit()
 
     await manager.broadcast_to_user(
         user_id=current_user.user_id,
@@ -651,6 +679,7 @@ async def update_email(
         },
         exclude_device=device_id
     )
+    await manager.disconnect_user(current_user.user_id, code=4004)
 
     return {
         "message": "Email updated successfully",

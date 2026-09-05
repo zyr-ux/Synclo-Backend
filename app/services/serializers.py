@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from app.models.models import User, Clipboard, Device
 from app.schemas.schemas import UserWithE2EE, ClipboardOut, DeviceOut
-from app.services.utils import to_iso_utc
+from app.utilities.helpers import to_iso_utc
 from app.websockets.connection_manager import manager
 
 def user_to_e2ee_response(user: User) -> UserWithE2EE:
@@ -26,7 +26,10 @@ def clipboard_to_response(entry: Clipboard) -> ClipboardOut:
         is_deleted=entry.is_deleted,
         deleted_at=entry.deleted_at,
         is_pinned=entry.is_pinned if getattr(entry, 'is_pinned', None) is not None else False,
-        pinned_at=getattr(entry, 'pinned_at', None)
+        pinned_at=getattr(entry, 'pinned_at', None),
+        change_number=getattr(entry, 'change_number', 0),
+        entry_revision=getattr(entry, 'entry_revision', 1),
+        last_device_id=getattr(entry, 'last_device_id', None),
     )
 
 def device_to_response(device: Device, user_id: Optional[str] = None) -> DeviceOut:
@@ -43,7 +46,10 @@ def device_to_response(device: Device, user_id: Optional[str] = None) -> DeviceO
 def make_tombstone_payload(
     clipboard_id: str,
     blob_version: int = 1,
-    timestamp: Optional[Any] = None
+    timestamp: Optional[Any] = None,
+    change_number: Optional[int] = None,
+    entry_revision: Optional[int] = None,
+    last_device_id: Optional[str] = None,
 ) -> dict:
     if timestamp is None:
         ts_str = to_iso_utc(datetime.now(timezone.utc))
@@ -52,7 +58,7 @@ def make_tombstone_payload(
     else:
         ts_str = to_iso_utc(timestamp)
 
-    return {
+    payload = {
         "type": "clipboard_sync",
         "id": clipboard_id,
         "is_deleted": True,
@@ -63,4 +69,11 @@ def make_tombstone_payload(
         "nonce": None,
         "blob_version": blob_version
     }
+    if change_number is not None:
+        payload["change_number"] = change_number
+    if entry_revision is not None:
+        payload["entry_revision"] = entry_revision
+    if last_device_id is not None:
+        payload["last_device_id"] = last_device_id
+    return payload
 

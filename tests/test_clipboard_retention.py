@@ -17,7 +17,7 @@ import pytest
 
 from app.core.config import Settings
 from app.models.models import Clipboard, User
-from app.services.utils import prune_user_clipboard, prune_all_users_clipboard
+from app.utilities.helpers import prune_user_clipboard, prune_all_users_clipboard
 from tests.conftest import generate_random_base64
 
 

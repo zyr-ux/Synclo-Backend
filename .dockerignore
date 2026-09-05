@@ -23,7 +23,6 @@ ARCHITECTURE.md
 ROADMAP.md
 CONTRIBUTING.md
 AGENTS.md
-Caddyfile.example
 
 # Testing & Coverage
 tests/

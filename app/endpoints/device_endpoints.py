@@ -4,10 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi_limiter.depends import RateLimiter
 from sqlalchemy.orm import Session
 from app.core.constants import MIN_DEVICE_ID_LEN, MAX_DEVICE_ID_LEN, MIN_DEVICE_NAME_LEN, MAX_DEVICE_NAME_LEN
+from app.core.database import run_in_write_transaction
 from app.models.models import Device, User, RefreshToken
 from app.schemas.schemas import DeviceRegister, DeviceRename, DeviceOut, PushSubscription
 from app.services.auth import get_db, get_current_user
 from app.services.serializers import device_to_response
+from app.services.push_service import encrypt_push_subscription
 from app.websockets.connection_manager import manager
 
 router = APIRouter()
@@ -22,44 +24,39 @@ async def register_device(
     if not (MIN_DEVICE_ID_LEN <= len(device.device_id) <= MAX_DEVICE_ID_LEN):
         raise HTTPException(status_code=400, detail="device_id length out of bounds")
     current_user_id: str = current_user.user_id
-    existing = db.query(Device).filter(Device.device_id == device.device_id).first()
-    if existing:
-        if existing.user_id != current_user_id:
-            raise HTTPException(status_code=403, detail="Device ID belongs to another user")
-        existing.last_seen = datetime.now(timezone.utc)
-        db.commit()
-        return device_to_response(existing, current_user_id)
-    new_device = Device(
-        device_id=device.device_id,
-        device_name=device.device_name,
-        os=device.os,
-        user_id=current_user_id,
-        last_seen=datetime.now(timezone.utc)
-    )
-    try:
+    def mutate() -> tuple[Device, bool]:
+        existing = db.query(Device).filter_by(
+            device_id=device.device_id, user_id=current_user_id
+        ).first()
+        if existing:
+            existing.last_seen = datetime.now(timezone.utc)
+            return existing, False
+
+        new_device = Device(
+            device_id=device.device_id,
+            device_name=device.device_name,
+            os=device.os,
+            user_id=current_user_id,
+            last_seen=datetime.now(timezone.utc),
+        )
         db.add(new_device)
-        db.commit()
-        db.refresh(new_device)
+        return new_device, True
+
+    registered_device, created = run_in_write_transaction(db, mutate)
+    db.refresh(registered_device)
+    if created:
         await manager.broadcast_to_user(
             user_id=current_user_id,
             message={
                 "type": "device_added",
                 "device": {
-                    "device_id": new_device.device_id,
-                    "device_name": new_device.device_name,
-                    "os": new_device.os
-                }
-            }
+                    "device_id": registered_device.device_id,
+                    "device_name": registered_device.device_name,
+                    "os": registered_device.os,
+                },
+            },
         )
-        return device_to_response(new_device, current_user_id)
-    except Exception:
-        db.rollback()
-        existing = db.query(Device).filter(Device.device_id == device.device_id).first()
-        if existing:
-            if existing.user_id != current_user_id:
-                raise HTTPException(status_code=403, detail="Device ID belongs to another user")
-            return device_to_response(existing, current_user_id)
-        raise HTTPException(status_code=400, detail="Failed to register device")
+    return device_to_response(registered_device, current_user_id)
 
 
 @router.get("/devices", response_model=List[DeviceOut], dependencies=[Depends(RateLimiter(times=20, seconds=60))])
@@ -83,9 +80,11 @@ async def delete_device(
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
-    db.delete(device)
-    db.query(RefreshToken).filter_by(user_id=user_id, device_id=device_id).delete()
-    db.commit()
+    def mutate() -> None:
+        db.delete(device)
+        db.query(RefreshToken).filter_by(user_id=user_id, device_id=device_id).delete()
+
+    run_in_write_transaction(db, mutate)
 
     await manager.disconnect_device(user_id, device_id)
 
@@ -109,8 +108,10 @@ async def rename_device(
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
-    device.device_name = name
-    db.commit()
+    def mutate() -> None:
+        device.device_name = name
+
+    run_in_write_transaction(db, mutate)
     db.refresh(device)
 
     await manager.broadcast_to_user(
@@ -140,9 +141,13 @@ async def update_device_push(
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
-    device.push_subscription = data.push_subscription
-    device.push_subscription_updated_at = datetime.now(timezone.utc)
-    db.commit()
+    encrypted_subscription = encrypt_push_subscription(data.push_subscription)
+
+    def mutate() -> None:
+        device.push_subscription = encrypted_subscription
+        device.push_subscription_updated_at = datetime.now(timezone.utc)
+
+    run_in_write_transaction(db, mutate)
     db.refresh(device)
 
     return device_to_response(device, user_id)
@@ -159,9 +164,11 @@ async def remove_device_push(
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
-    device.push_subscription = None
-    device.push_subscription_updated_at = datetime.now(timezone.utc)
-    db.commit()
+    def mutate() -> None:
+        device.push_subscription = None
+        device.push_subscription_updated_at = datetime.now(timezone.utc)
+
+    run_in_write_transaction(db, mutate)
     db.refresh(device)
 
     return device_to_response(device, user_id)

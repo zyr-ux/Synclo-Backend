@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.models import User, BlacklistedToken, Device, RefreshToken
 from app.core.config import Settings
-from app.services.crypto_utils import hash_refresh_token
+from app.utilities.helpers import hash_refresh_token
 
 _raw_secret_key = Settings.SECRET_KEY
 assert _raw_secret_key is not None, "SECRET_KEY must be set"
@@ -29,6 +29,7 @@ def get_db():
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
+    to_encode.setdefault("epoch", 1)
     expire = datetime.now(timezone.utc) + expires_delta if expires_delta else datetime.now(timezone.utc) + timedelta(minutes=15)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
@@ -69,8 +70,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         email: Optional[str] = payload.get("sub")
         exp: Optional[int] = payload.get("exp")
         device_id: Optional[str] = payload.get("device_id")
+        epoch: Optional[int] = payload.get("epoch")
 
-        if email is None or exp is None:
+        if email is None or exp is None or epoch is None:
             raise credentials_exception
 
         if db.query(BlacklistedToken).filter_by(token=token).first():
@@ -79,6 +81,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         user = db.query(User).filter(User.email == email).first()
         if user is None:
             raise credentials_exception
+        
+        if epoch != user.session_epoch:
+            raise HTTPException(status_code=401, detail="Session revoked, please re-authenticate")
         
         if not db.query(Device).filter_by(user_id=user.user_id, device_id=device_id).first():
             raise HTTPException(status_code=403, detail="Unauthorized device")

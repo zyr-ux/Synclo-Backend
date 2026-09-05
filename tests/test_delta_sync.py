@@ -111,3 +111,57 @@ def test_delta_sync_boundary_condition_410(client, auth_headers):
     expired_time = (now - datetime.timedelta(days=30, hours=2)).isoformat().replace("+00:00", "Z")
     res_expired = client.get("/api/v1/clipboard/sync", params={"since": expired_time}, headers=auth_headers)
     assert res_expired.status_code == 410
+
+
+def test_delta_sync_keyset_cursor_pagination(client, auth_headers, clip_payload):
+    # Create 4 items
+    for i in range(4):
+        client.post("/api/v1/clipboard", json=clip_payload(f"cursor_item_{i}"), headers=auth_headers)
+
+    # Page 1: since_change_number=0, limit=2
+    r1 = client.get("/api/v1/clipboard/sync", params={"since_change_number": 0, "limit": 2}, headers=auth_headers)
+    assert r1.status_code == 200
+    p1 = r1.json()
+    assert len(p1["entries"]) == 2
+    assert p1["has_more"] is True
+    assert p1["next_cursor"] is not None
+    cursor1 = p1["next_cursor"]
+
+    # Page 2: using cursor1
+    r2 = client.get("/api/v1/clipboard/sync", params={"since_change_number": cursor1, "limit": 2}, headers=auth_headers)
+    assert r2.status_code == 200
+    p2 = r2.json()
+    assert len(p2["entries"]) == 2
+    cursor2 = p2["next_cursor"]
+
+    # Page 3: using cursor2 -> no more items
+    r3 = client.get("/api/v1/clipboard/sync", params={"since_change_number": cursor2, "limit": 2}, headers=auth_headers)
+    assert r3.status_code == 200
+    p3 = r3.json()
+    assert len(p3["entries"]) == 0
+    assert p3["has_more"] is False
+    assert p3["next_cursor"] is None
+
+
+def test_pin_increments_sync_sequence(client, auth_headers, clip_payload):
+    # 1. Create item
+    res_create = client.post("/api/v1/clipboard", json=clip_payload("seq_pin_item"), headers=auth_headers)
+    assert res_create.status_code == 200
+
+    r_sync1 = client.get("/api/v1/clipboard/sync", params={"since_change_number": 0, "limit": 10}, headers=auth_headers)
+    entries1 = r_sync1.json()["entries"]
+    assert len(entries1) >= 1
+    seq_before = entries1[-1]["change_number"]
+
+    # 2. Pin item
+    res_pin = client.patch("/api/v1/clipboard/seq_pin_item/pin", json={"is_pinned": True}, headers=auth_headers)
+    assert res_pin.status_code == 200
+    assert res_pin.json()["change_number"] > seq_before
+
+    # 3. Sync since seq_before -> should return the pin update!
+    r_sync2 = client.get("/api/v1/clipboard/sync", params={"since_change_number": seq_before, "limit": 10}, headers=auth_headers)
+    entries2 = r_sync2.json()["entries"]
+    assert len(entries2) == 1
+    assert entries2[0]["id"] == "seq_pin_item"
+    assert entries2[0]["is_pinned"] is True
+

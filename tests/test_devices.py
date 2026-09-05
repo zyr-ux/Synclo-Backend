@@ -174,3 +174,59 @@ def test_rename_non_existent_device(client, auth_user):
         headers=auth_user["headers"]
     )
     assert res.status_code == 404
+
+
+def test_cross_user_shared_device_id_isolation(client, user_factory):
+    user_a = user_factory(email="user_a_share@synclo.app", device_id="laptop_primary")
+    user_b = user_factory(email="user_b_share@synclo.app", device_id="laptop_secondary")
+
+    shared_dev_id = "shared_family_pc"
+
+    # 1. User A registers the shared device
+    res_a = client.post("/api/v1/devices/register", json={
+        "device_id": shared_dev_id,
+        "device_name": "User A Family PC",
+        "os": "Windows 11",
+    }, headers=user_a["headers"])
+    assert res_a.status_code == 200
+    assert res_a.json()["device_id"] == shared_dev_id
+
+    # 2. User B registers the SAME device ID without conflict
+    res_b = client.post("/api/v1/devices/register", json={
+        "device_id": shared_dev_id,
+        "device_name": "User B Family PC",
+        "os": "Windows 11",
+    }, headers=user_b["headers"])
+    assert res_b.status_code == 200
+    assert res_b.json()["device_id"] == shared_dev_id
+
+    # 3. User A renames their instance of the shared device
+    res_rename = client.patch(f"/api/v1/devices/{shared_dev_id}", json={
+        "device_name": "User A Renovated PC",
+    }, headers=user_a["headers"])
+    assert res_rename.status_code == 200
+    assert res_rename.json()["device_name"] == "User A Renovated PC"
+
+    # Verify User B's device name is untouched
+    list_b = client.get("/api/v1/devices", headers=user_b["headers"]).json()
+    b_dev = next(d for d in list_b if d["device_id"] == shared_dev_id)
+    assert b_dev["device_name"] == "User B Family PC"
+
+    # 4. User A deletes their instance of the shared device
+    res_del = client.delete(f"/api/v1/devices/{shared_dev_id}", headers=user_a["headers"])
+    assert res_del.status_code == 200
+
+    # User B's device is still present and healthy
+    list_b_after = client.get("/api/v1/devices", headers=user_b["headers"]).json()
+    assert any(d["device_id"] == shared_dev_id for d in list_b_after)
+
+    # 5. User A can log in with the shared device ID again without conflict
+    login_a = client.post("/api/v1/login", json={
+        "email": user_a["email"],
+        "auth_key": user_a["auth_key"],
+        "device_id": shared_dev_id,
+        "device_name": "User A Logged In",
+        "os": "Windows 11",
+    })
+    assert login_a.status_code == 200
+

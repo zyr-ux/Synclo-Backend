@@ -21,7 +21,9 @@ env/
 # Persistent application data & logs
 data/
 logs/
+backups/
 *.log
+*.enc
 
 # Testing & coverage
 .pytest_cache/

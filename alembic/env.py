@@ -25,8 +25,9 @@ from app.core.config import Settings
 from app.core.database import Base  # This comes from your `database.py`
 import app.models.models  # Register models on Base.metadata
 
-# Ensure Alembic uses the same database URL as the app
-config.set_main_option("sqlalchemy.url", Settings.DATABASE_URL)
+# Ensure Alembic uses the same database URL as the app unless explicitly overridden
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", Settings.DATABASE_URL)
 
 target_metadata = Base.metadata
 

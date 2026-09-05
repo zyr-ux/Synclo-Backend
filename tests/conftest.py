@@ -52,7 +52,7 @@ sys.modules["fastapi_limiter.depends"] = mock_limiter_depends
 from app.main import app
 from app.models.models import Base
 from app.services.auth import get_db
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, configure_sqlite_engine
 
 
 @pytest.fixture(scope="session")
@@ -62,6 +62,7 @@ def engine():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    configure_sqlite_engine(engine)
     SessionLocal.configure(bind=engine)
     return engine
 

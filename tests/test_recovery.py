@@ -83,8 +83,8 @@ def test_recovery_material_returns_only_wrapped_key(client, user_factory):
 
 def test_recovery_material_nonexistent_email(client):
     res = client.post("/api/v1/auth/recovery-material", json={"email": "nobody@synclo.app"})
-    assert res.status_code == 404
-    assert res.json()["detail"] == "Recovery material not available"
+    assert res.status_code == 401
+    assert res.json()["detail"] == "Could not recover account"
 
 
 def test_account_recovery_invalid_verifier_rejected(client, user_factory):
@@ -102,7 +102,7 @@ def test_account_recovery_invalid_verifier_rejected(client, user_factory):
     }
     res = client.post("/api/v1/auth/recover", json=payload)
     assert res.status_code == 401
-    assert res.json()["detail"] == "Invalid recovery credentials"
+    assert res.json()["detail"] == "Could not recover account"
 
 
 def test_account_recovery_flow_preserves_clipboard(client, user_factory):
@@ -392,6 +392,20 @@ def test_password_change_partial_recovery_fields_rejected(client, user_factory):
     p2 = {**base_payload, "new_recovery_key_verifier": generate_random_base64(32)}
     res2 = client.post("/api/v1/password/change", json=p2, headers=user["headers"])
     assert res2.status_code == 400
+
+
+def test_password_change_wrong_current_password_rejected(client, user_factory):
+    user = user_factory()
+    change_payload = {
+        "old_auth_key": generate_random_base64(32),
+        "new_auth_key": generate_random_base64(32),
+        "new_encrypted_master_key": generate_random_base64(32),
+        "new_salt": generate_random_base64(32),
+        "new_kdf_version": 1,
+    }
+    res = client.post("/api/v1/password/change", json=change_payload, headers=user["headers"])
+    assert res.status_code == 401
+    assert res.json()["detail"] == "Incorrect current password"
 
 
 def test_recovery_validation_failures(client, user_factory):
