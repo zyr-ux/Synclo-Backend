@@ -53,9 +53,10 @@ def upgrade() -> None:
         sa.Column('push_subscription_updated_at', sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(['user_id'], ['users.user_id']),
         sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('user_id', 'device_id', name='uq_device_user_id_device_id'),
     )
     op.create_index(op.f('ix_devices_id'), 'devices', ['id'], unique=False)
-    op.create_index(op.f('ix_devices_device_id'), 'devices', ['device_id'], unique=True)
+    op.create_index(op.f('ix_devices_device_id'), 'devices', ['device_id'], unique=False)
     op.create_index(op.f('ix_devices_user_id'), 'devices', ['user_id'], unique=False)
     op.create_index(op.f('ix_devices_last_seen'), 'devices', ['last_seen'], unique=False)
 

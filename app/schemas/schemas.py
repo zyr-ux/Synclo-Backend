@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from urllib.parse import urlparse
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
@@ -10,6 +11,14 @@ from app.core.constants import (
     MAX_NONCE_LEN,
     ALLOWED_BLOB_VERSIONS,
 )
+from app.models.models import User
+
+
+@dataclass(frozen=True)
+class AuthContext:
+    user: User
+    device_id: Optional[str] = None
+
 
 
 class DeviceRegister(BaseModel):
@@ -18,7 +27,7 @@ class DeviceRegister(BaseModel):
     os: Optional[str] = Field(None, max_length=32)
 
 class DeviceRename(BaseModel):
-    device_name: str = Field(..., min_length=1, max_length=256)
+    device_name: str = Field(..., min_length=1, max_length=128)
 
 class DeviceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -148,7 +157,7 @@ class UserLoginWithDevice(BaseModel):
     email: EmailStr
     auth_key: str = Field(..., max_length=512)
     device_id: str = Field(..., min_length=1, max_length=128)
-    device_name: Optional[str] = Field(None, max_length=64)
+    device_name: Optional[str] = Field(None, max_length=128)
     os: Optional[str] = Field(None, max_length=32)
 
 class UserRegisterWithDevice(BaseModel):
@@ -156,7 +165,7 @@ class UserRegisterWithDevice(BaseModel):
     username: Optional[str] = Field(None, min_length=3, max_length=50)
     auth_key: str = Field(..., max_length=512)
     device_id: str = Field(..., min_length=1, max_length=128)
-    device_name: Optional[str] = Field("Unnamed Device", max_length=64)
+    device_name: Optional[str] = Field("Unnamed Device", max_length=128)
     os: Optional[str] = Field(None, max_length=32)
     encrypted_master_key: str = Field(..., max_length=2048)
     salt: str = Field(..., max_length=512)
@@ -169,36 +178,36 @@ class SessionInfo(BaseModel):
     expiry: datetime
 
 class PasswordChange(BaseModel):
-    old_auth_key: str
-    new_auth_key: str
-    new_encrypted_master_key: str
-    new_salt: str
-    new_kdf_version: int = 1
-    new_recovery_wrapped_master_key: Optional[str] = None
-    new_recovery_key_verifier: Optional[str] = None
+    old_auth_key: str = Field(..., max_length=512)
+    new_auth_key: str = Field(..., max_length=512)
+    new_encrypted_master_key: str = Field(..., max_length=2048)
+    new_salt: str = Field(..., max_length=512)
+    new_kdf_version: int = Field(1, ge=1, le=100)
+    new_recovery_wrapped_master_key: Optional[str] = Field(None, max_length=2048)
+    new_recovery_key_verifier: Optional[str] = Field(None, max_length=512)
 
 class RecoveryMaterialRequest(BaseModel):
     email: EmailStr
 
 class RecoveryMaterialResponse(BaseModel):
-    recovery_wrapped_master_key: str
+    recovery_wrapped_master_key: str = Field(..., max_length=2048)
 
 class AccountRecoveryRequest(BaseModel):
     email: EmailStr
-    recovery_key_verifier: str
-    new_auth_key: str
-    new_encrypted_master_key: str
-    new_salt: str
-    new_kdf_version: int = 1
-    new_recovery_wrapped_master_key: str
-    new_recovery_key_verifier: str
-    device_id: str
-    device_name: Optional[str] = "Recovered Device"
-    os: Optional[str] = None
+    recovery_key_verifier: str = Field(..., max_length=512)
+    new_auth_key: str = Field(..., max_length=512)
+    new_encrypted_master_key: str = Field(..., max_length=2048)
+    new_salt: str = Field(..., max_length=512)
+    new_kdf_version: int = Field(1, ge=1, le=100)
+    new_recovery_wrapped_master_key: str = Field(..., max_length=2048)
+    new_recovery_key_verifier: str = Field(..., max_length=512)
+    device_id: str = Field(..., min_length=1, max_length=128)
+    device_name: Optional[str] = Field("Recovered Device", max_length=128)
+    os: Optional[str] = Field(None, max_length=32)
 
 class RecoveryKeyRotateRequest(BaseModel):
-    new_recovery_wrapped_master_key: str
-    new_recovery_key_verifier: str
+    new_recovery_wrapped_master_key: str = Field(..., max_length=2048)
+    new_recovery_key_verifier: str = Field(..., max_length=512)
 
 class SaltResponse(BaseModel):
     salt: str

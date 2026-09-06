@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional, Tuple
@@ -89,7 +90,6 @@ def cleanup_expired_refresh_tokens(db: Session) -> bool:
         return False
 
 def prune_user_clipboard(user_id: str, db: Session, retention_days: Optional[int] = None) -> List[dict]:
-    """Soft-delete expired unpinned entries in one serialized transaction."""
     from app.core.database import run_in_write_transaction
     from app.services.clipboard_service import allocate_batch_sync_sequence
     from app.services.serializers import make_tombstone_payload
@@ -181,3 +181,28 @@ def run_all_cleanup(db: Session) -> CleanupResult:
         tombstones = []
         failures += 1
     return CleanupResult(tombstones=tombstones, failures=failures)
+
+
+class RedactingFilter(logging.Filter):
+    PATTERNS = [
+        re.compile(r"Bearer\s+[A-Za-z0-9\-_.]+", re.IGNORECASE),
+        re.compile(r"auth_key['\"]?\s*[:=]\s*['\"][^'\"]+['\"]", re.IGNORECASE),
+        re.compile(r"password['\"]?\s*[:=]\s*['\"][^'\"]+['\"]", re.IGNORECASE),
+        re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
+    ]
+
+    @classmethod
+    def redact(cls, text: str) -> str:
+        if not isinstance(text, str):
+            return text
+        for pattern in cls.PATTERNS:
+            text = pattern.sub("[REDACTED]", text)
+        return text
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            record.msg = self.redact(record.getMessage())
+            record.args = ()
+        except Exception:
+            pass
+        return True

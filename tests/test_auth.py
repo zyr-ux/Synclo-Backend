@@ -434,4 +434,154 @@ def test_logout_with_another_users_refresh_token_does_not_affect_victim(client, 
     assert "access_token" in res_b_refresh.json()
 
 
+def test_get_auth_context_structure_and_no_monkey_patching(client, auth_user, db_session):
+    from app.services.auth import get_auth_context
+    from app.schemas.schemas import AuthContext
+
+    token = auth_user["access_token"]
+    expected_device_id = auth_user["device_id"]
+    expected_email = auth_user["email"]
+
+    auth_ctx = get_auth_context(token=token, db=db_session)
+    assert isinstance(auth_ctx, AuthContext)
+    assert auth_ctx.user.email == expected_email
+    assert auth_ctx.device_id == expected_device_id
+
+    # Invariant: No monkey-patching of current_device_id on SQLAlchemy User instance
+    assert not hasattr(auth_ctx.user, "current_device_id") or getattr(auth_ctx.user, "current_device_id", None) is None
+
+
+def test_logout_revokes_token_and_detects_reuse(client, user_factory, db_session):
+    from app.models.models import RefreshToken
+    from app.services.auth import hash_refresh_token
+
+    user = user_factory()
+    refresh_token = user["refresh_token"]
+    hashed_token = hash_refresh_token(refresh_token)
+
+    # 1. Verify token exists and is active
+    token_record = db_session.query(RefreshToken).filter_by(token=hashed_token).first()
+    assert token_record is not None
+    assert token_record.is_revoked is False
+
+    # 2. Call logout
+    res_logout = client.post(
+        "/api/v1/logout",
+        json={"refresh_token": refresh_token},
+        headers=user["headers"]
+    )
+    assert res_logout.status_code == 200
+    assert res_logout.json()["message"] == "Logged out successfully"
+
+    # 3. Verify record was marked is_revoked=True instead of being deleted
+    db_session.expire_all()
+    token_record_after = db_session.query(RefreshToken).filter_by(token=hashed_token).first()
+    assert token_record_after is not None
+    assert token_record_after.is_revoked is True
+
+    # 4. Attempt to reuse the logged-out refresh token -> triggers reuse detection
+    res_reuse = client.post(
+        "/api/v1/refresh",
+        json={"refresh_token": refresh_token}
+    )
+    assert res_reuse.status_code == 401
+    assert "Refresh token reused" in res_reuse.json()["detail"]
+
+
+def test_logging_redacts_emails():
+    import logging
+    from app.core.logging_config import RedactingFilter
+
+    redactor = RedactingFilter()
+
+    # Formatted string message
+    record1 = logging.LogRecord(
+        name="test",
+        level=logging.WARNING,
+        pathname=__file__,
+        lineno=1,
+        msg="WebSocket connection attempted for user: secret_user@example.com",
+        args=(),
+        exc_info=None
+    )
+    redactor.filter(record1)
+    assert "secret_user@example.com" not in record1.msg
+    assert "[REDACTED]" in record1.msg
+
+    # Argument-interpolated message
+    record2 = logging.LogRecord(
+        name="test",
+        level=logging.WARNING,
+        pathname=__file__,
+        lineno=1,
+        msg="Authentication failure for %s",
+        args=("another_user@domain.co.uk",),
+        exc_info=None
+    )
+    redactor.filter(record2)
+    assert "another_user@domain.co.uk" not in record2.msg
+    assert "[REDACTED]" in record2.msg
+
+    # Direct helper test
+    from app.utilities.helpers import RedactingFilter
+    assert RedactingFilter.redact("Contact us at support@synclo.internal for help") == "Contact us at [REDACTED] for help"
+    assert RedactingFilter.redact(123) == 123
+
+
+def test_schema_field_bounds_validation(client, auth_headers):
+    # 1. DeviceRename: device_name max_length=128 (129 chars should fail)
+    res_rename = client.patch(
+        "/api/v1/devices/dev-1",
+        json={"device_name": "A" * 129},
+        headers=auth_headers
+    )
+    assert res_rename.status_code == 422
+
+    # 2. PasswordChange: old_auth_key max_length=512 (513 chars should fail)
+    res_pwd = client.post(
+        "/api/v1/password/change",
+        json={
+            "old_auth_key": "B" * 513,
+            "new_auth_key": "valid_new_key",
+            "new_encrypted_master_key": "valid_emk",
+            "new_salt": "valid_salt",
+            "new_kdf_version": 1,
+        },
+        headers=auth_headers
+    )
+    assert res_pwd.status_code == 422
+
+    # 3. PasswordChange: new_kdf_version out of bounds (> 100 should fail)
+    res_kdf = client.post(
+        "/api/v1/password/change",
+        json={
+            "old_auth_key": "valid_old_key",
+            "new_auth_key": "valid_new_key",
+            "new_encrypted_master_key": "valid_emk",
+            "new_salt": "valid_salt",
+            "new_kdf_version": 101,
+        },
+        headers=auth_headers
+    )
+    assert res_kdf.status_code == 422
+
+    # 4. AccountRecoveryRequest: recovery_key_verifier max_length=512 (513 chars should fail)
+    res_recover = client.post(
+        "/api/v1/auth/recover",
+        json={
+            "email": "recover_bound@test.com",
+            "recovery_key_verifier": "C" * 513,
+            "new_auth_key": "new_key",
+            "new_encrypted_master_key": "new_emk",
+            "new_salt": "new_salt",
+            "new_recovery_wrapped_master_key": "new_rwmk",
+            "new_recovery_key_verifier": "new_rkv",
+            "device_id": "new_dev",
+        }
+    )
+    assert res_recover.status_code == 422
+
+
+
+
 

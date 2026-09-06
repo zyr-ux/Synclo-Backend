@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
-from app.core.database import run_in_write_transaction
+from app.core.database import async_run_in_write_transaction, run_in_write_transaction
 
 from app.models.models import Clipboard, User
 from app.schemas.schemas import ClipboardIn, ClipboardPinUpdate
@@ -15,7 +15,6 @@ from app.websockets.connection_manager import manager
 
 
 def allocate_batch_sync_sequence(db: Session, user_id: str, count: int = 1) -> int:
-    """Atomically increment and return the final sequence allocated to a user."""
     user = db.query(User).filter_by(user_id=user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -32,12 +31,10 @@ def allocate_batch_sync_sequence(db: Session, user_id: str, count: int = 1) -> i
 
 
 def allocate_sync_sequence(db: Session, user_id: str) -> int:
-    """
-    Atomically increments and returns the next monotonic sync_sequence for a user.
-    """
     return allocate_batch_sync_sequence(db, user_id, count=1)
 
 
+# Evaluates Last-Write-Wins conflict rules and returns (decision, reason)
 def _evaluate_lww_conflict(
     existing: Clipboard,
     incoming_ts: datetime,
@@ -46,54 +43,41 @@ def _evaluate_lww_conflict(
     incoming_device_id: Optional[str],
     is_incoming_tombstone: bool,
 ) -> Tuple[str, str]:
-    """
-    Evaluates Last-Write-Wins conflict rules.
-    Returns (decision, reason) where decision is one of:
-      - 'accept': apply mutation
-      - 'noop': identical payload at same timestamp, return existing
-      - 'reject': conflict, reject write
-    """
     existing_ts = ensure_utc(existing.timestamp)
     inc_ts = ensure_utc(incoming_ts)
 
-    # 1. Incoming is active, existing is active
     if not is_incoming_tombstone and not existing.is_deleted:
         if inc_ts > existing_ts:
             return "accept", "newer timestamp"
         elif inc_ts < existing_ts:
             return "reject", "stale timestamp"
         else:
-            # Exact same timestamp
             if existing.ciphertext == incoming_ciphertext and existing.nonce == incoming_nonce:
                 return "noop", "identical payload and timestamp"
             
-            # Differing payloads at same timestamp
             existing_dev = existing.last_device_id or ""
             inc_dev = incoming_device_id or ""
             if inc_dev == existing_dev:
                 return "reject", "same-device equal timestamp collision"
             
-            # Cross-device deterministic tie-breaker (lexicographical device_id comparison)
+            # Lexicographical device_id tie-breaker for identical timestamps
             if inc_dev > existing_dev:
                 return "accept", "tie-breaker won"
             else:
                 return "reject", "tie-breaker lost"
 
-    # 2. Incoming is active, existing is tombstone (Resurrection policy)
     elif not is_incoming_tombstone and existing.is_deleted:
         if inc_ts > existing_ts:
             return "accept", "resurrection with newer timestamp"
         else:
             return "reject", "cannot resurrect tombstone with older or equal timestamp"
 
-    # 3. Incoming is tombstone, existing is active
     elif is_incoming_tombstone and not existing.is_deleted:
         if inc_ts >= existing_ts:
             return "accept", "tombstone accepted"
         else:
             return "reject", "stale deletion cannot delete newer edit"
 
-    # 4. Incoming is tombstone, existing is tombstone
     else:
         if inc_ts > existing_ts:
             return "accept", "newer tombstone"
@@ -105,13 +89,12 @@ async def upsert_clipboard(
     user_id: str,
     data: ClipboardIn,
     caller_device_id: Optional[str] = None,
-) -> Tuple[Clipboard, str]:
-    """Create or update an active clipboard item in one serialized transaction."""
+) -> Tuple[Clipboard, str, bool]:
     raw_ciphertext = strict_b64decode(data.ciphertext, "ciphertext") if data.ciphertext else None
     raw_nonce = strict_b64decode(data.nonce, "nonce") if data.nonce else None
     incoming_ts = ensure_utc(data.timestamp)
 
-    def mutate() -> Tuple[Clipboard, str, bool, bool]:
+    def mutate() -> Tuple[Clipboard, str, bool, bool, bool]:
         existing = db.query(Clipboard).filter_by(user_id=user_id, clipboard_id=data.id).first()
         is_new = existing is None
         was_deleted = bool(existing and existing.is_deleted)
@@ -122,7 +105,7 @@ async def upsert_clipboard(
                 caller_device_id, False,
             )
             if decision == "noop":
-                return existing, "clipboard updated", is_new, was_deleted
+                return existing, "clipboard updated", is_new, was_deleted, True
             if decision == "reject":
                 raise HTTPException(status_code=409, detail=f"Conflict detected: write rejected ({reason})")
 
@@ -152,10 +135,13 @@ async def upsert_clipboard(
 
         entry.change_number = allocate_sync_sequence(db, user_id)
         entry.last_device_id = caller_device_id
-        return entry, "clipboard updated" if not is_new else "clipboard synced", is_new, was_deleted
+        return entry, "clipboard updated" if not is_new else "clipboard synced", is_new, was_deleted, False
 
-    entry, ret_status, is_new, was_deleted = run_in_write_transaction(db, mutate)
+    entry, ret_status, is_new, was_deleted, is_noop = await async_run_in_write_transaction(db, mutate)
     db.refresh(entry)
+
+    if is_noop:
+        return entry, ret_status, True
 
     if is_new or was_deleted:
         for tombstone in prune_user_clipboard(user_id, db):
@@ -173,7 +159,7 @@ async def upsert_clipboard(
             "last_device_id": entry.last_device_id,
         }, exclude_device=caller_device_id,
     )
-    return entry, ret_status
+    return entry, ret_status, False
 
 
 async def soft_delete_clipboard(
@@ -182,8 +168,7 @@ async def soft_delete_clipboard(
     clipboard_id: str,
     caller_device_id: Optional[str] = None,
     client_timestamp: Optional[datetime] = None,
-) -> dict:
-    """Soft-delete one item and publish its ordered tombstone."""
+) -> Tuple[dict, bool]:
     now = datetime.now(timezone.utc)
     del_ts = ensure_utc(client_timestamp) if client_timestamp else now
 
@@ -214,9 +199,9 @@ async def soft_delete_clipboard(
         entry.last_device_id = caller_device_id
         return entry
 
-    entry = run_in_write_transaction(db, mutate)
+    entry = await async_run_in_write_transaction(db, mutate)
     if entry is None:
-        return {"status": "clipboard deleted", "id": clipboard_id}
+        return {"status": "clipboard deleted", "id": clipboard_id}, True
     db.refresh(entry)
     await manager.broadcast_to_user(
         user_id=user_id,
@@ -226,7 +211,7 @@ async def soft_delete_clipboard(
             entry_revision=entry.entry_revision, last_device_id=entry.last_device_id,
         ), exclude_device=caller_device_id,
     )
-    return {"status": "clipboard deleted", "id": clipboard_id}
+    return {"status": "clipboard deleted", "id": clipboard_id}, False
 
 
 async def update_pin_status(
@@ -236,10 +221,6 @@ async def update_pin_status(
     pin_data: ClipboardPinUpdate,
     caller_device_id: Optional[str] = None,
 ) -> Clipboard:
-    """
-    Updates the pinned state of a clipboard entry.
-    Advances sequence and increments revision.
-    """
     def mutate() -> Clipboard:
         item = db.query(Clipboard).filter_by(clipboard_id=clipboard_id, user_id=user_id).first()
         if not item:
@@ -259,7 +240,7 @@ async def update_pin_status(
         item.last_device_id = caller_device_id
         return item
 
-    item = run_in_write_transaction(db, mutate)
+    item = await async_run_in_write_transaction(db, mutate)
     db.refresh(item)
 
     broadcast_payload = {

@@ -148,13 +148,13 @@ def test_rename_device_validation_errors(client, auth_user):
     )
     assert res_empty.status_code == 400
 
-    # Overly long name (>128 chars)
+    # Overly long name (>128 chars rejected by schema or endpoint)
     res_long = client.patch(
         f"/api/v1/devices/{dev_id}",
         json={"device_name": "a" * 129},
         headers=auth_user["headers"]
     )
-    assert res_long.status_code == 400
+    assert res_long.status_code in (400, 422)
 
 
 def test_cannot_rename_other_user_device(client, auth_user, user_factory):

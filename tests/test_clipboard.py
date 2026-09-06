@@ -433,3 +433,32 @@ def test_clipboard_payload_length_and_version_validation(client, auth_headers):
     assert res_valid.status_code == 200
 
 
+def test_duplicate_write_noop_suppresses_broadcast_and_push(client, user_factory, monkeypatch):
+    from unittest.mock import MagicMock, AsyncMock
+    from tests.conftest import make_clipboard_payload
+    from app.websockets.connection_manager import manager
+    import app.endpoints.clipboard_endpoints as clip_endpoints
+
+    user = user_factory()
+    mock_push = MagicMock()
+    monkeypatch.setattr(clip_endpoints, "launch_background_push", mock_push)
+
+    mock_broadcast = AsyncMock()
+    monkeypatch.setattr(manager, "broadcast_to_user", mock_broadcast)
+
+    payload = make_clipboard_payload("duplicate_clip_1")
+
+    # 1. First write: mutation occurs
+    res1 = client.post("/api/v1/clipboard", json=payload, headers=user["headers"])
+    assert res1.status_code == 200
+    assert mock_push.call_count == 1
+    assert mock_broadcast.call_count == 1
+
+    # 2. Second write with exact same payload and timestamp: noop!
+    res2 = client.post("/api/v1/clipboard", json=payload, headers=user["headers"])
+    assert res2.status_code == 200
+    # Push and WebSocket broadcast should NOT be triggered again
+    assert mock_push.call_count == 1
+    assert mock_broadcast.call_count == 1
+
+

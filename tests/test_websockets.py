@@ -260,3 +260,97 @@ def test_websocket_broadcast_on_device_rename(client, user_factory):
         assert device_info.get("device_name") == "Desktop Beast"
         assert device_info.get("os") == user["os"]
 
+
+@pytest.mark.asyncio
+async def test_disconnect_device_distributed_via_redis():
+    import json
+    from unittest.mock import AsyncMock
+    from app.websockets.connection_manager import ConnectionManager
+
+    mgr = ConnectionManager()
+    mock_redis = AsyncMock()
+    mock_redis.publish = AsyncMock()
+    mgr.set_redis(mock_redis)
+
+    await mgr.disconnect_device(user_id="test_user", device_id="test_device")
+
+    mock_redis.publish.assert_awaited_once()
+    call_args = mock_redis.publish.call_args[0]
+    channel = call_args[0]
+    envelope = json.loads(call_args[1])
+
+    assert channel == mgr._channel("test_user")
+    assert envelope["action"] == "disconnect_device"
+    assert envelope["user_id"] == "test_user"
+    assert envelope["device_id"] == "test_device"
+    assert envelope["sender"] == mgr._node_id
+
+
+@pytest.mark.asyncio
+async def test_disconnect_device_local_closes_socket():
+    from unittest.mock import AsyncMock
+    from app.websockets.connection_manager import ConnectionManager
+
+    mgr = ConnectionManager()
+    mock_ws = AsyncMock()
+    mgr.active_connections["u1"] = {"d1": mock_ws}
+
+    await mgr._disconnect_device_local("u1", "d1")
+
+    mock_ws.send_json.assert_awaited_once_with({
+        "type": "device_deleted",
+        "message": "This device has been removed from your account",
+    })
+    mock_ws.close.assert_awaited_once_with(code=4003)
+    assert "d1" not in mgr.active_connections.get("u1", {})
+
+
+def test_device_deletion_closes_websocket_with_4003(client, user_factory):
+    user = user_factory()
+    dev2_res = client.post("/api/v1/login", json={
+        "email": user["email"],
+        "auth_key": user["auth_key"],
+        "device_id": "ws_device_del_test",
+        "device_name": "Device 2",
+        "os": "Android",
+    })
+    token_dev2 = dev2_res.json()["access_token"]
+
+    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}) as ws2:
+        res = client.delete(
+            "/api/v1/devices/ws_device_del_test",
+            headers=user["headers"]
+        )
+        assert res.status_code == 200
+
+        try:
+            msg = ws2.receive_json()
+            assert msg.get("type") == "device_deleted"
+        except WebSocketDisconnect as exc:
+            assert exc.code == 4003
+
+
+def test_websocket_duplicate_write_noop_suppresses_push(client, auth_user, monkeypatch):
+    from unittest.mock import MagicMock
+    import app.endpoints.websocket_endpoints as ws_endpoints
+
+    mock_push = MagicMock()
+    monkeypatch.setattr(ws_endpoints, "launch_background_push", mock_push)
+
+    token = auth_user["access_token"]
+    payload = make_clipboard_payload("ws_noop_test_item")
+
+    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}) as ws:
+        # First write
+        ws.send_json(payload)
+        resp1 = _receive_non_ping(ws)
+        assert resp1.get("type") == "ack"
+        assert mock_push.call_count == 1
+
+        # Duplicate write (same payload & timestamp)
+        ws.send_json(payload)
+        resp2 = _receive_non_ping(ws)
+        assert resp2.get("type") == "ack"
+        # Push should NOT be called again
+        assert mock_push.call_count == 1
+

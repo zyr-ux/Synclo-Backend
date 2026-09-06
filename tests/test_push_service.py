@@ -258,16 +258,16 @@ async def test_send_push_notification_timeout_handling(mocker):
 
 @pytest.mark.asyncio
 async def test_push_service_ssrf_and_stream_capping(mocker):
-    from app.services.push_service import _validate_endpoint_and_resolve
+    from app.services.push_service import EndpointValidationStatus, _validate_endpoint_and_resolve
 
     # 1. Embedded credentials rejected
-    assert await _validate_endpoint_and_resolve("https://user:pass@ntfy.sh/push") is None
+    assert (await _validate_endpoint_and_resolve("https://user:pass@ntfy.sh/push")).status == EndpointValidationStatus.SSRF_BLOCKED
 
     # 2. Non-standard HTTPS port rejected
-    assert await _validate_endpoint_and_resolve("https://ntfy.sh:8443/push") is None
+    assert (await _validate_endpoint_and_resolve("https://ntfy.sh:8443/push")).status == EndpointValidationStatus.SSRF_BLOCKED
 
     # 3. Disallowed scheme (e.g. gopher://)
-    assert await _validate_endpoint_and_resolve("gopher://ntfy.sh/push") is None
+    assert (await _validate_endpoint_and_resolve("gopher://ntfy.sh/push")).status == EndpointValidationStatus.SSRF_BLOCKED
 
     # 4. Stream body capping at 10 KB
     mocker.patch(
@@ -479,3 +479,34 @@ async def test_push_service_lifecycle_and_background_retention(mocker):
 
     await svc.stop()
     assert svc._client is None
+
+
+@pytest.mark.asyncio
+async def test_push_service_transient_dns_failure_does_not_prune(mocker, db_session, auth_user):
+    import socket
+    from app.services.push_service import encrypt_push_subscription, send_push_notification
+    from app.models.models import Device
+
+    device_id = auth_user["device_id"]
+    user_id = auth_user["email"]
+
+    device = db_session.query(Device).filter_by(device_id=device_id).first()
+    assert device is not None
+    device.push_subscription = encrypt_push_subscription("https://ntfy.sh/up_dns_test")
+    db_session.commit()
+
+    # Mock getaddrinfo to simulate temporary DNS failure
+    mocker.patch(
+        "asyncio.BaseEventLoop.getaddrinfo",
+        side_effect=socket.gaierror(-3, "Temporary failure in name resolution"),
+    )
+    prune_spy = mocker.patch("app.services.push_service._prune_stale_endpoint")
+
+    result = await send_push_notification(device_id, "https://ntfy.sh/up_dns_test", user_id)
+    assert result is False
+
+    # Ensure device push subscription was NOT pruned!
+    prune_spy.assert_not_called()
+    db_session.refresh(device)
+    assert device.push_subscription is not None
+

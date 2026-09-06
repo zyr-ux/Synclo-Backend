@@ -45,6 +45,22 @@ class ConnectionManager:
         self._update_active_metric()
 
     async def disconnect_device(self, user_id: str, device_id: str):
+        await self._disconnect_device_local(user_id, device_id)
+
+        if self.redis:
+            envelope = {
+                "action": "disconnect_device",
+                "user_id": user_id,
+                "device_id": device_id,
+                "sender": self._node_id,
+            }
+            try:
+                await self.redis.publish(self._channel(user_id), json.dumps(envelope))
+            except Exception as exc:
+                WEBSOCKET_BROADCAST_FAILURES_TOTAL.labels(operation="disconnect_device_publish").inc()
+                logger.warning("WebSocket device disconnect publication failed: %s", exc)
+
+    async def _disconnect_device_local(self, user_id: str, device_id: str):
         if user_id in self.active_connections:
             ws = self.active_connections[user_id].get(device_id)
             if ws:
@@ -167,6 +183,12 @@ class ConnectionManager:
                                 code=data.get("code", 4000),
                                 message=data.get("message"),
                             )
+                        continue
+                    if data.get("action") == "disconnect_device":
+                        user_id = data.get("user_id")
+                        device_id = data.get("device_id")
+                        if user_id and device_id:
+                            await self._disconnect_device_local(user_id, device_id)
                         continue
                     user_id = data.get("user_id")
                     payload = data.get("message")

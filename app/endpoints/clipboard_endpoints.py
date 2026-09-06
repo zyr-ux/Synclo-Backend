@@ -8,9 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.models.models import Clipboard, User
-from app.schemas.schemas import ClipboardIn, ClipboardOut, ClipboardPinUpdate, ClipboardSyncResponse
-from app.core.database import run_in_write_transaction
-from app.services.auth import get_db, get_current_user
+from app.schemas.schemas import ClipboardIn, ClipboardOut, ClipboardPinUpdate, ClipboardSyncResponse, AuthContext
+from app.core.database import async_run_in_write_transaction, run_in_write_transaction
+from app.services.auth import get_db, get_auth_context
 from app.services.clipboard_service import (
     allocate_batch_sync_sequence,
 
@@ -30,38 +30,40 @@ router = APIRouter()
 async def sync_clipboard(
     data: ClipboardIn,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    user_id: str = current_user.user_id
-    caller_device_id = getattr(current_user, "current_device_id", None)
+    user_id: str = auth.user.user_id
+    caller_device_id = auth.device_id
 
     if data.is_deleted:
-        await soft_delete_clipboard(
+        res, is_noop = await soft_delete_clipboard(
             db=db,
             user_id=user_id,
             clipboard_id=data.id,
             caller_device_id=caller_device_id,
             client_timestamp=data.timestamp,
         )
-        launch_background_push(user_id=user_id, exclude_device=caller_device_id)
-        return {"status": "clipboard deleted", "id": data.id}
+        if not is_noop:
+            launch_background_push(user_id=user_id, exclude_device=caller_device_id)
+        return res
 
-    entry, ret_status = await upsert_clipboard(
+    entry, ret_status, is_noop = await upsert_clipboard(
         db=db,
         user_id=user_id,
         data=data,
         caller_device_id=caller_device_id,
     )
-    launch_background_push(user_id=user_id, exclude_device=caller_device_id)
+    if not is_noop:
+        launch_background_push(user_id=user_id, exclude_device=caller_device_id)
     return {"status": ret_status, "id": entry.clipboard_id}
 
 
 @router.get("/clipboard", response_model=ClipboardOut, dependencies=[Depends(RateLimiter(times=30, seconds=60))])
 def get_clipboard(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    user_id: str = current_user.user_id
+    user_id: str = auth.user.user_id
 
     entry = (
         db.query(Clipboard)
@@ -80,9 +82,10 @@ def get_clipboard_all(
     include_deleted: bool = False,
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    query = db.query(Clipboard).filter_by(user_id=current_user.user_id)
+    user_id: str = auth.user.user_id
+    query = db.query(Clipboard).filter_by(user_id=user_id)
 
     if not include_deleted:
         query = query.filter(Clipboard.is_deleted.is_(False))
@@ -100,11 +103,32 @@ def get_sync_clipboard(
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    user_id: str = current_user.user_id
+    user_id: str = auth.user.user_id
+    current_user: User = auth.user
+    retention_days = Settings.TOMBSTONE_RETENTION_DAYS
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
     if since_change_number is not None:
+        if since:
+            since_utc = ensure_utc(since)
+            if since_utc < cutoff:
+                raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
+
+        oldest_entry = (
+            db.query(Clipboard.change_number, Clipboard.updated_at)
+            .filter(Clipboard.user_id == user_id)
+            .order_by(Clipboard.change_number.asc())
+            .first()
+        )
+        if oldest_entry is not None:
+            if since_change_number > 0 and since_change_number < oldest_entry.change_number - 1:
+                raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
+        else:
+            if (current_user.sync_sequence or 0) > since_change_number:
+                raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
+
         entries = (
             db.query(Clipboard)
             .filter(
@@ -115,6 +139,10 @@ def get_sync_clipboard(
             .limit(limit + 1)
             .all()
         )
+
+        if since_change_number > 0 and entries and ensure_utc(entries[0].updated_at) < cutoff:
+            raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
+
         has_more = len(entries) > limit
         if has_more:
             entries = entries[:limit]
@@ -155,9 +183,9 @@ def get_sync_clipboard(
 def get_clipboard_by_id(
     clipboard_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    user_id: str = current_user.user_id
+    user_id: str = auth.user.user_id
     entry = db.query(Clipboard).filter_by(clipboard_id=clipboard_id, user_id=user_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Clipboard entry not found")
@@ -170,10 +198,10 @@ async def pin_clipboard_item(
     clipboard_id: str,
     data: ClipboardPinUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    user_id: str = current_user.user_id
-    caller_device_id = getattr(current_user, "current_device_id", None)
+    user_id: str = auth.user.user_id
+    caller_device_id = auth.device_id
     entry = await update_pin_status(
         db=db,
         user_id=user_id,
@@ -189,27 +217,28 @@ async def pin_clipboard_item(
 async def delete_clipboard_item(
     clipboard_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    user_id: str = current_user.user_id
-    caller_device_id = getattr(current_user, "current_device_id", None)
-    await soft_delete_clipboard(
+    user_id: str = auth.user.user_id
+    caller_device_id = auth.device_id
+    res, is_noop = await soft_delete_clipboard(
         db=db,
         user_id=user_id,
         clipboard_id=clipboard_id,
         caller_device_id=caller_device_id,
     )
-    launch_background_push(user_id=user_id, exclude_device=caller_device_id)
+    if not is_noop:
+        launch_background_push(user_id=user_id, exclude_device=caller_device_id)
     return {"message": "Clipboard entry deleted"}
 
 
 @router.delete("/clipboard", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
 async def delete_clipboard_history(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    user_id: str = current_user.user_id
-    caller_device_id = getattr(current_user, "current_device_id", None)
+    user_id: str = auth.user.user_id
+    caller_device_id = auth.device_id
 
     def mutate():
         active_entries = (
@@ -247,7 +276,7 @@ async def delete_clipboard_history(
             ))
         return deleted_items, len(active_entries)
 
-    deleted_items, deleted_count = run_in_write_transaction(db, mutate)
+    deleted_items, deleted_count = await async_run_in_write_transaction(db, mutate)
     if not deleted_items:
         return {"message": "No clipboard entries to delete."}
 

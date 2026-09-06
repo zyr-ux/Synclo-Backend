@@ -46,11 +46,12 @@ from app.schemas.schemas import (
     RecoveryMaterialResponse,
     AccountRecoveryRequest,
     RecoveryKeyRotateRequest,
+    AuthContext,
 )
 from app.services.auth import (
     create_access_token,
     create_refresh_token,
-    get_current_user,
+    get_auth_context,
     get_db,
     oauth2_scheme,
     SECRET_KEY,
@@ -412,7 +413,7 @@ def logout(
             )
             if device_id:
                 token_query = token_query.filter(RefreshToken.device_id == device_id)
-            token_query.delete()
+            token_query.update({"is_revoked": True}, synchronize_session=False)
 
     run_in_write_transaction(db, mutate)
 
@@ -492,8 +493,9 @@ def refresh_token(
 @router.delete("/delete", dependencies=[Depends(RateLimiter(times=2, seconds=60))])
 async def delete_account(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    auth: AuthContext = Depends(get_auth_context),
 ):
+    current_user: User = auth.user
     user_id: str = current_user.user_id
 
     def mutate() -> None:
@@ -513,8 +515,9 @@ async def delete_account(
 async def change_password(
     data: PasswordChange,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    auth: AuthContext = Depends(get_auth_context),
 ):
+    current_user: User = auth.user
     try:
         old_auth_key_bytes = strict_b64decode(data.old_auth_key, "old_auth_key")
         if not bcrypt.checkpw(old_auth_key_bytes, current_user.auth_key_hash.encode('utf-8')):
@@ -570,8 +573,6 @@ async def change_password(
             current_user.recovery_key_verifier = new_recovery_verifier_hash
 
         current_user.session_epoch += 1
-
-        # Revoke all existing refresh tokens across all devices for this user
         db.query(RefreshToken).filter(
             RefreshToken.user_id == current_user.user_id
         ).update({"is_revoked": True}, synchronize_session=False)
@@ -588,8 +589,9 @@ async def change_password(
 def rotate_recovery_key(
     data: RecoveryKeyRotateRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    auth: AuthContext = Depends(get_auth_context),
 ):
+    current_user: User = auth.user
     new_recovery_wrapped_bytes = decode_and_validate_blob(
         data.new_recovery_wrapped_master_key, MIN_MK_LEN, MAX_MK_LEN, "recovery_wrapped_master_key"
     )
@@ -612,9 +614,10 @@ def rotate_recovery_key(
 async def update_username(
     data: UsernameUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    device_id = getattr(current_user, "current_device_id", None)
+    current_user: User = auth.user
+    device_id = auth.device_id
 
     def mutate() -> None:
         current_user.username = data.username
@@ -638,9 +641,10 @@ async def update_username(
 async def update_email(
     data: EmailUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    device_id = getattr(current_user, "current_device_id", None)
+    current_user: User = auth.user
+    device_id = auth.device_id
     if not device_id or not (MIN_DEVICE_ID_LEN <= len(device_id) <= MAX_DEVICE_ID_LEN):
         raise HTTPException(status_code=400, detail="Invalid or missing device_id in token")
 
@@ -691,5 +695,5 @@ async def update_email(
 
 
 @router.get("/user", response_model=UserResponse, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
-def get_user_profile(current_user: User = Depends(get_current_user)):
-    return current_user
+def get_user_profile(auth: AuthContext = Depends(get_auth_context)):
+    return auth.user

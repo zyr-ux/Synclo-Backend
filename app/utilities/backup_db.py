@@ -1,24 +1,4 @@
 #!/usr/bin/env python3
-"""
-Synclo Database Backup Utility (app/utilities/backup_db.py)
-
-Performs transaction-safe online SQLite backups with integrity verification,
-optional Fernet encryption, retention pruning, and restore verification.
-
-Usage:
-    # Perform backup (unencrypted or encrypted depending on BACKUP_ENCRYPTION_KEY):
-    python app/utilities/backup_db.py
-
-    # Perform backup with explicit encryption key:
-    python app/utilities/backup_db.py --key "<fernet-key>"
-
-    # Dry-run test restore into a temporary sandbox:
-    python app/utilities/backup_db.py --verify-restore data/backups/synclo_backup_20260904_210000.db.enc
-
-    # Safely restore backup to active database:
-    python app/utilities/backup_db.py --restore data/backups/synclo_backup_20260904_210000.db.enc --target data/synclo.db
-"""
-
 import argparse
 from datetime import datetime, timedelta, timezone
 import os
@@ -94,7 +74,8 @@ def perform_backup(
     backup_dir.mkdir(parents=True, exist_ok=True)
     timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     temp_fd, temp_path_str = tempfile.mkstemp(prefix="synclo_backup_", suffix=".tmp", dir=str(backup_dir))
-    os.close(temp_fd)  # Crucial for Windows: close handle before SQLite opens it
+    # Close file handle before SQLite opens the database on Windows
+    os.close(temp_fd)
     temp_path = Path(temp_path_str)
 
     try:
@@ -105,7 +86,6 @@ def perform_backup(
         dst_conn.close()
         src_conn.close()
 
-        # Run integrity check
         if not verify_sqlite_integrity(temp_path):
             print("ERROR: Backup failed integrity check!", file=sys.stderr)
             if temp_path.exists():
@@ -200,7 +180,6 @@ def restore_backup(
             print(f"Copying unencrypted backup {backup_file.name} for verification...")
             shutil.copy2(str(backup_file), str(sandbox_db))
 
-        # Verify integrity
         if not verify_sqlite_integrity(sandbox_db):
             print("ERROR: Restored database failed SQLite integrity check!", file=sys.stderr)
             return False
@@ -211,10 +190,8 @@ def restore_backup(
             print(f"SUCCESS: Verification successful. Sandbox database verified without modifying {target_db}.")
             return True
 
-        # Perform actual restore
         print(f"Restoring database to target location: {target_db}...")
         target_db.parent.mkdir(parents=True, exist_ok=True)
-        # Create safety copy of current target DB if it exists
         if target_db.exists():
             safety_copy = target_db.with_suffix(f".pre_restore_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}")
             print(f"Saving pre-restore safety copy: {safety_copy}")
@@ -257,7 +234,6 @@ def main():
         success = restore_backup(args.restore, target_db, key=args.key, verify_only=False)
         sys.exit(0 if success else 1)
 
-    # Perform regular backup
     result = perform_backup(
         source_db=source_db,
         backup_dir=backup_dir,

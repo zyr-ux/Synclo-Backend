@@ -55,7 +55,7 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
         epoch = payload.get("epoch")
 
         if not email or not exp or not device_id or epoch is None:
-            logger.warning(f"WebSocket token missing required fields: email={email}, exp={exp}, device_id={device_id}, epoch={epoch}")
+            logger.warning(f"WebSocket token missing required fields: has_email={bool(email)}, exp={exp}, device_id={device_id}, epoch={epoch}")
             await websocket.send_json({"type": "error", "message": "Invalid token: missing required fields"})
             await websocket.close(code=1008)
             return None
@@ -68,30 +68,34 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
     db = SessionLocal()
     try:
         if db.query(BlacklistedToken).filter_by(token=token).first():
-            logger.warning(f"WebSocket connection attempted with blacklisted token for {email}")
+            logger.warning("WebSocket connection attempted with blacklisted token")
             await websocket.send_json({"type": "error", "message": "Token has been revoked"})
             await websocket.close(code=1008)
             return None
 
         user = db.query(User).filter(User.email == email).first()
         if not user:
-            logger.warning(f"WebSocket connection attempted for non-existent user: {email}")
+            logger.warning("WebSocket connection attempted for non-existent user")
             await websocket.send_json({"type": "error", "message": "User not found"})
             await websocket.close(code=1008)
             return None
 
         if epoch != user.session_epoch:
-            logger.warning(f"WebSocket token session_epoch mismatch for {email}: {epoch} vs {user.session_epoch}")
+            logger.warning(f"WebSocket token session_epoch mismatch for user {user.user_id}: {epoch} vs {user.session_epoch}")
             await websocket.send_json({"type": "session_invalidated", "reason": "credentials_changed"})
             await websocket.close(code=4004)
             return None
 
         device = db.query(Device).filter_by(user_id=user.user_id, device_id=device_id).first()
         if not device:
-            logger.warning(f"WebSocket connection attempted with unauthorized device {device_id} for user {email}")
+            logger.warning(f"WebSocket connection attempted with unauthorized device {device_id} for user {user.user_id}")
             await websocket.send_json({"type": "error", "message": "Unauthorized device"})
             await websocket.close(code=1008)
             return None
+
+        def mutate():
+            device.last_seen = datetime.now(timezone.utc)
+        run_in_write_transaction(db, mutate)
 
         return user.user_id, device_id, exp
     finally:
@@ -133,8 +137,17 @@ async def _process_clipboard_message(
 
     session = SessionLocal()
     try:
+        device = session.query(Device).filter_by(user_id=user_id, device_id=device_id).first()
+        if not device:
+            await websocket.send_json({
+                "type": "device_deleted",
+                "message": "This device has been removed from your account"
+            })
+            await websocket.close(code=4003)
+            return
+
         if clipboard_in.is_deleted:
-            await soft_delete_clipboard(
+            _, is_noop = await soft_delete_clipboard(
                 db=session,
                 user_id=user_id,
                 clipboard_id=msg_id,
@@ -142,14 +155,15 @@ async def _process_clipboard_message(
                 client_timestamp=clipboard_in.timestamp,
             )
         else:
-            await upsert_clipboard(
+            _, _, is_noop = await upsert_clipboard(
                 db=session,
                 user_id=user_id,
                 data=clipboard_in,
                 caller_device_id=device_id,
             )
 
-        launch_background_push(user_id=user_id, exclude_device=device_id)
+        if not is_noop:
+            launch_background_push(user_id=user_id, exclude_device=device_id)
 
         await websocket.send_json({
             "type": "ack",
@@ -193,7 +207,6 @@ async def websocket_sync(websocket: WebSocket):
 
     logger.info(f"WebSocket connection accepted for user_id={user_id}, device_id={device_id}")
     await manager.connect(user_id, device_id, websocket)
-    await asyncio.to_thread(_update_device_last_seen, user_id, device_id)
 
     try:
         while True:

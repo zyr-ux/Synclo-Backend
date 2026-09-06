@@ -31,6 +31,10 @@ async def _empty_async_iter():
 
 mock_pubsub.listen.return_value = _empty_async_iter()
 mock_redis_client.pubsub = MagicMock(return_value=mock_pubsub)
+mock_lock = AsyncMock()
+mock_lock.acquire = AsyncMock(return_value=False)
+mock_lock.release = AsyncMock(return_value=True)
+mock_redis_client.lock = MagicMock(return_value=mock_lock)
 mock_redis_module.Redis.from_url.return_value = mock_redis_client
 sys.modules["redis.asyncio"] = mock_redis_module
 

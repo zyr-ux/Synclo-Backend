@@ -7,7 +7,9 @@ import logging
 import socket
 import ssl
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, AsyncIterable, List, Optional, Set, Tuple, cast
 from urllib.parse import urlparse
 
@@ -22,6 +24,27 @@ from app.core.metrics import PUSH_DISPATCHES_TOTAL, PUSH_DURATION_SECONDS
 from app.models.models import Device
 
 logger = logging.getLogger("clipboard_sync")
+
+
+class EndpointValidationStatus(str, Enum):
+    VALID = "valid"
+    DNS_ERROR = "dns_error"
+    SSRF_BLOCKED = "ssrf_blocked"
+
+
+@dataclass
+class EndpointValidationResult:
+    status: EndpointValidationStatus
+    details: Optional[Tuple[str, str, int]] = None
+    reason: str = ""
+
+    def __iter__(self):
+        if self.details:
+            return iter(self.details)
+        return iter(())
+
+    def __bool__(self):
+        return self.status == EndpointValidationStatus.VALID
 
 MAX_PUSH_RESPONSE_BYTES = 10 * 1024
 _PUSH_SUBSCRIPTION_PREFIX = "v1:"
@@ -92,9 +115,8 @@ class _HttpcoreResponseStream(httpx.AsyncByteStream):
         await cast(Any, self._stream).aclose()
 
 
+# Direct transport that preserves validated hostname for TLS and pins TCP DNS
 class PinnedAsyncTransport(httpx.AsyncBaseTransport):
-    """Direct transport that keeps the validated hostname for TLS and pins TCP DNS."""
-
     def __init__(
         self,
         pinned_ips: dict[str, str],
@@ -222,49 +244,52 @@ def _is_safe_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return ip.is_global
 
 
-async def _validate_endpoint_and_resolve(endpoint: str) -> Optional[Tuple[str, str, int]]:
+async def _validate_endpoint_and_resolve(endpoint: str) -> EndpointValidationResult:
     parsed = urlparse(endpoint)
     if not parsed.scheme or not parsed.hostname:
         logger.warning("Invalid push endpoint URL format")
-        return None
+        return EndpointValidationResult(EndpointValidationStatus.SSRF_BLOCKED, reason="Invalid URL format")
 
     if parsed.username or parsed.password:
         logger.warning("SSRF: Embedded credentials rejected in push endpoint")
-        return None
+        return EndpointValidationResult(EndpointValidationStatus.SSRF_BLOCKED, reason="Embedded credentials rejected")
 
     hostname = parsed.hostname.lower()
 
     if parsed.scheme == "http":
         if not (Settings.ALLOW_LOCAL_PUSH_ENDPOINTS or (not Settings.HTTPS_ONLY and hostname in LOOPBACK_HOSTS)):
             logger.warning("SSRF: Plain HTTP rejected for push endpoint")
-            return None
+            return EndpointValidationResult(EndpointValidationStatus.SSRF_BLOCKED, reason="Plain HTTP rejected")
     elif parsed.scheme != "https":
         logger.warning(f"SSRF: Unsupported scheme '{parsed.scheme}' for push endpoint")
-        return None
+        return EndpointValidationResult(EndpointValidationStatus.SSRF_BLOCKED, reason=f"Unsupported scheme '{parsed.scheme}'")
 
     # Port restriction: HTTPS must use 443; local dev HTTP may use 80 or explicit local port
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     if parsed.scheme == "https" and port != 443:
         logger.warning(f"SSRF: Non-standard port {port} rejected for HTTPS push endpoint")
-        return None
+        return EndpointValidationResult(EndpointValidationStatus.SSRF_BLOCKED, reason=f"Non-standard HTTPS port {port}")
     if parsed.scheme == "http" and not Settings.ALLOW_LOCAL_PUSH_ENDPOINTS and port != 80:
         logger.warning(f"SSRF: Non-standard port {port} rejected for HTTP push endpoint")
-        return None
+        return EndpointValidationResult(EndpointValidationStatus.SSRF_BLOCKED, reason=f"Non-standard HTTP port {port}")
 
     if not _is_allowed_domain(hostname):
         logger.warning(f"SSRF: Domain '{hostname}' is not in ALLOWED_PUSH_DOMAINS")
-        return None
+        return EndpointValidationResult(EndpointValidationStatus.SSRF_BLOCKED, reason=f"Domain '{hostname}' not allowed")
 
     loop = asyncio.get_running_loop()
     try:
         addr_infos = await loop.getaddrinfo(hostname, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+    except (socket.gaierror, socket.herror, OSError, asyncio.TimeoutError) as e:
+        logger.warning(f"DNS resolution failed transiently for {hostname}: {e}")
+        return EndpointValidationResult(EndpointValidationStatus.DNS_ERROR, reason=f"DNS resolution failed: {e}")
     except Exception as e:
-        logger.warning(f"DNS resolution failed for {hostname}: {e}")
-        return None
+        logger.warning(f"DNS resolution error for {hostname}: {e}")
+        return EndpointValidationResult(EndpointValidationStatus.DNS_ERROR, reason=f"DNS resolution error: {e}")
 
     if not addr_infos:
         logger.warning(f"DNS resolution returned no records for {hostname}")
-        return None
+        return EndpointValidationResult(EndpointValidationStatus.DNS_ERROR, reason="DNS resolution returned no records")
 
     for info in addr_infos:
         ip_str = info[4][0]
@@ -272,13 +297,13 @@ async def _validate_endpoint_and_resolve(endpoint: str) -> Optional[Tuple[str, s
             ip_obj = ipaddress.ip_address(ip_str)
         except ValueError:
             logger.warning(f"SSRF: Invalid resolved IP address {ip_str}")
-            return None
+            return EndpointValidationResult(EndpointValidationStatus.SSRF_BLOCKED, reason=f"Invalid resolved IP: {ip_str}")
         if not _is_safe_ip(ip_obj):
             logger.warning(f"SSRF: Resolved IP {ip_str} is private or non-global for {hostname}")
-            return None
+            return EndpointValidationResult(EndpointValidationStatus.SSRF_BLOCKED, reason=f"Resolved IP {ip_str} is private or non-global")
 
     pinned_ip = addr_infos[0][4][0]
-    return hostname, pinned_ip, port
+    return EndpointValidationResult(EndpointValidationStatus.VALID, details=(hostname, pinned_ip, port))
 
 
 class PushService:
@@ -310,13 +335,26 @@ class PushService:
 
     async def send_push_notification(self, device_id: str, endpoint: str, user_id: str) -> bool:
         validation = await _validate_endpoint_and_resolve(endpoint)
-        if validation is None:
+        if isinstance(validation, tuple):
+            hostname, pinned_ip, port = validation
+        elif validation is None or getattr(validation, "status", None) == EndpointValidationStatus.SSRF_BLOCKED:
+            reason = getattr(validation, "reason", "SSRF violation")
+            PUSH_DISPATCHES_TOTAL.labels(status="ssrf_blocked").inc()
+            logger.warning(f"Push endpoint failed security validation for device={device_id} ({reason}). Pruning subscription.")
+            await asyncio.to_thread(_prune_stale_endpoint, user_id, device_id)
+            return False
+        elif getattr(validation, "status", None) == EndpointValidationStatus.DNS_ERROR:
+            reason = getattr(validation, "reason", "DNS error")
+            PUSH_DISPATCHES_TOTAL.labels(status="dns_error").inc()
+            logger.warning(f"Push endpoint DNS resolution failed transiently for device={device_id}: {reason}. Skipping push.")
+            return False
+        elif getattr(validation, "status", None) != EndpointValidationStatus.VALID or not getattr(validation, "details", None):
             PUSH_DISPATCHES_TOTAL.labels(status="ssrf_blocked").inc()
             logger.warning(f"Push endpoint failed security validation for device={device_id}. Pruning subscription.")
             await asyncio.to_thread(_prune_stale_endpoint, user_id, device_id)
             return False
-
-        hostname, pinned_ip, port = validation
+        else:
+            hostname, pinned_ip, port = validation.details
         payload = {"type": "push"}
 
         start_time = time.perf_counter()

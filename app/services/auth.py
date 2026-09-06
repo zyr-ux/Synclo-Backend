@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.models import User, BlacklistedToken, Device, RefreshToken
 from app.core.config import Settings
+from app.schemas.schemas import AuthContext
 from app.utilities.helpers import hash_refresh_token
 
 _raw_secret_key = Settings.SECRET_KEY
@@ -58,7 +59,7 @@ def create_refresh_token(
     ))
     return plain_refresh_token
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+def get_auth_context(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> AuthContext:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired token",
@@ -88,8 +89,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         if not db.query(Device).filter_by(user_id=user.user_id, device_id=device_id).first():
             raise HTTPException(status_code=403, detail="Unauthorized device")
         
-        user.current_device_id = device_id
-        return user
+        return AuthContext(user=user, device_id=device_id)
 
     except JWTError:
-        raise credentials_exception
+        raise credentials_exception

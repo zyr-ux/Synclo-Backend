@@ -165,3 +165,53 @@ def test_pin_increments_sync_sequence(client, auth_headers, clip_payload):
     assert entries2[0]["id"] == "seq_pin_item"
     assert entries2[0]["is_pinned"] is True
 
+
+def test_delta_sync_keyset_sequence_410_retention_cutoff(client, auth_headers, clip_payload, db_session):
+    from app.models.models import Clipboard, User
+
+    # 1. Create 3 items
+    for i in range(1, 4):
+        client.post("/api/v1/clipboard", json=clip_payload(f"seq_410_item_{i}"), headers=auth_headers)
+
+    from app.core.database import run_in_write_transaction
+
+    # 2. Hard-purge item 1 and item 2 to simulate expired tombstones cleaned up after 30 days
+    def purge():
+        db_session.query(Clipboard).filter(
+            Clipboard.clipboard_id.in_(["seq_410_item_1", "seq_410_item_2"])
+        ).delete(synchronize_session="fetch")
+
+    run_in_write_transaction(db_session, purge)
+    db_session.expire_all()
+
+    # Client requesting since_change_number=1 (behind oldest_entry.change_number - 1) gets 410 Gone
+    res_expired = client.get("/api/v1/clipboard/sync", params={"since_change_number": 1}, headers=auth_headers)
+    assert res_expired.status_code == 410
+    assert "Sync state expired" in res_expired.json()["detail"]
+
+    # Client requesting since_change_number=2 (at oldest_entry.change_number - 1) succeeds
+    res_valid = client.get("/api/v1/clipboard/sync", params={"since_change_number": 2}, headers=auth_headers)
+    assert res_valid.status_code == 200
+    assert len(res_valid.json()["entries"]) == 1
+    assert res_valid.json()["entries"][0]["id"] == "seq_410_item_3"
+
+
+def test_delta_sync_keyset_sequence_410_when_entries_older_than_retention(client, auth_headers, clip_payload, db_session):
+    from app.models.models import Clipboard
+
+    # Create 2 items
+    client.post("/api/v1/clipboard", json=clip_payload("seq_old_1"), headers=auth_headers)
+    client.post("/api/v1/clipboard", json=clip_payload("seq_old_2"), headers=auth_headers)
+
+    # Backdate seq_old_2 to 35 days ago
+    old_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=35)
+    item2 = db_session.query(Clipboard).filter_by(clipboard_id="seq_old_2").first()
+    item2.updated_at = old_time
+    item2.timestamp = old_time
+    db_session.commit()
+
+    # Requesting changes since item 1 (change_number 1) when next change (item 2) is older than 30 days -> 410 Gone
+    res = client.get("/api/v1/clipboard/sync", params={"since_change_number": item2.change_number - 1}, headers=auth_headers)
+    assert res.status_code == 410
+    assert "Sync state expired" in res.json()["detail"]
+

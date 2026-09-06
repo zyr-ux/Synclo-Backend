@@ -432,7 +432,7 @@ def test_recovery_validation_failures(client, user_factory):
     assert client.post("/api/v1/auth/recover", json=short_dev).status_code == 400
 
     long_dev_name = {**base_valid, "device_name": "a" * 129}
-    assert client.post("/api/v1/auth/recover", json=long_dev_name).status_code == 400
+    assert client.post("/api/v1/auth/recover", json=long_dev_name).status_code in (400, 422)
 
     bad_kdf = {**base_valid, "new_kdf_version": 99}
     assert client.post("/api/v1/auth/recover", json=bad_kdf).status_code == 400

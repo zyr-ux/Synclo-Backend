@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""
-Synclo Database Decryption Utility (app/utilities/decrypt_db.py)
-
-Dedicated, standalone CLI utility for decrypting encrypted Synclo SQLite database backups (.db.enc)
-into plain SQLite databases (.db), with automatic integrity verification.
-
-Usage:
-    python app/utilities/decrypt_db.py data/backups/synclo_backup_20260904_210000.db.enc
-    python app/utilities/decrypt_db.py backup.db.enc --output decrypted.db --key <FernetKey>
-"""
-
 import argparse
 import getpass
 import os
@@ -48,7 +37,6 @@ def decrypt_database(encrypted_path: Path, output_path: Path, key: str) -> bool:
         print(f"ERROR: Decryption failed: {exc}", file=sys.stderr)
         return False
 
-    # Write to output file
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "wb") as f:
         f.write(decrypted_data)
@@ -58,7 +46,6 @@ def decrypt_database(encrypted_path: Path, output_path: Path, key: str) -> bool:
     except Exception:
         pass
 
-    # Integrity verification
     try:
         conn = sqlite3.connect(str(output_path))
         cursor = conn.cursor()
@@ -101,7 +88,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Determine encryption key
     key = args.key or os.environ.get("BACKUP_ENCRYPTION_KEY")
     if not key:
         key = getpass.getpass("Enter BACKUP_ENCRYPTION_KEY: ")
@@ -110,7 +96,6 @@ def main():
         print("ERROR: Encryption key is required to decrypt backup.", file=sys.stderr)
         sys.exit(1)
 
-    # Determine output path
     output_path = args.output
     if output_path is None:
         if args.encrypted_file.suffix == ".enc":
