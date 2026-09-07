@@ -253,6 +253,35 @@ def test_pin_item_user_isolation(client, user_factory):
     assert res.status_code == 404
 
 
+def test_clipboard_read_and_delete_user_isolation(client, user_factory):
+    user1 = user_factory()
+    user2 = user_factory()
+
+    clip_id = "user1_private_clip"
+    client.post("/api/v1/clipboard", json=make_clipboard_payload(clip_id), headers=user1["headers"])
+
+    # 1. User 2 cannot read User 1's item by ID (404)
+    res_get = client.get(f"/api/v1/clipboard/{clip_id}", headers=user2["headers"])
+    assert res_get.status_code == 404
+
+    # 2. User 2's /clipboard/all does not leak User 1's item
+    res_all = client.get("/api/v1/clipboard/all", headers=user2["headers"])
+    assert res_all.status_code == 200
+    assert len(res_all.json()) == 0
+
+    # 3. User 2 attempting to delete the ID must NOT delete or mutate User 1's item
+    client.delete(f"/api/v1/clipboard/{clip_id}", headers=user2["headers"])
+
+    # 4. User 1's item remains active, not deleted, and intact
+    res_verify = client.get(f"/api/v1/clipboard/{clip_id}", headers=user1["headers"])
+    assert res_verify.status_code == 200
+    item1 = res_verify.json()
+    assert item1["id"] == clip_id
+    assert item1["is_deleted"] is False
+
+
+
+
 def test_conflict_stale_write_rejected(client, auth_headers):
     clip_id = "clip_conflict_lww_1"
     # Write at T2
@@ -433,10 +462,11 @@ def test_clipboard_payload_length_and_version_validation(client, auth_headers):
     assert res_valid.status_code == 200
 
 
-def test_duplicate_write_noop_suppresses_broadcast_and_push(client, user_factory, monkeypatch):
+def test_duplicate_write_noop_suppresses_broadcast_and_push(client, user_factory, monkeypatch, db_session):
     from unittest.mock import MagicMock, AsyncMock
     from tests.conftest import make_clipboard_payload
     from app.websockets.connection_manager import manager
+    from app.models.models import Clipboard
     import app.endpoints.clipboard_endpoints as clip_endpoints
 
     user = user_factory()
@@ -454,11 +484,24 @@ def test_duplicate_write_noop_suppresses_broadcast_and_push(client, user_factory
     assert mock_push.call_count == 1
     assert mock_broadcast.call_count == 1
 
+    entry_before = db_session.query(Clipboard).filter_by(clipboard_id="duplicate_clip_1").first()
+    assert entry_before is not None
+    rev_before = entry_before.entry_revision
+    change_before = entry_before.change_number
+    updated_at_before = entry_before.updated_at
+
     # 2. Second write with exact same payload and timestamp: noop!
     res2 = client.post("/api/v1/clipboard", json=payload, headers=user["headers"])
     assert res2.status_code == 200
     # Push and WebSocket broadcast should NOT be triggered again
     assert mock_push.call_count == 1
     assert mock_broadcast.call_count == 1
+
+    # Deep NO-OP check: database record must not be mutated
+    db_session.expire_all()
+    entry_after = db_session.query(Clipboard).filter_by(clipboard_id="duplicate_clip_1").first()
+    assert entry_after.entry_revision == rev_before
+    assert entry_after.change_number == change_before
+    assert entry_after.updated_at == updated_at_before
 
 

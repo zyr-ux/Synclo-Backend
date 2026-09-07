@@ -41,17 +41,25 @@ def test_http_request_metrics_recorded(client):
 
 @pytest.mark.asyncio
 async def test_websocket_active_connections_and_event_metrics():
+    from app.core.metrics import ACTIVE_WEBSOCKETS, WEBSOCKET_EVENTS_TOTAL
+
+    ws_gauge_before = ACTIVE_WEBSOCKETS._value.get()
+    events_counter_before = WEBSOCKET_EVENTS_TOTAL.labels(event_type="clipboard_sync")._value.get()
+
     user_id = "test-user-metrics-1"
     device_id = "device-metrics-1"
     mock_ws = AsyncMock()
 
     await manager.connect(user_id, device_id, mock_ws)
     assert manager.active_connections[user_id][device_id] == mock_ws
+    assert ACTIVE_WEBSOCKETS._value.get() == ws_gauge_before + 1
 
     await manager.broadcast_to_user(user_id, {"type": "clipboard_sync", "id": "test-sync-1"})
+    assert WEBSOCKET_EVENTS_TOTAL.labels(event_type="clipboard_sync")._value.get() == events_counter_before + 1
 
     manager.disconnect(user_id, device_id)
     assert user_id not in manager.active_connections
+    assert ACTIVE_WEBSOCKETS._value.get() == ws_gauge_before
 
 
 @pytest.mark.asyncio
@@ -73,7 +81,9 @@ async def test_push_service_metrics_recording():
         resp.aiter_bytes = aiter
         yield resp
 
-    with patch("app.services.push_service._validate_endpoint_and_resolve", new_callable=AsyncMock, return_value=("push.example.com", "1.2.3.4", 443)):
+    from app.services.push_service import EndpointValidationResult, EndpointValidationStatus
+
+    with patch("app.services.push_service._validate_endpoint_and_resolve", new_callable=AsyncMock, return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("push.example.com", "1.2.3.4", 443))):
         with patch.object(httpx.AsyncClient, "stream", side_effect=mock_stream):
             success = await push_service.send_push_notification(
                 device_id="dev-push-1",

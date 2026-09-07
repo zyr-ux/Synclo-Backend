@@ -25,6 +25,8 @@ import pytest
 
 from app.models.models import Device, User
 from app.services.push_service import (
+    EndpointValidationResult,
+    EndpointValidationStatus,
     PushService,
     push_service,
     send_push_notification,
@@ -174,7 +176,7 @@ async def test_send_push_notification_success(mocker):
     mocker.patch(
         "app.services.push_service._validate_endpoint_and_resolve",
         new_callable=AsyncMock,
-        return_value=("ntfy.sh", "1.2.3.4", 443),
+        return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)),
     )
     stream_mock, mock_resp = mock_http_stream(status_code=200)
     mock_stream = mocker.patch("httpx.AsyncClient.stream", side_effect=stream_mock)
@@ -222,7 +224,7 @@ async def test_send_push_notification_stale_self_healing(client, auth_user, db_s
     mocker.patch(
         "app.services.push_service._validate_endpoint_and_resolve",
         new_callable=AsyncMock,
-        return_value=("ntfy.sh", "1.2.3.4", 443),
+        return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)),
     )
     stream_mock, _ = mock_http_stream(status_code=status_code)
     mocker.patch("httpx.AsyncClient.stream", side_effect=stream_mock)
@@ -248,7 +250,7 @@ async def test_send_push_notification_timeout_handling(mocker):
     mocker.patch(
         "app.services.push_service._validate_endpoint_and_resolve",
         new_callable=AsyncMock,
-        return_value=("ntfy.sh", "1.2.3.4", 443),
+        return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)),
     )
     mocker.patch("httpx.AsyncClient.stream", side_effect=httpx.TimeoutException("Timeout"))
 
@@ -269,11 +271,24 @@ async def test_push_service_ssrf_and_stream_capping(mocker):
     # 3. Disallowed scheme (e.g. gopher://)
     assert (await _validate_endpoint_and_resolve("gopher://ntfy.sh/push")).status == EndpointValidationStatus.SSRF_BLOCKED
 
-    # 4. Stream body capping at 10 KB
+    # 4. Resolved private / loopback / cloud metadata IP blocked
+    import socket
+    for blocked_ip in ("127.0.0.1", "10.0.0.1", "192.168.1.1", "169.254.169.254", "::1"):
+        family = socket.AF_INET if ":" not in blocked_ip else socket.AF_INET6
+        sockaddr = (blocked_ip, 443) if family == socket.AF_INET else (blocked_ip, 443, 0, 0)
+        mocker.patch(
+            "asyncio.BaseEventLoop.getaddrinfo",
+            return_value=[(family, socket.SOCK_STREAM, 6, "", sockaddr)],
+        )
+        res = await _validate_endpoint_and_resolve("https://ntfy.sh/push")
+        assert res.status == EndpointValidationStatus.SSRF_BLOCKED
+        assert "private or non-global" in res.reason.lower()
+
+    # 5. Stream body capping at 10 KB
     mocker.patch(
         "app.services.push_service._validate_endpoint_and_resolve",
         new_callable=AsyncMock,
-        return_value=("ntfy.sh", "1.2.3.4", 443),
+        return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)),
     )
     oversized_body = b"X" * 20000  # 20 KB
     stream_mock, response = mock_http_stream(status_code=200, body=oversized_body)
@@ -289,7 +304,7 @@ async def test_push_response_cap_aborts_an_oversized_chunk(mocker):
     mocker.patch(
         "app.services.push_service._validate_endpoint_and_resolve",
         new_callable=AsyncMock,
-        return_value=("ntfy.sh", "1.2.3.4", 443),
+        return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)),
     )
     response = MagicMock()
     response.status_code = 200
@@ -371,7 +386,7 @@ async def test_send_push_notification_context_lifecycle(mocker):
     mocker.patch(
         "app.services.push_service._validate_endpoint_and_resolve",
         new_callable=AsyncMock,
-        return_value=("ntfy.sh", "198.51.100.99", 443),
+        return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("ntfy.sh", "198.51.100.99", 443)),
     )
 
     observed_pin_during_call = None

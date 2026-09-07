@@ -154,7 +154,7 @@ def test_rename_device_validation_errors(client, auth_user):
         json={"device_name": "a" * 129},
         headers=auth_user["headers"]
     )
-    assert res_long.status_code in (400, 422)
+    assert res_long.status_code == 422
 
 
 def test_cannot_rename_other_user_device(client, auth_user, user_factory):

@@ -31,6 +31,23 @@ def test_https_only_accepts_reverse_proxied_https_requests(client, monkeypatch):
     assert "max-age=31536000" in response.headers["Strict-Transport-Security"]
 
 
+def test_https_only_rejects_forwarded_proto_from_untrusted_proxy(client, monkeypatch):
+    import app.main as app_main
+    monkeypatch.setattr(Settings, "HTTPS_ONLY", True)
+    monkeypatch.setattr(Settings, "TRUSTED_PROXIES", ["10.0.0.1"])
+    monkeypatch.setattr(app_main, "LOOPBACK_HOSTS", frozenset({"localhost", "testserver"}))
+
+    # Ingress from untrusted IP passing x-forwarded-proto must be ignored and redirected (307)
+    response = client.get(
+        "http://api.synclo.com/api/health",
+        headers={"x-forwarded-proto": "https"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 307
+    assert response.headers["Location"] == "https://api.synclo.com/api/health"
+
+
+
 def test_https_only_allows_loopback_without_hsts_on_plain_http(client, monkeypatch):
     monkeypatch.setattr(Settings, "HTTPS_ONLY", True)
     

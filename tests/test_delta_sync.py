@@ -8,6 +8,7 @@ Scenarios Targeted:
 """
 
 import datetime
+from tests.conftest import make_clipboard_payload
 
 
 def test_delta_sync_flow_and_tombstones(client, auth_headers, clip_payload, now_iso):
@@ -65,29 +66,32 @@ def test_delta_sync_flow_and_tombstones(client, auth_headers, clip_payload, now_
     assert all_entries[item_b_id]["is_deleted"] is False
 
 
-def test_delta_sync_pagination(client, auth_headers, clip_payload):
+def test_delta_sync_pagination(client, auth_headers):
     # Insert 5 items
     for i in range(5):
-        client.post("/api/v1/clipboard",
-                    json=clip_payload(f"page_item_{i}"), headers=auth_headers)
+        client.post(
+            "/api/v1/clipboard",
+            json=make_clipboard_payload(f"page_item_{i}"),
+            headers=auth_headers,
+        )
 
-    # Fetch page 1 (limit 2, offset 0)
+    # Fetch page 1 (limit 2, offset 0) -> sorted by updated_at ASC
     page1 = client.get("/api/v1/clipboard/sync", params={"limit": 2, "offset": 0}, headers=auth_headers).json()
-    assert len(page1["entries"]) == 2
+    assert [e["id"] for e in page1["entries"]] == ["page_item_0", "page_item_1"]
     assert page1["total_count"] == 5
     assert page1["next_offset"] == 2
     assert page1["has_more"] is True
 
     # Fetch page 2 (limit 2, offset 2)
     page2 = client.get("/api/v1/clipboard/sync", params={"limit": 2, "offset": page1["next_offset"]}, headers=auth_headers).json()
-    assert len(page2["entries"]) == 2
+    assert [e["id"] for e in page2["entries"]] == ["page_item_2", "page_item_3"]
     assert page2["total_count"] == 5
     assert page2["next_offset"] == 4
     assert page2["has_more"] is True
 
     # Fetch page 3 (limit 2, offset 4) -> 1 remaining
     page3 = client.get("/api/v1/clipboard/sync", params={"limit": 2, "offset": page2["next_offset"]}, headers=auth_headers).json()
-    assert len(page3["entries"]) == 1
+    assert [e["id"] for e in page3["entries"]] == ["page_item_4"]
     assert page3["total_count"] == 5
     assert page3["next_offset"] == 5
     assert page3["has_more"] is False
@@ -122,7 +126,7 @@ def test_delta_sync_keyset_cursor_pagination(client, auth_headers, clip_payload)
     r1 = client.get("/api/v1/clipboard/sync", params={"since_change_number": 0, "limit": 2}, headers=auth_headers)
     assert r1.status_code == 200
     p1 = r1.json()
-    assert len(p1["entries"]) == 2
+    assert [e["id"] for e in p1["entries"]] == ["cursor_item_0", "cursor_item_1"]
     assert p1["has_more"] is True
     assert p1["next_cursor"] is not None
     cursor1 = p1["next_cursor"]
@@ -131,7 +135,7 @@ def test_delta_sync_keyset_cursor_pagination(client, auth_headers, clip_payload)
     r2 = client.get("/api/v1/clipboard/sync", params={"since_change_number": cursor1, "limit": 2}, headers=auth_headers)
     assert r2.status_code == 200
     p2 = r2.json()
-    assert len(p2["entries"]) == 2
+    assert [e["id"] for e in p2["entries"]] == ["cursor_item_2", "cursor_item_3"]
     cursor2 = p2["next_cursor"]
 
     # Page 3: using cursor2 -> no more items

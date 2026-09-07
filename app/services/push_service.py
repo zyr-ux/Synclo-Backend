@@ -335,26 +335,24 @@ class PushService:
 
     async def send_push_notification(self, device_id: str, endpoint: str, user_id: str) -> bool:
         validation = await _validate_endpoint_and_resolve(endpoint)
-        if isinstance(validation, tuple):
-            hostname, pinned_ip, port = validation
-        elif validation is None or getattr(validation, "status", None) == EndpointValidationStatus.SSRF_BLOCKED:
-            reason = getattr(validation, "reason", "SSRF violation")
+        if validation.status == EndpointValidationStatus.SSRF_BLOCKED:
+            reason = validation.reason or "SSRF violation"
             PUSH_DISPATCHES_TOTAL.labels(status="ssrf_blocked").inc()
             logger.warning(f"Push endpoint failed security validation for device={device_id} ({reason}). Pruning subscription.")
             await asyncio.to_thread(_prune_stale_endpoint, user_id, device_id)
             return False
-        elif getattr(validation, "status", None) == EndpointValidationStatus.DNS_ERROR:
-            reason = getattr(validation, "reason", "DNS error")
+        elif validation.status == EndpointValidationStatus.DNS_ERROR:
+            reason = validation.reason or "DNS error"
             PUSH_DISPATCHES_TOTAL.labels(status="dns_error").inc()
             logger.warning(f"Push endpoint DNS resolution failed transiently for device={device_id}: {reason}. Skipping push.")
             return False
-        elif getattr(validation, "status", None) != EndpointValidationStatus.VALID or not getattr(validation, "details", None):
+        elif validation.status != EndpointValidationStatus.VALID or not validation.details:
             PUSH_DISPATCHES_TOTAL.labels(status="ssrf_blocked").inc()
             logger.warning(f"Push endpoint failed security validation for device={device_id}. Pruning subscription.")
             await asyncio.to_thread(_prune_stale_endpoint, user_id, device_id)
             return False
-        else:
-            hostname, pinned_ip, port = validation.details
+
+        hostname, pinned_ip, port = validation.details
         payload = {"type": "push"}
 
         start_time = time.perf_counter()

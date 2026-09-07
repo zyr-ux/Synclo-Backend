@@ -93,9 +93,11 @@ def db_session(engine):
 
 @pytest.fixture
 def client(db_session):
+    from unittest.mock import patch
     app.dependency_overrides[get_db] = lambda: db_session
-    with TestClient(app) as test_client:
-        yield test_client
+    with patch("alembic.command.upgrade"):
+        with TestClient(app) as test_client:
+            yield test_client
     app.dependency_overrides.clear()
 
 

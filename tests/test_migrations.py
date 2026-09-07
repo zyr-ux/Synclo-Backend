@@ -259,6 +259,19 @@ def test_schema_parity_between_alembic_and_orm():
                     f"Primary key mismatch on {table_name}.{col.name}"
                 )
 
+            # Compare indexes
+            migrated_indexes = {idx["name"]: idx for idx in inspector.get_indexes(table_name)}
+            for col in orm_table.columns:
+                if col.index:
+                    expected_idx_name = f"ix_{table_name}_{col.name}"
+                    assert expected_idx_name in migrated_indexes, (
+                        f"Column-level index {expected_idx_name} missing on {table_name}"
+                    )
+            for idx in orm_table.indexes:
+                assert idx.name in migrated_indexes, (
+                    f"Table-level index {idx.name} missing on {table_name}"
+                )
+
         engine.dispose()
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)

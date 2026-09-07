@@ -582,6 +582,29 @@ def test_schema_field_bounds_validation(client, auth_headers):
     assert res_recover.status_code == 422
 
 
+def test_all_mutating_endpoints_enforce_rate_limiting():
+    from fastapi.routing import APIRoute
+    from app.main import app
+
+    unprotected_routes = []
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        # Check all sensitive write endpoints under /api/v1
+        if route.path.startswith("/api/v1") and route.methods.intersection({"POST", "PUT", "PATCH", "DELETE"}):
+            has_limiter = any(
+                "RateLimiter" in getattr(dep.dependency, "__name__", "")
+                or "RateLimiter" in type(dep.dependency).__name__
+                or "RateLimiter" in str(dep.dependency)
+                for dep in route.dependencies
+            )
+            if not has_limiter:
+                unprotected_routes.append(f"{route.methods} {route.path}")
+
+    assert not unprotected_routes, f"Sensitive endpoints missing RateLimiter dependency: {unprotected_routes}"
+
+
+
 
 
 

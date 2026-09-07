@@ -315,3 +315,121 @@ def test_prune_all_users_clipboard_maintenance(client, auth_user, db_session):
     # Active items should now only be the 2 fresh items
     active_count = db_session.query(Clipboard).filter_by(user_id=user_id, is_deleted=False).count()
     assert active_count == 2
+
+
+def test_cleanup_old_tombstones(auth_user, db_session):
+    from app.utilities.helpers import cleanup_old_tombstones
+    user = db_session.query(User).filter_by(email=auth_user["email"]).first()
+    user_id = user.user_id
+
+    now = datetime.now(timezone.utc)
+    expired_deleted_at = now - timedelta(days=35)
+    recent_deleted_at = now - timedelta(days=5)
+
+    # 1. Expired tombstone (deleted 35 days ago, should be hard purged)
+    expired_id = str(uuid4())
+    db_session.add(Clipboard(
+        clipboard_id=expired_id,
+        user_id=user_id,
+        ciphertext=None,
+        nonce=None,
+        blob_version=1,
+        timestamp=expired_deleted_at,
+        updated_at=expired_deleted_at,
+        is_deleted=True,
+        deleted_at=expired_deleted_at,
+        is_pinned=False,
+    ))
+
+    # 2. Recent tombstone (deleted 5 days ago, must be preserved)
+    recent_id = str(uuid4())
+    db_session.add(Clipboard(
+        clipboard_id=recent_id,
+        user_id=user_id,
+        ciphertext=None,
+        nonce=None,
+        blob_version=1,
+        timestamp=recent_deleted_at,
+        updated_at=recent_deleted_at,
+        is_deleted=True,
+        deleted_at=recent_deleted_at,
+        is_pinned=False,
+    ))
+
+    # 3. Active unpinned item
+    active_id = str(uuid4())
+    db_session.add(Clipboard(
+        clipboard_id=active_id,
+        user_id=user_id,
+        ciphertext=b"active_data",
+        nonce=b"nonce_bytes_12",
+        blob_version=1,
+        timestamp=now,
+        updated_at=now,
+        is_deleted=False,
+        deleted_at=None,
+        is_pinned=False,
+    ))
+    db_session.commit()
+
+    success = cleanup_old_tombstones(db_session)
+    assert success is True
+
+    # Expired tombstone must be permanently deleted
+    assert db_session.query(Clipboard).filter_by(clipboard_id=expired_id).first() is None
+    # Recent tombstone must remain intact
+    assert db_session.query(Clipboard).filter_by(clipboard_id=recent_id).first() is not None
+    # Active item must remain intact
+    assert db_session.query(Clipboard).filter_by(clipboard_id=active_id).first() is not None
+
+
+def test_cleanup_expired_tokens(auth_user, db_session):
+    from app.models.models import BlacklistedToken, RefreshToken
+    from app.utilities.helpers import cleanup_expired_blacklisted_tokens, cleanup_expired_refresh_tokens
+
+    user = db_session.query(User).filter_by(email=auth_user["email"]).first()
+    user_id = user.user_id
+
+    now = datetime.now(timezone.utc)
+    expired_time = now - timedelta(hours=2)
+    valid_time = now + timedelta(hours=2)
+
+    # Blacklisted tokens
+    db_session.add(BlacklistedToken(token="expired_bl_token", expiry=expired_time))
+    db_session.add(BlacklistedToken(token="valid_bl_token", expiry=valid_time))
+
+    # Refresh tokens
+    db_session.add(RefreshToken(
+        token="expired_rf_token",
+        user_id=user_id,
+        device_id="dev_1",
+        token_id="tok_1",
+        expiry=expired_time,
+        is_revoked=False,
+    ))
+    db_session.add(RefreshToken(
+        token="valid_rf_token",
+        user_id=user_id,
+        device_id="dev_1",
+        token_id="tok_2",
+        expiry=valid_time,
+        is_revoked=False,
+    ))
+    db_session.commit()
+
+    assert cleanup_expired_blacklisted_tokens(db_session) is True
+    assert cleanup_expired_refresh_tokens(db_session) is True
+
+    assert db_session.query(BlacklistedToken).filter_by(token="expired_bl_token").first() is None
+    assert db_session.query(BlacklistedToken).filter_by(token="valid_bl_token").first() is not None
+    assert db_session.query(RefreshToken).filter_by(token="expired_rf_token").first() is None
+    assert db_session.query(RefreshToken).filter_by(token="valid_rf_token").first() is not None
+
+
+def test_run_all_cleanup_orchestration(auth_user, db_session):
+    from app.utilities.helpers import run_all_cleanup
+
+    result = run_all_cleanup(db_session)
+    assert result.failures == 0
+    assert isinstance(result.tombstones, list)
+

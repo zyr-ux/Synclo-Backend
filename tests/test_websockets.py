@@ -173,7 +173,7 @@ def test_websocket_rejects_expired_token(client, auth_user):
         assert msg.get("type") == "error"
         with pytest.raises(WebSocketDisconnect) as exc_info:
             ws.receive_json()
-        assert exc_info.value.code in (1008, 4001)
+        assert exc_info.value.code == 4001
 
 
 def test_websocket_rejects_blacklisted_token(client, auth_user):
@@ -353,4 +353,53 @@ def test_websocket_duplicate_write_noop_suppresses_push(client, auth_user, monke
         assert resp2.get("type") == "ack"
         # Push should NOT be called again
         assert mock_push.call_count == 1
+
+
+def test_websocket_soft_delete_event(client, auth_user):
+    token = auth_user["access_token"]
+    clip_id = "ws_delete_clip_item"
+
+    # 1. Create active item via REST
+    client.post("/api/v1/clipboard", json=make_clipboard_payload(clip_id, timestamp="2026-09-04T10:00:00Z"), headers=auth_user["headers"])
+
+    # 2. Connect to WebSocket and send soft-delete payload
+    del_payload = {
+        "id": clip_id,
+        "ciphertext": None,
+        "nonce": None,
+        "blob_version": 1,
+        "is_deleted": True,
+        "is_pinned": False,
+        "timestamp": "2026-09-04T11:00:00Z",
+    }
+    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}) as ws:
+        ws.send_json(del_payload)
+        ack = _receive_non_ping(ws)
+        assert ack.get("type") == "ack"
+        assert ack.get("id") == clip_id
+
+    # 3. Verify item is soft-deleted
+    res_get = client.get(f"/api/v1/clipboard/{clip_id}", headers=auth_user["headers"])
+    assert res_get.status_code == 200
+    assert res_get.json()["is_deleted"] is True
+    assert res_get.json()["ciphertext"] is None
+
+
+def test_websocket_conflict_stale_write_rejected(client, auth_user):
+    token = auth_user["access_token"]
+    clip_id = "ws_conflict_item"
+
+    # 1. Write active item at T2
+    client.post("/api/v1/clipboard", json=make_clipboard_payload(clip_id, timestamp="2026-09-04T12:00:00Z"), headers=auth_user["headers"])
+
+    # 2. Connect to WebSocket and attempt stale write at older T1
+    stale_payload = make_clipboard_payload(clip_id, timestamp="2026-09-04T11:00:00Z")
+    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}) as ws:
+        ws.send_json(stale_payload)
+        resp = _receive_non_ping(ws)
+        assert resp.get("type") == "error"
+        assert resp.get("code") == "conflict"
+        assert resp.get("id") == clip_id
+        assert "conflict" in resp.get("message", "").lower()
+
 

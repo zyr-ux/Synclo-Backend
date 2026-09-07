@@ -161,3 +161,36 @@ async def test_async_write_transaction_sleep_yields_loop():
         assert concurrent_task_ran is True
         assert session.execute(text("SELECT COUNT(*) FROM async_yield")).scalar_one() == 1
 
+
+def test_file_backed_sqlite_concurrent_write_transactions(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    db_path = tmp_path / "concurrent_wal.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    configure_sqlite_engine(engine)
+
+    with Session(engine) as session:
+        session.execute(text("CREATE TABLE concurrent_test (id INTEGER PRIMARY KEY AUTOINCREMENT, worker_id INT)"))
+        session.commit()
+
+    num_workers = 10
+
+    def worker(worker_id: int):
+        with Session(engine) as worker_session:
+            def mutate():
+                worker_session.execute(
+                    text("INSERT INTO concurrent_test (worker_id) VALUES (:wid)"),
+                    {"wid": worker_id},
+                )
+            run_in_write_transaction(worker_session, mutate, max_retries=10, base_delay=0.01)
+
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(worker, i) for i in range(num_workers)]
+        for f in futures:
+            f.result()
+
+    with Session(engine) as verify_session:
+        count = verify_session.execute(text("SELECT COUNT(*) FROM concurrent_test")).scalar_one()
+        assert count == num_workers
+    engine.dispose()
+

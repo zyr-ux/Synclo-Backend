@@ -4,7 +4,7 @@ import traceback
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from jose import JWTError, jwt
+from jose import ExpiredSignatureError, JWTError, jwt
 
 from app.core.database import SessionLocal, run_in_write_transaction
 from app.core.config import Settings
@@ -59,6 +59,11 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
             await websocket.send_json({"type": "error", "message": "Invalid token: missing required fields"})
             await websocket.close(code=1008)
             return None
+    except ExpiredSignatureError as e:
+        logger.warning(f"WebSocket token validation failed: {e}")
+        await websocket.send_json({"type": "error", "message": "Token expired"})
+        await websocket.close(code=4001)
+        return None
     except JWTError as e:
         logger.warning(f"WebSocket token validation failed: {e}")
         await websocket.send_json({"type": "error", "message": "Invalid token"})

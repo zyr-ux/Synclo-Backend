@@ -227,10 +227,10 @@ def test_account_recovery_revokes_old_sessions(client, user_factory):
 
     # Old refresh tokens should fail
     ref1 = client.post("/api/v1/refresh", json={"refresh_token": dev1_refresh})
-    assert ref1.status_code in {401, 403}
+    assert ref1.status_code == 401
 
     ref2 = client.post("/api/v1/refresh", json={"refresh_token": dev2_refresh})
-    assert ref2.status_code in {401, 403}
+    assert ref2.status_code == 401
 
 
 def test_manual_recovery_key_rotation_endpoint(client, user_factory):
