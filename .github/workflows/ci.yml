@@ -5,12 +5,45 @@ on:
     branches: [ main, dev ]
   pull_request:
     branches: [ main, dev ]
+  workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    name: Run Pytest Suite
+  lint-and-schema:
+    name: Lint & Schema Validation
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev]
+
+      - name: Run Ruff Linter
+        run: ruff check .
+
+      - name: Verify Alembic migrations and schema parity
+        env:
+          DATABASE_URL: sqlite:///./ci_temp.db
+        run: |
+          alembic upgrade head
+          alembic check
+
+  test:
+    name: Pytest Suite
+    runs-on: ubuntu-latest
     services:
       redis:
         image: redis:7.2.5-alpine
@@ -37,7 +70,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install .[dev]
 
-      - name: Run test suite with pytest
+      - name: Run test suite with pytest & coverage
         env:
           REDIS_URL: redis://localhost:6379/0
           SECRET_KEY: test_secret_key_minimum_32_characters_for_ci_run_1234
@@ -46,4 +79,14 @@ jobs:
           ALLOW_ARBITRARY_PUSH_ENDPOINTS: "true"
           ALLOW_LOCAL_PUSH_ENDPOINTS: "true"
         run: |
-          pytest -v
+          pytest -v --cov=app --cov-report=term-missing
+
+  docker:
+    name: Verify Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t synclo-backend:ci .
