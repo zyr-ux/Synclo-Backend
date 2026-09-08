@@ -6,31 +6,34 @@ from app.schemas.schemas import UserWithE2EE, ClipboardOut, DeviceOut
 from app.utilities.helpers import to_iso_utc
 from app.websockets.connection_manager import manager
 
+
 def user_to_e2ee_response(user: User) -> UserWithE2EE:
     return UserWithE2EE(
         email=user.email,
         username=user.username,
-        encrypted_master_key=base64.b64encode(user.encrypted_master_key).decode('utf-8'),
-        salt=base64.b64encode(user.salt).decode('utf-8'),
-        kdf_version=user.kdf_version
+        encrypted_master_key=base64.b64encode(user.encrypted_master_key).decode("utf-8"),
+        salt=base64.b64encode(user.salt).decode("utf-8"),
+        kdf_version=user.kdf_version,
     )
+
 
 def clipboard_to_response(entry: Clipboard) -> ClipboardOut:
     return ClipboardOut(
         id=entry.clipboard_id,
-        ciphertext=base64.b64encode(entry.ciphertext).decode('utf-8') if entry.ciphertext else None,
-        nonce=base64.b64encode(entry.nonce).decode('utf-8') if entry.nonce else None,
+        ciphertext=base64.b64encode(entry.ciphertext).decode("utf-8") if entry.ciphertext else None,
+        nonce=base64.b64encode(entry.nonce).decode("utf-8") if entry.nonce else None,
         blob_version=entry.blob_version,
         timestamp=entry.timestamp,
         updated_at=entry.updated_at,
         is_deleted=entry.is_deleted,
         deleted_at=entry.deleted_at,
-        is_pinned=entry.is_pinned if getattr(entry, 'is_pinned', None) is not None else False,
-        pinned_at=getattr(entry, 'pinned_at', None),
-        change_number=getattr(entry, 'change_number', 0),
-        entry_revision=getattr(entry, 'entry_revision', 1),
-        last_device_id=getattr(entry, 'last_device_id', None),
+        is_pinned=entry.is_pinned if getattr(entry, "is_pinned", None) is not None else False,
+        pinned_at=getattr(entry, "pinned_at", None),
+        change_number=getattr(entry, "change_number", 0),
+        entry_revision=getattr(entry, "entry_revision", 1),
+        last_device_id=getattr(entry, "last_device_id", None),
     )
+
 
 def device_to_response(device: Device, user_id: Optional[str] = None) -> DeviceOut:
     uid = user_id or getattr(device, "user_id", None)
@@ -40,8 +43,9 @@ def device_to_response(device: Device, user_id: Optional[str] = None) -> DeviceO
         os=device.os,
         last_seen=device.last_seen,
         is_online=manager.is_device_online(uid, device.device_id) if uid else False,
-        push_enabled=bool(getattr(device, "push_subscription", None))
+        push_enabled=bool(getattr(device, "push_subscription", None)),
     )
+
 
 def make_tombstone_payload(
     clipboard_id: str,
@@ -67,7 +71,7 @@ def make_tombstone_payload(
         "timestamp": ts_str,
         "ciphertext": None,
         "nonce": None,
-        "blob_version": blob_version
+        "blob_version": blob_version,
     }
     if change_number is not None:
         payload["change_number"] = change_number
@@ -76,4 +80,3 @@ def make_tombstone_payload(
     if last_device_id is not None:
         payload["last_device_id"] = last_device_id
     return payload
-

@@ -29,6 +29,7 @@ backups/
 .pytest_cache/
 .coverage
 .coverage.*
+.ruff_cache
 htmlcov/
 nosetests.xml
 coverage.xml

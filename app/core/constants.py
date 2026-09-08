@@ -17,4 +17,3 @@ ALLOWED_BLOB_VERSIONS = {1}
 ALLOWED_KDF_VERSIONS = {1}
 
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "testserver"})
-

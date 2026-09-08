@@ -26,14 +26,14 @@ def _receive_non_ping(ws):
             ws.send_json({"type": "pong"})
             continue
         return msg
-    raise TimeoutError(
-        f"Did not receive a non-ping message after {_MAX_WS_RECV_ATTEMPTS} attempts"
-    )
+    raise TimeoutError(f"Did not receive a non-ping message after {_MAX_WS_RECV_ATTEMPTS} attempts")
 
 
 def test_websocket_connect_and_ping(client, auth_user):
     token = auth_user["access_token"]
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}) as ws:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
         # Send ping
         ws.send_json({"type": "ping"})
         response = _receive_non_ping(ws)
@@ -42,7 +42,9 @@ def test_websocket_connect_and_ping(client, auth_user):
 
 def test_websocket_clipboard_sync_event(client, auth_user):
     token = auth_user["access_token"]
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}) as ws:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
         # Send clipboard item over websocket
         clip_id = "ws_clip_item_01"
         ws.send_json(make_clipboard_payload(clip_id))
@@ -56,17 +58,22 @@ def test_websocket_broadcast_on_username_update(client, user_factory):
     user = user_factory(username="orig_name")
 
     # Register device 2
-    dev2_res = client.post("/api/v1/login", json={
-        "email": user["email"],
-        "auth_key": user["auth_key"],
-        "device_id": "ws_device_2",
-        "device_name": "Device 2",
-        "os": "Android",
-    })
+    dev2_res = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "ws_device_2",
+            "device_name": "Device 2",
+            "os": "Android",
+        },
+    )
     token_dev2 = dev2_res.json()["access_token"]
 
     # Device 2 connects to WebSocket
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}) as ws_dev2:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}
+    ) as ws_dev2:
         # Device 1 updates username via REST
         resp_update = client.put(
             "/api/v1/user/username",
@@ -83,16 +90,21 @@ def test_websocket_broadcast_on_username_update(client, user_factory):
 
 def test_websocket_broadcast_on_email_update(client, user_factory):
     user = user_factory()
-    dev2_res = client.post("/api/v1/login", json={
-        "email": user["email"],
-        "auth_key": user["auth_key"],
-        "device_id": "ws_device_email_2",
-        "device_name": "Device 2",
-        "os": "iOS",
-    })
+    dev2_res = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "ws_device_email_2",
+            "device_name": "Device 2",
+            "os": "iOS",
+        },
+    )
     token_dev2 = dev2_res.json()["access_token"]
 
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}) as ws_dev2:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}
+    ) as ws_dev2:
         new_email = f"new_{user['email']}"
         res = client.put(
             "/api/v1/user/email",
@@ -108,17 +120,22 @@ def test_websocket_broadcast_on_email_update(client, user_factory):
 
 def test_websocket_clipboard_broadcast_to_other_devices(client, user_factory):
     user = user_factory()
-    dev2_res = client.post("/api/v1/login", json={
-        "email": user["email"],
-        "auth_key": user["auth_key"],
-        "device_id": "ws_device_clip_2",
-        "device_name": "Device 2",
-        "os": "Android",
-    })
+    dev2_res = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "ws_device_clip_2",
+            "device_name": "Device 2",
+            "os": "Android",
+        },
+    )
     token_dev2 = dev2_res.json()["access_token"]
 
     with client.websocket_connect("/ws/v1/sync", headers=user["headers"]) as ws1:
-        with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}) as ws2:
+        with client.websocket_connect(
+            "/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}
+        ) as ws2:
             clip_id = "broadcast_item_123"
             ws1.send_json(make_clipboard_payload(clip_id, timestamp="2026-08-20T12:00:00Z"))
             ack = _receive_non_ping(ws1)
@@ -147,6 +164,7 @@ def test_replaced_websocket_disconnect_does_not_remove_current_connection():
 
 def test_websocket_rejects_missing_auth(client):
     from starlette.websockets import WebSocketDisconnect
+
     with client.websocket_connect("/ws/v1/sync") as ws:
         msg = ws.receive_json()
         assert msg.get("type") == "error"
@@ -164,10 +182,12 @@ def test_websocket_rejects_expired_token(client, auth_user):
     # Create an expired token (-1 minute)
     expired_token = create_access_token(
         data={"sub": auth_user["email"], "device_id": auth_user["device_id"]},
-        expires_delta=datetime.timedelta(minutes=-1)
+        expires_delta=datetime.timedelta(minutes=-1),
     )
 
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {expired_token}"}) as ws:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {expired_token}"}
+    ) as ws:
         # Should be rejected
         msg = ws.receive_json()
         assert msg.get("type") == "error"
@@ -178,6 +198,7 @@ def test_websocket_rejects_expired_token(client, auth_user):
 
 def test_websocket_rejects_blacklisted_token(client, auth_user):
     from starlette.websockets import WebSocketDisconnect
+
     token = auth_user["access_token"]
     refresh_token = auth_user["refresh_token"]
 
@@ -185,12 +206,14 @@ def test_websocket_rejects_blacklisted_token(client, auth_user):
     res_logout = client.post(
         "/api/v1/logout",
         json={"refresh_token": refresh_token},
-        headers={"Authorization": f"Bearer {token}"}
+        headers={"Authorization": f"Bearer {token}"},
     )
     assert res_logout.status_code == 200
 
     # Attempt to connect to WebSocket with the blacklisted token
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}) as ws:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
         msg = ws.receive_json()
         assert msg.get("type") == "error"
         assert "Token has been revoked" in msg.get("message", "")
@@ -201,24 +224,27 @@ def test_websocket_rejects_blacklisted_token(client, auth_user):
 
 def test_websocket_broadcast_on_pin_update(client, user_factory):
     user = user_factory()
-    dev2_res = client.post("/api/v1/login", json={
-        "email": user["email"],
-        "auth_key": user["auth_key"],
-        "device_id": "ws_device_pin_2",
-        "device_name": "Device 2",
-        "os": "Android",
-    })
+    dev2_res = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "ws_device_pin_2",
+            "device_name": "Device 2",
+            "os": "Android",
+        },
+    )
     token_dev2 = dev2_res.json()["access_token"]
 
     clip_id = "ws_pin_broadcast_item"
     client.post("/api/v1/clipboard", json=make_clipboard_payload(clip_id), headers=user["headers"])
 
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}) as ws2:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}
+    ) as ws2:
         # Device 1 pins the clipboard item
         res = client.patch(
-            f"/api/v1/clipboard/{clip_id}/pin",
-            json={"is_pinned": True},
-            headers=user["headers"]
+            f"/api/v1/clipboard/{clip_id}/pin", json={"is_pinned": True}, headers=user["headers"]
         )
         assert res.status_code == 200
 
@@ -233,21 +259,26 @@ def test_websocket_broadcast_on_pin_update(client, user_factory):
 
 def test_websocket_broadcast_on_device_rename(client, user_factory):
     user = user_factory()
-    dev2_res = client.post("/api/v1/login", json={
-        "email": user["email"],
-        "auth_key": user["auth_key"],
-        "device_id": "ws_device_rename_2",
-        "device_name": "Device 2",
-        "os": "macOS",
-    })
+    dev2_res = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "ws_device_rename_2",
+            "device_name": "Device 2",
+            "os": "macOS",
+        },
+    )
     token_dev2 = dev2_res.json()["access_token"]
 
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}) as ws2:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}
+    ) as ws2:
         # Device 1 renames device 2 (or its own device)
         res = client.patch(
             f"/api/v1/devices/{user['device_id']}",
             json={"device_name": "Desktop Beast"},
-            headers=user["headers"]
+            headers=user["headers"],
         )
         assert res.status_code == 200
 
@@ -297,30 +328,34 @@ async def test_disconnect_device_local_closes_socket():
 
     await mgr._disconnect_device_local("u1", "d1")
 
-    mock_ws.send_json.assert_awaited_once_with({
-        "type": "device_deleted",
-        "message": "This device has been removed from your account",
-    })
+    mock_ws.send_json.assert_awaited_once_with(
+        {
+            "type": "device_deleted",
+            "message": "This device has been removed from your account",
+        }
+    )
     mock_ws.close.assert_awaited_once_with(code=4003)
     assert "d1" not in mgr.active_connections.get("u1", {})
 
 
 def test_device_deletion_closes_websocket_with_4003(client, user_factory):
     user = user_factory()
-    dev2_res = client.post("/api/v1/login", json={
-        "email": user["email"],
-        "auth_key": user["auth_key"],
-        "device_id": "ws_device_del_test",
-        "device_name": "Device 2",
-        "os": "Android",
-    })
+    dev2_res = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "ws_device_del_test",
+            "device_name": "Device 2",
+            "os": "Android",
+        },
+    )
     token_dev2 = dev2_res.json()["access_token"]
 
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}) as ws2:
-        res = client.delete(
-            "/api/v1/devices/ws_device_del_test",
-            headers=user["headers"]
-        )
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}
+    ) as ws2:
+        res = client.delete("/api/v1/devices/ws_device_del_test", headers=user["headers"])
         assert res.status_code == 200
 
         try:
@@ -340,7 +375,9 @@ def test_websocket_duplicate_write_noop_suppresses_push(client, auth_user, monke
     token = auth_user["access_token"]
     payload = make_clipboard_payload("ws_noop_test_item")
 
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}) as ws:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
         # First write
         ws.send_json(payload)
         resp1 = _receive_non_ping(ws)
@@ -360,7 +397,11 @@ def test_websocket_soft_delete_event(client, auth_user):
     clip_id = "ws_delete_clip_item"
 
     # 1. Create active item via REST
-    client.post("/api/v1/clipboard", json=make_clipboard_payload(clip_id, timestamp="2026-09-04T10:00:00Z"), headers=auth_user["headers"])
+    client.post(
+        "/api/v1/clipboard",
+        json=make_clipboard_payload(clip_id, timestamp="2026-09-04T10:00:00Z"),
+        headers=auth_user["headers"],
+    )
 
     # 2. Connect to WebSocket and send soft-delete payload
     del_payload = {
@@ -372,7 +413,9 @@ def test_websocket_soft_delete_event(client, auth_user):
         "is_pinned": False,
         "timestamp": "2026-09-04T11:00:00Z",
     }
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}) as ws:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
         ws.send_json(del_payload)
         ack = _receive_non_ping(ws)
         assert ack.get("type") == "ack"
@@ -390,16 +433,20 @@ def test_websocket_conflict_stale_write_rejected(client, auth_user):
     clip_id = "ws_conflict_item"
 
     # 1. Write active item at T2
-    client.post("/api/v1/clipboard", json=make_clipboard_payload(clip_id, timestamp="2026-09-04T12:00:00Z"), headers=auth_user["headers"])
+    client.post(
+        "/api/v1/clipboard",
+        json=make_clipboard_payload(clip_id, timestamp="2026-09-04T12:00:00Z"),
+        headers=auth_user["headers"],
+    )
 
     # 2. Connect to WebSocket and attempt stale write at older T1
     stale_payload = make_clipboard_payload(clip_id, timestamp="2026-09-04T11:00:00Z")
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}) as ws:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
         ws.send_json(stale_payload)
         resp = _receive_non_ping(ws)
         assert resp.get("type") == "error"
         assert resp.get("code") == "conflict"
         assert resp.get("id") == clip_id
         assert "conflict" in resp.get("message", "").lower()
-
-

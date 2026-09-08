@@ -11,7 +11,10 @@ def decrypt_database(encrypted_path: Path, output_path: Path, key: str) -> bool:
     try:
         from cryptography.fernet import Fernet, InvalidToken
     except ImportError:
-        print("ERROR: 'cryptography' library is required. Install via: pip install cryptography", file=sys.stderr)
+        print(
+            "ERROR: 'cryptography' library is required. Install via: pip install cryptography",
+            file=sys.stderr,
+        )
         return False
 
     if not encrypted_path.exists():
@@ -31,7 +34,10 @@ def decrypt_database(encrypted_path: Path, output_path: Path, key: str) -> bool:
     try:
         decrypted_data = cipher.decrypt(encrypted_data)
     except InvalidToken:
-        print("ERROR: Decryption failed! The provided key is incorrect or the backup file is corrupt.", file=sys.stderr)
+        print(
+            "ERROR: Decryption failed! The provided key is incorrect or the backup file is corrupt.",
+            file=sys.stderr,
+        )
         return False
     except Exception as exc:
         print(f"ERROR: Decryption failed: {exc}", file=sys.stderr)
@@ -56,7 +62,7 @@ def decrypt_database(encrypted_path: Path, output_path: Path, key: str) -> bool:
         conn.close()
 
         if row and row[0] == "ok":
-            print(f"SUCCESS: Decrypted database verified successfully.")
+            print("SUCCESS: Decrypted database verified successfully.")
             print(f"Output: {output_path} ({output_path.stat().st_size} bytes)")
             print(f"Tables present: {', '.join(tables)}")
             return True
@@ -74,16 +80,18 @@ def main():
     )
     parser.add_argument("encrypted_file", type=Path, help="Path to the encrypted .db.enc file")
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         type=Path,
         default=None,
-        help="Destination path for decrypted .db file (defaults to removing .enc suffix)"
+        help="Destination path for decrypted .db file (defaults to removing .enc suffix)",
     )
     parser.add_argument(
-        "--key", "-k",
+        "--key",
+        "-k",
         type=str,
         default=None,
-        help="Fernet encryption key (or read from BACKUP_ENCRYPTION_KEY env var)"
+        help="Fernet encryption key (or read from BACKUP_ENCRYPTION_KEY env var)",
     )
 
     args = parser.parse_args()

@@ -3,10 +3,21 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi_limiter.depends import RateLimiter
 from sqlalchemy.orm import Session
-from app.core.constants import MIN_DEVICE_ID_LEN, MAX_DEVICE_ID_LEN, MIN_DEVICE_NAME_LEN, MAX_DEVICE_NAME_LEN
+from app.core.constants import (
+    MIN_DEVICE_ID_LEN,
+    MAX_DEVICE_ID_LEN,
+    MIN_DEVICE_NAME_LEN,
+    MAX_DEVICE_NAME_LEN,
+)
 from app.core.database import run_in_write_transaction
-from app.models.models import Device, User, RefreshToken
-from app.schemas.schemas import DeviceRegister, DeviceRename, DeviceOut, PushSubscription, AuthContext
+from app.models.models import Device, RefreshToken
+from app.schemas.schemas import (
+    DeviceRegister,
+    DeviceRename,
+    DeviceOut,
+    PushSubscription,
+    AuthContext,
+)
 from app.services.auth import get_db, get_auth_context
 from app.services.serializers import device_to_response
 from app.services.push_service import encrypt_push_subscription
@@ -15,7 +26,11 @@ from app.websockets.connection_manager import manager
 router = APIRouter()
 
 
-@router.post("/devices/register", response_model=DeviceOut, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+@router.post(
+    "/devices/register",
+    response_model=DeviceOut,
+    dependencies=[Depends(RateLimiter(times=10, seconds=60))],
+)
 async def register_device(
     device: DeviceRegister,
     db: Session = Depends(get_db),
@@ -24,10 +39,11 @@ async def register_device(
     if not (MIN_DEVICE_ID_LEN <= len(device.device_id) <= MAX_DEVICE_ID_LEN):
         raise HTTPException(status_code=400, detail="device_id length out of bounds")
     current_user_id: str = auth.user.user_id
+
     def mutate() -> tuple[Device, bool]:
-        existing = db.query(Device).filter_by(
-            device_id=device.device_id, user_id=current_user_id
-        ).first()
+        existing = (
+            db.query(Device).filter_by(device_id=device.device_id, user_id=current_user_id).first()
+        )
         if existing:
             existing.last_seen = datetime.now(timezone.utc)
             return existing, False
@@ -59,7 +75,11 @@ async def register_device(
     return device_to_response(registered_device, current_user_id)
 
 
-@router.get("/devices", response_model=List[DeviceOut], dependencies=[Depends(RateLimiter(times=20, seconds=60))])
+@router.get(
+    "/devices",
+    response_model=List[DeviceOut],
+    dependencies=[Depends(RateLimiter(times=20, seconds=60))],
+)
 def get_devices(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(get_auth_context),
@@ -92,7 +112,11 @@ async def delete_device(
     return {"message": f"Device '{device.device_name}' deleted successfully"}
 
 
-@router.patch("/devices/{device_id}", response_model=DeviceOut, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+@router.patch(
+    "/devices/{device_id}",
+    response_model=DeviceOut,
+    dependencies=[Depends(RateLimiter(times=10, seconds=60))],
+)
 async def rename_device(
     device_id: str,
     data: DeviceRename,
@@ -122,15 +146,19 @@ async def rename_device(
             "device": {
                 "device_id": device.device_id,
                 "device_name": device.device_name,
-                "os": device.os
-            }
-        }
+                "os": device.os,
+            },
+        },
     )
 
     return device_to_response(device, user_id)
 
 
-@router.put("/devices/{device_id}/push", response_model=DeviceOut, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+@router.put(
+    "/devices/{device_id}/push",
+    response_model=DeviceOut,
+    dependencies=[Depends(RateLimiter(times=10, seconds=60))],
+)
 async def update_device_push(
     device_id: str,
     data: PushSubscription,
@@ -154,7 +182,11 @@ async def update_device_push(
     return device_to_response(device, user_id)
 
 
-@router.delete("/devices/{device_id}/push", response_model=DeviceOut, dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+@router.delete(
+    "/devices/{device_id}/push",
+    response_model=DeviceOut,
+    dependencies=[Depends(RateLimiter(times=10, seconds=60))],
+)
 async def remove_device_push(
     device_id: str,
     db: Session = Depends(get_db),
@@ -173,6 +205,3 @@ async def remove_device_push(
     db.refresh(device)
 
     return device_to_response(device, user_id)
-
-
-

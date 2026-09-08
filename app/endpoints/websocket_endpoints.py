@@ -30,8 +30,15 @@ async def _validate_ws_security(websocket: WebSocket) -> bool:
         is_secure = websocket.url.scheme == "wss" or forwarded_proto in ("https", "wss")
         is_loopback = websocket.url.hostname in LOOPBACK_HOSTS
         if not is_secure and not is_loopback:
-            logger.warning("WebSocket connection rejected: HTTPS_ONLY is enabled and connection is insecure")
-            await websocket.send_json({"type": "error", "message": "Insecure WebSocket connection rejected (WSS required)"})
+            logger.warning(
+                "WebSocket connection rejected: HTTPS_ONLY is enabled and connection is insecure"
+            )
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": "Insecure WebSocket connection rejected (WSS required)",
+                }
+            )
             await websocket.close(code=1008)
             return False
     return True
@@ -41,7 +48,9 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
     auth_header = websocket.headers.get("authorization", "")
     if not auth_header.startswith("Bearer "):
         logger.warning("WebSocket connection attempted without Bearer token")
-        await websocket.send_json({"type": "error", "message": "Missing or invalid Authorization header"})
+        await websocket.send_json(
+            {"type": "error", "message": "Missing or invalid Authorization header"}
+        )
         await websocket.close(code=1008)
         return None
 
@@ -55,8 +64,12 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
         epoch = payload.get("epoch")
 
         if not email or not exp or not device_id or epoch is None:
-            logger.warning(f"WebSocket token missing required fields: has_email={bool(email)}, exp={exp}, device_id={device_id}, epoch={epoch}")
-            await websocket.send_json({"type": "error", "message": "Invalid token: missing required fields"})
+            logger.warning(
+                f"WebSocket token missing required fields: has_email={bool(email)}, exp={exp}, device_id={device_id}, epoch={epoch}"
+            )
+            await websocket.send_json(
+                {"type": "error", "message": "Invalid token: missing required fields"}
+            )
             await websocket.close(code=1008)
             return None
     except ExpiredSignatureError as e:
@@ -86,20 +99,27 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
             return None
 
         if epoch != user.session_epoch:
-            logger.warning(f"WebSocket token session_epoch mismatch for user {user.user_id}: {epoch} vs {user.session_epoch}")
-            await websocket.send_json({"type": "session_invalidated", "reason": "credentials_changed"})
+            logger.warning(
+                f"WebSocket token session_epoch mismatch for user {user.user_id}: {epoch} vs {user.session_epoch}"
+            )
+            await websocket.send_json(
+                {"type": "session_invalidated", "reason": "credentials_changed"}
+            )
             await websocket.close(code=4004)
             return None
 
         device = db.query(Device).filter_by(user_id=user.user_id, device_id=device_id).first()
         if not device:
-            logger.warning(f"WebSocket connection attempted with unauthorized device {device_id} for user {user.user_id}")
+            logger.warning(
+                f"WebSocket connection attempted with unauthorized device {device_id} for user {user.user_id}"
+            )
             await websocket.send_json({"type": "error", "message": "Unauthorized device"})
             await websocket.close(code=1008)
             return None
 
         def mutate():
             device.last_seen = datetime.now(timezone.utc)
+
         run_in_write_transaction(db, mutate)
 
         return user.user_id, device_id, exp
@@ -110,10 +130,12 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
 def _update_device_last_seen(user_id: str, device_id: str):
     session = SessionLocal()
     try:
+
         def mutate():
             dev = session.query(Device).filter_by(user_id=user_id, device_id=device_id).first()
             if dev:
                 dev.last_seen = datetime.now(timezone.utc)
+
         run_in_write_transaction(session, mutate)
     except Exception as err:
         logger.warning(f"Failed to update device last_seen: {err}")
@@ -122,16 +144,15 @@ def _update_device_last_seen(user_id: str, device_id: str):
 
 
 async def _process_clipboard_message(
-    websocket: WebSocket,
-    user_id: str,
-    device_id: str,
-    data: dict
+    websocket: WebSocket, user_id: str, device_id: str, data: dict
 ):
     msg_id = data.get("id")
     msg_ts = data.get("timestamp")
 
     if not msg_id or not msg_ts:
-        await websocket.send_json({"type": "error", "message": "Missing required fields (id, timestamp)"})
+        await websocket.send_json(
+            {"type": "error", "message": "Missing required fields (id, timestamp)"}
+        )
         return
 
     try:
@@ -144,10 +165,12 @@ async def _process_clipboard_message(
     try:
         device = session.query(Device).filter_by(user_id=user_id, device_id=device_id).first()
         if not device:
-            await websocket.send_json({
-                "type": "device_deleted",
-                "message": "This device has been removed from your account"
-            })
+            await websocket.send_json(
+                {
+                    "type": "device_deleted",
+                    "message": "This device has been removed from your account",
+                }
+            )
             await websocket.close(code=4003)
             return
 
@@ -170,29 +193,37 @@ async def _process_clipboard_message(
         if not is_noop:
             launch_background_push(user_id=user_id, exclude_device=device_id)
 
-        await websocket.send_json({
-            "type": "ack",
-            "id": msg_id,
-        })
+        await websocket.send_json(
+            {
+                "type": "ack",
+                "id": msg_id,
+            }
+        )
     except HTTPException as exc:
         if exc.status_code == 409:
-            await websocket.send_json({
-                "type": "error",
-                "id": msg_id,
-                "code": "conflict",
-                "message": exc.detail,
-            })
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "id": msg_id,
+                    "code": "conflict",
+                    "message": exc.detail,
+                }
+            )
         else:
-            await websocket.send_json({
-                "type": "error",
-                "message": exc.detail,
-            })
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": exc.detail,
+                }
+            )
     except Exception as exc:
         logger.error(f"Error processing websocket clipboard item: {exc}")
-        await websocket.send_json({
-            "type": "error",
-            "message": "Internal error processing clipboard item",
-        })
+        await websocket.send_json(
+            {
+                "type": "error",
+                "message": "Internal error processing clipboard item",
+            }
+        )
     finally:
         session.close()
 

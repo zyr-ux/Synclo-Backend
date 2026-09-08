@@ -28,19 +28,22 @@ def get_db():
     finally:
         db.close()
 
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
     to_encode.setdefault("epoch", 1)
-    expire = datetime.now(timezone.utc) + expires_delta if expires_delta else datetime.now(timezone.utc) + timedelta(minutes=15)
+    expire = (
+        datetime.now(timezone.utc) + expires_delta
+        if expires_delta
+        else datetime.now(timezone.utc) + timedelta(minutes=15)
+    )
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+
 def create_refresh_token(
-    db: Session,
-    user_id: str,
-    device_id: str,
-    token_id: Optional[str] = None
+    db: Session, user_id: str, device_id: str, token_id: Optional[str] = None
 ) -> str:
     plain_refresh_token = token_urlsafe(64)
     hashed_refresh = hash_refresh_token(plain_refresh_token)
@@ -49,17 +52,22 @@ def create_refresh_token(
     if token_id is None:
         token_id = str(uuid4())
 
-    db.add(RefreshToken(
-        user_id=user_id,
-        token=hashed_refresh,
-        expiry=refresh_expiry,
-        device_id=device_id,
-        token_id=token_id,
-        is_revoked=False
-    ))
+    db.add(
+        RefreshToken(
+            user_id=user_id,
+            token=hashed_refresh,
+            expiry=refresh_expiry,
+            device_id=device_id,
+            token_id=token_id,
+            is_revoked=False,
+        )
+    )
     return plain_refresh_token
 
-def get_auth_context(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> AuthContext:
+
+def get_auth_context(
+    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
+) -> AuthContext:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired token",
@@ -78,17 +86,17 @@ def get_auth_context(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
         if db.query(BlacklistedToken).filter_by(token=token).first():
             raise HTTPException(status_code=401, detail="Token has been revoked")
-        
+
         user = db.query(User).filter(User.email == email).first()
         if user is None:
             raise credentials_exception
-        
+
         if epoch != user.session_epoch:
             raise HTTPException(status_code=401, detail="Session revoked, please re-authenticate")
-        
+
         if not db.query(Device).filter_by(user_id=user.user_id, device_id=device_id).first():
             raise HTTPException(status_code=403, detail="Unauthorized device")
-        
+
         return AuthContext(user=user, device_id=device_id)
 
     except JWTError:

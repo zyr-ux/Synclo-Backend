@@ -58,10 +58,18 @@ def test_create_and_fetch_clipboard_item(client, auth_headers):
 
 def test_get_latest_clipboard_skips_deleted_tombstones(client, auth_headers):
     # 1. Create an older active item
-    client.post("/api/v1/clipboard", json=make_clipboard_payload("item_older", timestamp="2026-08-01T10:00:00Z"), headers=auth_headers)
+    client.post(
+        "/api/v1/clipboard",
+        json=make_clipboard_payload("item_older", timestamp="2026-08-01T10:00:00Z"),
+        headers=auth_headers,
+    )
 
     # 2. Create a newer item
-    client.post("/api/v1/clipboard", json=make_clipboard_payload("item_newer", timestamp="2026-08-01T11:00:00Z"), headers=auth_headers)
+    client.post(
+        "/api/v1/clipboard",
+        json=make_clipboard_payload("item_newer", timestamp="2026-08-01T11:00:00Z"),
+        headers=auth_headers,
+    )
 
     # 3. Delete the newer item
     client.delete("/api/v1/clipboard/item_newer", headers=auth_headers)
@@ -83,12 +91,16 @@ def test_get_latest_clipboard_skips_deleted_tombstones(client, auth_headers):
 
 def test_pinned_clipboard_preserved_on_bulk_delete(client, auth_headers):
     # 1. Create regular unpinned item
-    client.post("/api/v1/clipboard",
-                json=make_clipboard_payload("item_unpinned"), headers=auth_headers)
+    client.post(
+        "/api/v1/clipboard", json=make_clipboard_payload("item_unpinned"), headers=auth_headers
+    )
 
     # 2. Create pinned item
-    client.post("/api/v1/clipboard",
-                json=make_clipboard_payload("item_pinned", is_pinned=True), headers=auth_headers)
+    client.post(
+        "/api/v1/clipboard",
+        json=make_clipboard_payload("item_pinned", is_pinned=True),
+        headers=auth_headers,
+    )
 
     # 3. Bulk delete all
     res_del = client.delete("/api/v1/clipboard", headers=auth_headers)
@@ -104,12 +116,22 @@ def test_pinned_clipboard_preserved_on_bulk_delete(client, auth_headers):
 
 
 def test_bulk_delete_broadcasts_tombstones_for_unpinned_items(client, auth_headers, mocker):
-    mock_broadcast = mocker.patch("app.endpoints.clipboard_endpoints.manager.broadcast_to_user", new_callable=mocker.AsyncMock)
+    mock_broadcast = mocker.patch(
+        "app.endpoints.clipboard_endpoints.manager.broadcast_to_user", new_callable=mocker.AsyncMock
+    )
 
     # Create 2 unpinned items and 1 pinned item
-    client.post("/api/v1/clipboard", json=make_clipboard_payload("unpinned_1"), headers=auth_headers)
-    client.post("/api/v1/clipboard", json=make_clipboard_payload("unpinned_2"), headers=auth_headers)
-    client.post("/api/v1/clipboard", json=make_clipboard_payload("pinned_1", is_pinned=True), headers=auth_headers)
+    client.post(
+        "/api/v1/clipboard", json=make_clipboard_payload("unpinned_1"), headers=auth_headers
+    )
+    client.post(
+        "/api/v1/clipboard", json=make_clipboard_payload("unpinned_2"), headers=auth_headers
+    )
+    client.post(
+        "/api/v1/clipboard",
+        json=make_clipboard_payload("pinned_1", is_pinned=True),
+        headers=auth_headers,
+    )
 
     mock_broadcast.reset_mock()
 
@@ -119,7 +141,11 @@ def test_bulk_delete_broadcasts_tombstones_for_unpinned_items(client, auth_heade
 
     # Verify broadcast messages were sent for the 2 unpinned items
     assert mock_broadcast.call_count == 2
-    broadcasted_ids = {call.kwargs.get("message", {}).get("id") or (call.args[1].get("id") if len(call.args) > 1 else None) for call in mock_broadcast.call_args_list}
+    broadcasted_ids = {
+        call.kwargs.get("message", {}).get("id")
+        or (call.args[1].get("id") if len(call.args) > 1 else None)
+        for call in mock_broadcast.call_args_list
+    }
     assert broadcasted_ids == {"unpinned_1", "unpinned_2"}
 
     for call in mock_broadcast.call_args_list:
@@ -130,8 +156,11 @@ def test_bulk_delete_broadcasts_tombstones_for_unpinned_items(client, auth_heade
 
 
 def test_single_delete_soft_deletes_and_unpins(client, auth_headers):
-    client.post("/api/v1/clipboard",
-                json=make_clipboard_payload("pinned_to_delete", is_pinned=True), headers=auth_headers)
+    client.post(
+        "/api/v1/clipboard",
+        json=make_clipboard_payload("pinned_to_delete", is_pinned=True),
+        headers=auth_headers,
+    )
 
     # Delete single item directly
     res_del = client.delete("/api/v1/clipboard/pinned_to_delete", headers=auth_headers)
@@ -155,9 +184,16 @@ def test_pinned_at_timestamp_preservation_and_sync(client, auth_headers):
     # Add pinned item with explicit pinned_at
     custom_pinned_at = "2026-08-20T10:00:00Z"
     clip_id = "pin_ts_custom"
-    res = client.post("/api/v1/clipboard", json=make_clipboard_payload(
-        clip_id, is_pinned=True, pinned_at=custom_pinned_at, timestamp="2026-08-20T08:00:00Z",
-    ), headers=auth_headers)
+    res = client.post(
+        "/api/v1/clipboard",
+        json=make_clipboard_payload(
+            clip_id,
+            is_pinned=True,
+            pinned_at=custom_pinned_at,
+            timestamp="2026-08-20T08:00:00Z",
+        ),
+        headers=auth_headers,
+    )
     assert res.status_code == 200
 
     # Sync endpoint should return the item with is_pinned=True and matching pinned_at
@@ -176,9 +212,7 @@ def test_pin_and_unpin_clipboard_item(client, auth_headers):
 
     # 1. Pin item
     res_pin = client.patch(
-        f"/api/v1/clipboard/{clip_id}/pin",
-        json={"is_pinned": True},
-        headers=auth_headers
+        f"/api/v1/clipboard/{clip_id}/pin", json={"is_pinned": True}, headers=auth_headers
     )
     assert res_pin.status_code == 200
     data_pin = res_pin.json()
@@ -196,9 +230,7 @@ def test_pin_and_unpin_clipboard_item(client, auth_headers):
 
     # 3. Unpin item
     res_unpin = client.patch(
-        f"/api/v1/clipboard/{clip_id}/pin",
-        json={"is_pinned": False},
-        headers=auth_headers
+        f"/api/v1/clipboard/{clip_id}/pin", json={"is_pinned": False}, headers=auth_headers
     )
     assert res_unpin.status_code == 200
     data_unpin = res_unpin.json()
@@ -215,9 +247,7 @@ def test_pin_and_unpin_clipboard_item(client, auth_headers):
 
 def test_pin_non_existent_item_returns_404(client, auth_headers):
     res = client.patch(
-        "/api/v1/clipboard/non_existent_id/pin",
-        json={"is_pinned": True},
-        headers=auth_headers
+        "/api/v1/clipboard/non_existent_id/pin", json={"is_pinned": True}, headers=auth_headers
     )
     assert res.status_code == 404
     assert res.json()["detail"] == "Clipboard entry not found"
@@ -229,9 +259,7 @@ def test_pin_deleted_item_returns_400(client, auth_headers):
     client.delete(f"/api/v1/clipboard/{clip_id}", headers=auth_headers)
 
     res = client.patch(
-        f"/api/v1/clipboard/{clip_id}/pin",
-        json={"is_pinned": True},
-        headers=auth_headers
+        f"/api/v1/clipboard/{clip_id}/pin", json={"is_pinned": True}, headers=auth_headers
     )
     assert res.status_code == 400
     assert "Cannot pin or unpin a deleted clipboard entry" in res.json()["detail"]
@@ -246,9 +274,7 @@ def test_pin_item_user_isolation(client, user_factory):
 
     # User 2 tries to pin User 1's item
     res = client.patch(
-        f"/api/v1/clipboard/{clip_id}/pin",
-        json={"is_pinned": True},
-        headers=user2["headers"]
+        f"/api/v1/clipboard/{clip_id}/pin", json={"is_pinned": True}, headers=user2["headers"]
     )
     assert res.status_code == 404
 
@@ -280,15 +306,13 @@ def test_clipboard_read_and_delete_user_isolation(client, user_factory):
     assert item1["is_deleted"] is False
 
 
-
-
 def test_conflict_stale_write_rejected(client, auth_headers):
     clip_id = "clip_conflict_lww_1"
     # Write at T2
     res1 = client.post(
         "/api/v1/clipboard",
         json=make_clipboard_payload(clip_id, timestamp="2026-09-04T12:00:00Z"),
-        headers=auth_headers
+        headers=auth_headers,
     )
     assert res1.status_code == 200
 
@@ -296,7 +320,7 @@ def test_conflict_stale_write_rejected(client, auth_headers):
     res2 = client.post(
         "/api/v1/clipboard",
         json=make_clipboard_payload(clip_id, timestamp="2026-09-04T11:00:00Z"),
-        headers=auth_headers
+        headers=auth_headers,
     )
     assert res2.status_code == 409
     assert "write rejected" in res2.json()["detail"].lower()
@@ -316,7 +340,7 @@ def test_tombstone_cannot_be_resurrected_by_older_write(client, auth_headers):
     res_write = client.post(
         "/api/v1/clipboard",
         json=make_clipboard_payload(clip_id, timestamp="2026-09-04T12:00:00Z"),
-        headers=auth_headers
+        headers=auth_headers,
     )
     assert res_write.status_code == 409
     assert "cannot resurrect" in res_write.json()["detail"].lower()
@@ -336,7 +360,7 @@ def test_tombstone_resurrected_by_newer_write(client, auth_headers):
     res_write = client.post(
         "/api/v1/clipboard",
         json=make_clipboard_payload(clip_id, timestamp="2026-09-04T12:00:00Z"),
-        headers=auth_headers
+        headers=auth_headers,
     )
     assert res_write.status_code == 200
 
@@ -363,19 +387,25 @@ def test_equal_timestamp_same_device_collision_rejected(client, auth_user):
 def test_equal_timestamp_different_device_tie_breaker(client, user_factory):
     user = user_factory()
     # Register dev_alpha and dev_beta
-    r_alpha = client.post("/api/v1/login", json={
-        "email": user["email"],
-        "auth_key": user["auth_key"],
-        "device_id": "dev_alpha",
-    })
+    r_alpha = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "dev_alpha",
+        },
+    )
     token_alpha = r_alpha.json()["access_token"]
     headers_alpha = {"Authorization": f"Bearer {token_alpha}"}
 
-    r_beta = client.post("/api/v1/login", json={
-        "email": user["email"],
-        "auth_key": user["auth_key"],
-        "device_id": "dev_beta",
-    })
+    r_beta = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "dev_beta",
+        },
+    )
     token_beta = r_beta.json()["access_token"]
     headers_beta = {"Authorization": f"Bearer {token_beta}"}
 
@@ -401,7 +431,7 @@ def test_equal_timestamp_different_device_tie_breaker(client, user_factory):
 
 def test_clipboard_payload_length_and_version_validation(client, auth_headers):
     import base64
-    from app.core.constants import MAX_CIPHERTEXT_LEN, MIN_NONCE_LEN, MAX_NONCE_LEN
+    from app.core.constants import MAX_CIPHERTEXT_LEN, MAX_NONCE_LEN
 
     valid_ciphertext = base64.b64encode(b"normal ciphertext payload").decode()
     valid_nonce = base64.b64encode(b"12345678").decode()  # 8 bytes -> 12 base64 chars
@@ -414,7 +444,9 @@ def test_clipboard_payload_length_and_version_validation(client, auth_headers):
         "blob_version": 1,
         "timestamp": "2026-09-04T12:00:00Z",
     }
-    res_short_nonce = client.post("/api/v1/clipboard", json=payload_short_nonce, headers=auth_headers)
+    res_short_nonce = client.post(
+        "/api/v1/clipboard", json=payload_short_nonce, headers=auth_headers
+    )
     assert res_short_nonce.status_code == 422
 
     # 2. Nonce too long (> MAX_NONCE_LEN)
@@ -447,7 +479,9 @@ def test_clipboard_payload_length_and_version_validation(client, auth_headers):
         "blob_version": 99,
         "timestamp": "2026-09-04T12:00:00Z",
     }
-    res_invalid_blob = client.post("/api/v1/clipboard", json=payload_invalid_blob, headers=auth_headers)
+    res_invalid_blob = client.post(
+        "/api/v1/clipboard", json=payload_invalid_blob, headers=auth_headers
+    )
     assert res_invalid_blob.status_code == 422
 
     # 5. Valid bounds accepted
@@ -462,7 +496,9 @@ def test_clipboard_payload_length_and_version_validation(client, auth_headers):
     assert res_valid.status_code == 200
 
 
-def test_duplicate_write_noop_suppresses_broadcast_and_push(client, user_factory, monkeypatch, db_session):
+def test_duplicate_write_noop_suppresses_broadcast_and_push(
+    client, user_factory, monkeypatch, db_session
+):
     from unittest.mock import MagicMock, AsyncMock
     from tests.conftest import make_clipboard_payload
     from app.websockets.connection_manager import manager
@@ -503,5 +539,3 @@ def test_duplicate_write_noop_suppresses_broadcast_and_push(client, user_factory
     assert entry_after.entry_revision == rev_before
     assert entry_after.change_number == change_before
     assert entry_after.updated_at == updated_at_before
-
-

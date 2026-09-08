@@ -12,7 +12,6 @@ Scenarios Targeted:
 8. Hard account deletion via 'DELETE /api/v1/delete' and immediate token invalidation (401).
 """
 
-import pytest
 from tests.conftest import generate_random_base64
 
 
@@ -45,13 +44,16 @@ def test_user_registration_success(client):
     assert data["username"] == "tester"
 
     # Verify login returns TokenWithE2EE containing kdf_version and keys
-    login_res = client.post("/api/v1/login", json={
-        "email": email,
-        "auth_key": auth_key,
-        "device_id": "device_test_02",
-        "device_name": "Phone",
-        "os": "Android",
-    })
+    login_res = client.post(
+        "/api/v1/login",
+        json={
+            "email": email,
+            "auth_key": auth_key,
+            "device_id": "device_test_02",
+            "device_name": "Phone",
+            "os": "Android",
+        },
+    )
     assert login_res.status_code == 200
     login_data = login_res.json()
     assert login_data["kdf_version"] == 1
@@ -69,7 +71,7 @@ def test_device_id_can_be_shared_by_different_users(client, user_factory):
 
 
 def test_duplicate_user_registration_fails(client, user_factory):
-    u = user_factory(email="dup@synclo.app")
+    user_factory(email="dup@synclo.app")
 
     # Try registering again with the same email
     payload = {
@@ -126,7 +128,7 @@ def test_update_username(client, auth_user):
 
 def test_update_email_flow(client, user_factory):
     user_a = user_factory(email="user_a@synclo.app")
-    user_b = user_factory(email="user_b@synclo.app")
+    user_factory(email="user_b@synclo.app")
 
     # 1. Same email rejection -> 400
     res_same = client.put(
@@ -168,27 +170,36 @@ def test_login_with_invalid_credentials_fails(client, user_factory):
 
     # 1. Invalid auth_key (wrong password key) -> 401
     wrong_key = generate_random_base64(32)
-    res_wrong_pw = client.post("/api/v1/login", json={
-        "email": email,
-        "auth_key": wrong_key,
-        "device_id": "test_dev",
-    })
+    res_wrong_pw = client.post(
+        "/api/v1/login",
+        json={
+            "email": email,
+            "auth_key": wrong_key,
+            "device_id": "test_dev",
+        },
+    )
     assert res_wrong_pw.status_code == 401
 
     # 2. Non-existent email -> 401
-    res_no_user = client.post("/api/v1/login", json={
-        "email": "non_existent_user_999@synclo.app",
-        "auth_key": u["auth_key"],
-        "device_id": "test_dev",
-    })
+    res_no_user = client.post(
+        "/api/v1/login",
+        json={
+            "email": "non_existent_user_999@synclo.app",
+            "auth_key": u["auth_key"],
+            "device_id": "test_dev",
+        },
+    )
     assert res_no_user.status_code == 401
 
     # 3. Malformed base64 auth_key -> 401
-    res_bad_b64 = client.post("/api/v1/login", json={
-        "email": email,
-        "auth_key": "not-valid-base64!",
-        "device_id": "test_dev",
-    })
+    res_bad_b64 = client.post(
+        "/api/v1/login",
+        json={
+            "email": email,
+            "auth_key": "not-valid-base64!",
+            "device_id": "test_dev",
+        },
+    )
     assert res_bad_b64.status_code == 401
 
 
@@ -237,11 +248,14 @@ def test_password_change_increments_epoch_and_invalidates_all_tokens(client, use
     user = user_factory()
 
     # Log in as Device 2
-    dev2_res = client.post("/api/v1/login", json={
-        "email": user["email"],
-        "auth_key": user["auth_key"],
-        "device_id": "dev_epoch_2",
-    })
+    dev2_res = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "dev_epoch_2",
+        },
+    )
     token_dev2 = dev2_res.json()["access_token"]
     headers_dev2 = {"Authorization": f"Bearer {token_dev2}"}
 
@@ -261,9 +275,7 @@ def test_password_change_increments_epoch_and_invalidates_all_tokens(client, use
         "new_recovery_key_verifier": generate_random_base64(32),
     }
     res_change = client.post(
-        "/api/v1/password/change",
-        json=change_payload,
-        headers=user["headers"]
+        "/api/v1/password/change", json=change_payload, headers=user["headers"]
     )
     assert res_change.status_code == 200
 
@@ -296,11 +308,14 @@ def test_token_without_epoch_claim_rejected(client, auth_user):
 
 def test_password_change_revokes_all_device_refresh_tokens(client, user_factory):
     user = user_factory()
-    dev2_res = client.post("/api/v1/login", json={
-        "email": user["email"],
-        "auth_key": user["auth_key"],
-        "device_id": "dev_pw_revoke_2",
-    })
+    dev2_res = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "dev_pw_revoke_2",
+        },
+    )
     assert dev2_res.status_code == 200
     dev2_refresh_token = dev2_res.json()["refresh_token"]
 
@@ -316,9 +331,7 @@ def test_password_change_revokes_all_device_refresh_tokens(client, user_factory)
         "new_recovery_key_verifier": generate_random_base64(32),
     }
     res_change = client.post(
-        "/api/v1/password/change",
-        json=change_payload,
-        headers=user["headers"]
+        "/api/v1/password/change", json=change_payload, headers=user["headers"]
     )
     assert res_change.status_code == 200
 
@@ -330,11 +343,14 @@ def test_password_change_revokes_all_device_refresh_tokens(client, user_factory)
 
 def test_email_change_revokes_other_device_refresh_tokens(client, user_factory):
     user = user_factory()
-    dev2_res = client.post("/api/v1/login", json={
-        "email": user["email"],
-        "auth_key": user["auth_key"],
-        "device_id": "dev_email_revoke_2",
-    })
+    dev2_res = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "dev_email_revoke_2",
+        },
+    )
     assert dev2_res.status_code == 200
 
     res_change = client.put(
@@ -396,6 +412,7 @@ def test_concurrent_refresh_token_race(client, tmp_path):
     app.dependency_overrides[get_db] = get_test_db
 
     try:
+
         def do_refresh():
             return client.post("/api/v1/refresh", json={"refresh_token": raw_token})
 
@@ -422,9 +439,7 @@ def test_logout_with_another_users_refresh_token_does_not_affect_victim(client, 
 
     # User A tries to log out passing User B's refresh token
     res = client.post(
-        "/api/v1/logout",
-        json={"refresh_token": user_b["refresh_token"]},
-        headers=user_a["headers"]
+        "/api/v1/logout", json={"refresh_token": user_b["refresh_token"]}, headers=user_a["headers"]
     )
     assert res.status_code == 200
 
@@ -448,7 +463,10 @@ def test_get_auth_context_structure_and_no_monkey_patching(client, auth_user, db
     assert auth_ctx.device_id == expected_device_id
 
     # Invariant: No monkey-patching of current_device_id on SQLAlchemy User instance
-    assert not hasattr(auth_ctx.user, "current_device_id") or getattr(auth_ctx.user, "current_device_id", None) is None
+    assert (
+        not hasattr(auth_ctx.user, "current_device_id")
+        or getattr(auth_ctx.user, "current_device_id", None) is None
+    )
 
 
 def test_logout_revokes_token_and_detects_reuse(client, user_factory, db_session):
@@ -466,9 +484,7 @@ def test_logout_revokes_token_and_detects_reuse(client, user_factory, db_session
 
     # 2. Call logout
     res_logout = client.post(
-        "/api/v1/logout",
-        json={"refresh_token": refresh_token},
-        headers=user["headers"]
+        "/api/v1/logout", json={"refresh_token": refresh_token}, headers=user["headers"]
     )
     assert res_logout.status_code == 200
     assert res_logout.json()["message"] == "Logged out successfully"
@@ -480,10 +496,7 @@ def test_logout_revokes_token_and_detects_reuse(client, user_factory, db_session
     assert token_record_after.is_revoked is True
 
     # 4. Attempt to reuse the logged-out refresh token -> triggers reuse detection
-    res_reuse = client.post(
-        "/api/v1/refresh",
-        json={"refresh_token": refresh_token}
-    )
+    res_reuse = client.post("/api/v1/refresh", json={"refresh_token": refresh_token})
     assert res_reuse.status_code == 401
     assert "Refresh token reused" in res_reuse.json()["detail"]
 
@@ -502,7 +515,7 @@ def test_logging_redacts_emails():
         lineno=1,
         msg="WebSocket connection attempted for user: secret_user@example.com",
         args=(),
-        exc_info=None
+        exc_info=None,
     )
     redactor.filter(record1)
     assert "secret_user@example.com" not in record1.msg
@@ -516,7 +529,7 @@ def test_logging_redacts_emails():
         lineno=1,
         msg="Authentication failure for %s",
         args=("another_user@domain.co.uk",),
-        exc_info=None
+        exc_info=None,
     )
     redactor.filter(record2)
     assert "another_user@domain.co.uk" not in record2.msg
@@ -524,16 +537,18 @@ def test_logging_redacts_emails():
 
     # Direct helper test
     from app.utilities.helpers import RedactingFilter
-    assert RedactingFilter.redact("Contact us at support@synclo.internal for help") == "Contact us at [REDACTED] for help"
+
+    assert (
+        RedactingFilter.redact("Contact us at support@synclo.internal for help")
+        == "Contact us at [REDACTED] for help"
+    )
     assert RedactingFilter.redact(123) == 123
 
 
 def test_schema_field_bounds_validation(client, auth_headers):
     # 1. DeviceRename: device_name max_length=128 (129 chars should fail)
     res_rename = client.patch(
-        "/api/v1/devices/dev-1",
-        json={"device_name": "A" * 129},
-        headers=auth_headers
+        "/api/v1/devices/dev-1", json={"device_name": "A" * 129}, headers=auth_headers
     )
     assert res_rename.status_code == 422
 
@@ -547,7 +562,7 @@ def test_schema_field_bounds_validation(client, auth_headers):
             "new_salt": "valid_salt",
             "new_kdf_version": 1,
         },
-        headers=auth_headers
+        headers=auth_headers,
     )
     assert res_pwd.status_code == 422
 
@@ -561,7 +576,7 @@ def test_schema_field_bounds_validation(client, auth_headers):
             "new_salt": "valid_salt",
             "new_kdf_version": 101,
         },
-        headers=auth_headers
+        headers=auth_headers,
     )
     assert res_kdf.status_code == 422
 
@@ -577,7 +592,7 @@ def test_schema_field_bounds_validation(client, auth_headers):
             "new_recovery_wrapped_master_key": "new_rwmk",
             "new_recovery_key_verifier": "new_rkv",
             "device_id": "new_dev",
-        }
+        },
     )
     assert res_recover.status_code == 422
 
@@ -591,7 +606,9 @@ def test_all_mutating_endpoints_enforce_rate_limiting():
         if not isinstance(route, APIRoute):
             continue
         # Check all sensitive write endpoints under /api/v1
-        if route.path.startswith("/api/v1") and route.methods.intersection({"POST", "PUT", "PATCH", "DELETE"}):
+        if route.path.startswith("/api/v1") and route.methods.intersection(
+            {"POST", "PUT", "PATCH", "DELETE"}
+        ):
             has_limiter = any(
                 "RateLimiter" in getattr(dep.dependency, "__name__", "")
                 or "RateLimiter" in type(dep.dependency).__name__
@@ -601,10 +618,6 @@ def test_all_mutating_endpoints_enforce_rate_limiting():
             if not has_limiter:
                 unprotected_routes.append(f"{route.methods} {route.path}")
 
-    assert not unprotected_routes, f"Sensitive endpoints missing RateLimiter dependency: {unprotected_routes}"
-
-
-
-
-
-
+    assert not unprotected_routes, (
+        f"Sensitive endpoints missing RateLimiter dependency: {unprotected_routes}"
+    )

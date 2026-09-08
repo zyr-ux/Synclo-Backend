@@ -19,8 +19,15 @@ if DATABASE_URL.startswith("sqlite"):
 
         Path(db_file_str).parent.mkdir(parents=True, exist_ok=True)
 
-connect_args = {"check_same_thread": False, "timeout": 30.0} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args) if connect_args else create_engine(DATABASE_URL)
+connect_args = (
+    {"check_same_thread": False, "timeout": 30.0} if DATABASE_URL.startswith("sqlite") else {}
+)
+engine = (
+    create_engine(DATABASE_URL, connect_args=connect_args)
+    if connect_args
+    else create_engine(DATABASE_URL)
+)
+
 
 def configure_sqlite_engine(target_engine) -> None:
     if target_engine.dialect.name != "sqlite":
@@ -59,7 +66,6 @@ def is_sqlite_lock_error(exc: BaseException) -> bool:
     return "database is locked" in message or "database is busy" in message or "busy" in message
 
 
-
 def run_in_write_transaction(
     db: Session,
     fn: Callable[[], T],
@@ -82,7 +88,7 @@ def run_in_write_transaction(
         except (sqlite3.OperationalError, SAOperationalError) as exc:
             db.rollback()
             if is_sqlite and is_sqlite_lock_error(exc) and attempt + 1 < attempts:
-                time.sleep(min(base_delay * (2 ** attempt), max_delay))
+                time.sleep(min(base_delay * (2**attempt), max_delay))
                 continue
             raise
         except Exception:
@@ -114,7 +120,7 @@ async def async_run_in_write_transaction(
         except (sqlite3.OperationalError, SAOperationalError) as exc:
             db.rollback()
             if is_sqlite and is_sqlite_lock_error(exc) and attempt + 1 < attempts:
-                await asyncio.sleep(min(base_delay * (2 ** attempt), max_delay))
+                await asyncio.sleep(min(base_delay * (2**attempt), max_delay))
                 continue
             raise
         except Exception:

@@ -36,7 +36,10 @@ def test_http_request_metrics_recorded(client):
 
     metrics_res = client.get("/metrics")
     assert metrics_res.status_code == 200
-    assert "http_requests_total" in metrics_res.text or "http_request_duration_seconds" in metrics_res.text
+    assert (
+        "http_requests_total" in metrics_res.text
+        or "http_request_duration_seconds" in metrics_res.text
+    )
 
 
 @pytest.mark.asyncio
@@ -55,7 +58,10 @@ async def test_websocket_active_connections_and_event_metrics():
     assert ACTIVE_WEBSOCKETS._value.get() == ws_gauge_before + 1
 
     await manager.broadcast_to_user(user_id, {"type": "clipboard_sync", "id": "test-sync-1"})
-    assert WEBSOCKET_EVENTS_TOTAL.labels(event_type="clipboard_sync")._value.get() == events_counter_before + 1
+    assert (
+        WEBSOCKET_EVENTS_TOTAL.labels(event_type="clipboard_sync")._value.get()
+        == events_counter_before + 1
+    )
 
     manager.disconnect(user_id, device_id)
     assert user_id not in manager.active_connections
@@ -76,14 +82,22 @@ async def test_push_service_metrics_recording():
     async def mock_stream(*args, **kwargs):
         resp = MagicMock()
         resp.status_code = 200
+
         async def aiter():
             yield b""
+
         resp.aiter_bytes = aiter
         yield resp
 
     from app.services.push_service import EndpointValidationResult, EndpointValidationStatus
 
-    with patch("app.services.push_service._validate_endpoint_and_resolve", new_callable=AsyncMock, return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("push.example.com", "1.2.3.4", 443))):
+    with patch(
+        "app.services.push_service._validate_endpoint_and_resolve",
+        new_callable=AsyncMock,
+        return_value=EndpointValidationResult(
+            EndpointValidationStatus.VALID, details=("push.example.com", "1.2.3.4", 443)
+        ),
+    ):
         with patch.object(httpx.AsyncClient, "stream", side_effect=mock_stream):
             success = await push_service.send_push_notification(
                 device_id="dev-push-1",
@@ -95,7 +109,9 @@ async def test_push_service_metrics_recording():
         success_after = PUSH_DISPATCHES_TOTAL.labels(status="success")._value.get()
         assert success_after == success_before + 1
 
-        with patch.object(httpx.AsyncClient, "stream", side_effect=httpx.TimeoutException("Timeout")):
+        with patch.object(
+            httpx.AsyncClient, "stream", side_effect=httpx.TimeoutException("Timeout")
+        ):
             success = await push_service.send_push_notification(
                 device_id="dev-push-2",
                 endpoint="https://push.example.com/timeout",

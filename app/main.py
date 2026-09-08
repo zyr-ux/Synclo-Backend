@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
     try:
         from alembic.config import Config
         from alembic import command
-        
+
         alembic_cfg = Config("alembic.ini")
         alembic_cfg.set_main_option("sqlalchemy.url", Settings.DATABASE_URL)
         command.upgrade(alembic_cfg, "head")
@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
     manager.set_redis(redis)
     await manager.start_listener()
     await push_service.start()
-    
+
     cleanup_task = asyncio.create_task(periodic_cleanup())
     app.state.cleanup_task = cleanup_task
 
@@ -173,7 +173,9 @@ async def internal_exception_handler(request: Request, exc: Exception):
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    logger.warning(f"HTTPException: {exc.status_code} - {exc.detail} at {request.method} {request.url.path}")
+    logger.warning(
+        f"HTTPException: {exc.status_code} - {exc.detail} at {request.method} {request.url.path}"
+    )
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail},
@@ -183,11 +185,5 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.get("/api/health")
 def health_check():
     return JSONResponse(
-        content={
-            "status": "ok",
-            "server": "synclo"
-        },
-        headers={
-            "Synclo-Server": "genuine"
-        }
+        content={"status": "ok", "server": "synclo"}, headers={"Synclo-Server": "genuine"}
     )

@@ -13,7 +13,6 @@ Scenarios Targeted:
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from unittest.mock import patch, AsyncMock
-import pytest
 
 from app.core.config import Settings
 from app.models.models import Clipboard, User
@@ -22,7 +21,6 @@ from tests.conftest import generate_random_base64
 
 
 def test_age_based_pruning_soft_deletes_expired_items(client, auth_user, db_session):
-    headers = auth_user["headers"]
     user = db_session.query(User).filter_by(email=auth_user["email"]).first()
     user_id = user.user_id
 
@@ -41,7 +39,7 @@ def test_age_based_pruning_soft_deletes_expired_items(client, auth_user, db_sess
         timestamp=old_time,
         updated_at=old_time,
         is_deleted=False,
-        is_pinned=False
+        is_pinned=False,
     )
     db_session.add(old_item)
 
@@ -56,7 +54,7 @@ def test_age_based_pruning_soft_deletes_expired_items(client, auth_user, db_sess
         timestamp=recent_time,
         updated_at=recent_time,
         is_deleted=False,
-        is_pinned=False
+        is_pinned=False,
     )
     db_session.add(recent_item)
     db_session.commit()
@@ -98,7 +96,7 @@ def test_pinned_items_immune_to_age_based_pruning(client, auth_user, db_session)
         updated_at=old_time,
         is_deleted=False,
         is_pinned=True,
-        pinned_at=old_time
+        pinned_at=old_time,
     )
     db_session.add(pinned_item)
     db_session.commit()
@@ -132,13 +130,15 @@ def test_unpinning_grants_fresh_lifecycle_grace_period(client, auth_user, db_ses
         updated_at=created_time,
         is_deleted=False,
         is_pinned=True,
-        pinned_at=created_time
+        pinned_at=created_time,
     )
     db_session.add(item)
     db_session.commit()
 
     # 2. Unpin the item via API (which updates updated_at to now)
-    unpin_res = client.patch(f"/api/v1/clipboard/{cid}/pin", json={"is_pinned": False}, headers=headers)
+    unpin_res = client.patch(
+        f"/api/v1/clipboard/{cid}/pin", json={"is_pinned": False}, headers=headers
+    )
     assert unpin_res.status_code == 200
 
     # 3. Run pruning with 30-day retention
@@ -169,7 +169,7 @@ def test_update_clipboard_resets_updated_at_and_extends_retention(client, auth_u
         timestamp=old_time,
         updated_at=old_time,
         is_deleted=False,
-        is_pinned=False
+        is_pinned=False,
     )
     db_session.add(item)
     db_session.commit()
@@ -181,7 +181,7 @@ def test_update_clipboard_resets_updated_at_and_extends_retention(client, auth_u
         "nonce": generate_random_base64(12),
         "blob_version": 1,
         "timestamp": now.isoformat(),
-        "is_pinned": False
+        "is_pinned": False,
     }
     update_res = client.post("/api/v1/clipboard", json=new_payload, headers=headers)
     assert update_res.status_code == 200
@@ -214,7 +214,7 @@ def test_zero_retention_days_disables_pruning(client, auth_user, db_session):
         timestamp=old_time,
         updated_at=old_time,
         is_deleted=False,
-        is_pinned=False
+        is_pinned=False,
     )
     db_session.add(item)
     db_session.commit()
@@ -245,7 +245,7 @@ def test_write_clipboard_triggers_age_pruning_and_broadcast(client, auth_user, d
         timestamp=old_time,
         updated_at=old_time,
         is_deleted=False,
-        is_pinned=False
+        is_pinned=False,
     )
     db_session.add(expired_item)
     db_session.commit()
@@ -258,16 +258,22 @@ def test_write_clipboard_triggers_age_pruning_and_broadcast(client, auth_user, d
         "nonce": generate_random_base64(12),
         "blob_version": 1,
         "timestamp": now.isoformat(),
-        "is_pinned": False
+        "is_pinned": False,
     }
 
-    with patch("app.endpoints.clipboard_endpoints.manager.broadcast_to_user", new_callable=AsyncMock) as mock_broadcast:
+    with patch(
+        "app.endpoints.clipboard_endpoints.manager.broadcast_to_user", new_callable=AsyncMock
+    ) as mock_broadcast:
         res = client.post("/api/v1/clipboard", json=payload, headers=headers)
         assert res.status_code == 200
 
         # Broadcast should have been called for the tombstone
-        called_messages = [call.kwargs.get("message") or call.args[1] for call in mock_broadcast.call_args_list]
-        tombstone_events = [m for m in called_messages if m.get("id") == expired_id and m.get("is_deleted") is True]
+        called_messages = [
+            call.kwargs.get("message") or call.args[1] for call in mock_broadcast.call_args_list
+        ]
+        tombstone_events = [
+            m for m in called_messages if m.get("id") == expired_id and m.get("is_deleted") is True
+        ]
         assert len(tombstone_events) >= 1
 
     # Verify expired item is tombstoned
@@ -285,29 +291,33 @@ def test_prune_all_users_clipboard_maintenance(client, auth_user, db_session):
 
     # Add 3 old items and 2 fresh items
     for _ in range(3):
-        db_session.add(Clipboard(
-            clipboard_id=str(uuid4()),
-            user_id=user_id,
-            ciphertext=b"old_stuff",
-            nonce=b"nonce_bytes_12",
-            blob_version=1,
-            timestamp=old_time,
-            updated_at=old_time,
-            is_deleted=False,
-            is_pinned=False
-        ))
+        db_session.add(
+            Clipboard(
+                clipboard_id=str(uuid4()),
+                user_id=user_id,
+                ciphertext=b"old_stuff",
+                nonce=b"nonce_bytes_12",
+                blob_version=1,
+                timestamp=old_time,
+                updated_at=old_time,
+                is_deleted=False,
+                is_pinned=False,
+            )
+        )
     for _ in range(2):
-        db_session.add(Clipboard(
-            clipboard_id=str(uuid4()),
-            user_id=user_id,
-            ciphertext=b"fresh_stuff",
-            nonce=b"nonce_bytes_12",
-            blob_version=1,
-            timestamp=now,
-            updated_at=now,
-            is_deleted=False,
-            is_pinned=False
-        ))
+        db_session.add(
+            Clipboard(
+                clipboard_id=str(uuid4()),
+                user_id=user_id,
+                ciphertext=b"fresh_stuff",
+                nonce=b"nonce_bytes_12",
+                blob_version=1,
+                timestamp=now,
+                updated_at=now,
+                is_deleted=False,
+                is_pinned=False,
+            )
+        )
     db_session.commit()
 
     prune_all_users_clipboard(db_session, retention_days=30)
@@ -319,6 +329,7 @@ def test_prune_all_users_clipboard_maintenance(client, auth_user, db_session):
 
 def test_cleanup_old_tombstones(auth_user, db_session):
     from app.utilities.helpers import cleanup_old_tombstones
+
     user = db_session.query(User).filter_by(email=auth_user["email"]).first()
     user_id = user.user_id
 
@@ -328,48 +339,54 @@ def test_cleanup_old_tombstones(auth_user, db_session):
 
     # 1. Expired tombstone (deleted 35 days ago, should be hard purged)
     expired_id = str(uuid4())
-    db_session.add(Clipboard(
-        clipboard_id=expired_id,
-        user_id=user_id,
-        ciphertext=None,
-        nonce=None,
-        blob_version=1,
-        timestamp=expired_deleted_at,
-        updated_at=expired_deleted_at,
-        is_deleted=True,
-        deleted_at=expired_deleted_at,
-        is_pinned=False,
-    ))
+    db_session.add(
+        Clipboard(
+            clipboard_id=expired_id,
+            user_id=user_id,
+            ciphertext=None,
+            nonce=None,
+            blob_version=1,
+            timestamp=expired_deleted_at,
+            updated_at=expired_deleted_at,
+            is_deleted=True,
+            deleted_at=expired_deleted_at,
+            is_pinned=False,
+        )
+    )
 
     # 2. Recent tombstone (deleted 5 days ago, must be preserved)
     recent_id = str(uuid4())
-    db_session.add(Clipboard(
-        clipboard_id=recent_id,
-        user_id=user_id,
-        ciphertext=None,
-        nonce=None,
-        blob_version=1,
-        timestamp=recent_deleted_at,
-        updated_at=recent_deleted_at,
-        is_deleted=True,
-        deleted_at=recent_deleted_at,
-        is_pinned=False,
-    ))
+    db_session.add(
+        Clipboard(
+            clipboard_id=recent_id,
+            user_id=user_id,
+            ciphertext=None,
+            nonce=None,
+            blob_version=1,
+            timestamp=recent_deleted_at,
+            updated_at=recent_deleted_at,
+            is_deleted=True,
+            deleted_at=recent_deleted_at,
+            is_pinned=False,
+        )
+    )
 
     # 3. Active unpinned item
     active_id = str(uuid4())
-    db_session.add(Clipboard(
-        clipboard_id=active_id,
-        user_id=user_id,
-        ciphertext=b"active_data",
-        nonce=b"nonce_bytes_12",
-        blob_version=1,
-        timestamp=now,
-        updated_at=now,
-        is_deleted=False,
-        deleted_at=None,
-        is_pinned=False,
-    ))
+    db_session.add(
+        Clipboard(
+            clipboard_id=active_id,
+            user_id=user_id,
+            ciphertext=b"active_data",
+            nonce=b"nonce_bytes_12",
+            blob_version=1,
+            timestamp=now,
+            updated_at=now,
+            is_deleted=False,
+            deleted_at=None,
+            is_pinned=False,
+        )
+    )
     db_session.commit()
 
     success = cleanup_old_tombstones(db_session)
@@ -385,7 +402,10 @@ def test_cleanup_old_tombstones(auth_user, db_session):
 
 def test_cleanup_expired_tokens(auth_user, db_session):
     from app.models.models import BlacklistedToken, RefreshToken
-    from app.utilities.helpers import cleanup_expired_blacklisted_tokens, cleanup_expired_refresh_tokens
+    from app.utilities.helpers import (
+        cleanup_expired_blacklisted_tokens,
+        cleanup_expired_refresh_tokens,
+    )
 
     user = db_session.query(User).filter_by(email=auth_user["email"]).first()
     user_id = user.user_id
@@ -399,22 +419,26 @@ def test_cleanup_expired_tokens(auth_user, db_session):
     db_session.add(BlacklistedToken(token="valid_bl_token", expiry=valid_time))
 
     # Refresh tokens
-    db_session.add(RefreshToken(
-        token="expired_rf_token",
-        user_id=user_id,
-        device_id="dev_1",
-        token_id="tok_1",
-        expiry=expired_time,
-        is_revoked=False,
-    ))
-    db_session.add(RefreshToken(
-        token="valid_rf_token",
-        user_id=user_id,
-        device_id="dev_1",
-        token_id="tok_2",
-        expiry=valid_time,
-        is_revoked=False,
-    ))
+    db_session.add(
+        RefreshToken(
+            token="expired_rf_token",
+            user_id=user_id,
+            device_id="dev_1",
+            token_id="tok_1",
+            expiry=expired_time,
+            is_revoked=False,
+        )
+    )
+    db_session.add(
+        RefreshToken(
+            token="valid_rf_token",
+            user_id=user_id,
+            device_id="dev_1",
+            token_id="tok_2",
+            expiry=valid_time,
+            is_revoked=False,
+        )
+    )
     db_session.commit()
 
     assert cleanup_expired_blacklisted_tokens(db_session) is True
@@ -432,4 +456,3 @@ def test_run_all_cleanup_orchestration(auth_user, db_session):
     result = run_all_cleanup(db_session)
     assert result.failures == 0
     assert isinstance(result.tombstones, list)
-

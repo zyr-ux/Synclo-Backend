@@ -1,4 +1,3 @@
-
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -8,12 +7,17 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.models.models import Clipboard, User
-from app.schemas.schemas import ClipboardIn, ClipboardOut, ClipboardPinUpdate, ClipboardSyncResponse, AuthContext
-from app.core.database import async_run_in_write_transaction, run_in_write_transaction
+from app.schemas.schemas import (
+    ClipboardIn,
+    ClipboardOut,
+    ClipboardPinUpdate,
+    ClipboardSyncResponse,
+    AuthContext,
+)
+from app.core.database import async_run_in_write_transaction
 from app.services.auth import get_db, get_auth_context
 from app.services.clipboard_service import (
     allocate_batch_sync_sequence,
-
     soft_delete_clipboard,
     update_pin_status,
     upsert_clipboard,
@@ -58,7 +62,11 @@ async def sync_clipboard(
     return {"status": ret_status, "id": entry.clipboard_id}
 
 
-@router.get("/clipboard", response_model=ClipboardOut, dependencies=[Depends(RateLimiter(times=30, seconds=60))])
+@router.get(
+    "/clipboard",
+    response_model=ClipboardOut,
+    dependencies=[Depends(RateLimiter(times=30, seconds=60))],
+)
 def get_clipboard(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(get_auth_context),
@@ -77,7 +85,11 @@ def get_clipboard(
     return clipboard_to_response(entry)
 
 
-@router.get("/clipboard/all", response_model=List[ClipboardOut], dependencies=[Depends(RateLimiter(times=20, seconds=60))])
+@router.get(
+    "/clipboard/all",
+    response_model=List[ClipboardOut],
+    dependencies=[Depends(RateLimiter(times=20, seconds=60))],
+)
 def get_clipboard_all(
     include_deleted: bool = False,
     limit: int = Query(default=100, ge=1, le=500),
@@ -96,7 +108,11 @@ def get_clipboard_all(
     return [clipboard_to_response(entry) for entry in entries]
 
 
-@router.get("/clipboard/sync", response_model=ClipboardSyncResponse, dependencies=[Depends(RateLimiter(times=20, seconds=60))])
+@router.get(
+    "/clipboard/sync",
+    response_model=ClipboardSyncResponse,
+    dependencies=[Depends(RateLimiter(times=20, seconds=60))],
+)
 def get_sync_clipboard(
     since_change_number: Optional[int] = Query(None, ge=0),
     since: Optional[datetime] = Query(None),
@@ -114,7 +130,9 @@ def get_sync_clipboard(
         if since:
             since_utc = ensure_utc(since)
             if since_utc < cutoff:
-                raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
+                raise HTTPException(
+                    status_code=410, detail="Sync state expired. Please wipe local data and resync."
+                )
 
         oldest_entry = (
             db.query(Clipboard.change_number, Clipboard.updated_at)
@@ -124,10 +142,14 @@ def get_sync_clipboard(
         )
         if oldest_entry is not None:
             if since_change_number > 0 and since_change_number < oldest_entry.change_number - 1:
-                raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
+                raise HTTPException(
+                    status_code=410, detail="Sync state expired. Please wipe local data and resync."
+                )
         else:
             if (current_user.sync_sequence or 0) > since_change_number:
-                raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
+                raise HTTPException(
+                    status_code=410, detail="Sync state expired. Please wipe local data and resync."
+                )
 
         entries = (
             db.query(Clipboard)
@@ -141,7 +163,9 @@ def get_sync_clipboard(
         )
 
         if since_change_number > 0 and entries and ensure_utc(entries[0].updated_at) < cutoff:
-            raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
+            raise HTTPException(
+                status_code=410, detail="Sync state expired. Please wipe local data and resync."
+            )
 
         has_more = len(entries) > limit
         if has_more:
@@ -164,7 +188,9 @@ def get_sync_clipboard(
         retention_days = Settings.TOMBSTONE_RETENTION_DAYS
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         if since_utc < cutoff:
-            raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
+            raise HTTPException(
+                status_code=410, detail="Sync state expired. Please wipe local data and resync."
+            )
         query = query.filter(Clipboard.updated_at > since_utc)
 
     total_count = query.count()
@@ -179,7 +205,11 @@ def get_sync_clipboard(
     }
 
 
-@router.get("/clipboard/{clipboard_id}", response_model=ClipboardOut, dependencies=[Depends(RateLimiter(times=30, seconds=60))])
+@router.get(
+    "/clipboard/{clipboard_id}",
+    response_model=ClipboardOut,
+    dependencies=[Depends(RateLimiter(times=30, seconds=60))],
+)
 def get_clipboard_by_id(
     clipboard_id: str,
     db: Session = Depends(get_db),
@@ -193,7 +223,11 @@ def get_clipboard_by_id(
     return clipboard_to_response(entry)
 
 
-@router.patch("/clipboard/{clipboard_id}/pin", response_model=ClipboardOut, dependencies=[Depends(RateLimiter(times=30, seconds=60))])
+@router.patch(
+    "/clipboard/{clipboard_id}/pin",
+    response_model=ClipboardOut,
+    dependencies=[Depends(RateLimiter(times=30, seconds=60))],
+)
 async def pin_clipboard_item(
     clipboard_id: str,
     data: ClipboardPinUpdate,
@@ -213,7 +247,9 @@ async def pin_clipboard_item(
     return clipboard_to_response(entry)
 
 
-@router.delete("/clipboard/{clipboard_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+@router.delete(
+    "/clipboard/{clipboard_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))]
+)
 async def delete_clipboard_item(
     clipboard_id: str,
     db: Session = Depends(get_db),
@@ -269,11 +305,16 @@ async def delete_clipboard_history(
             entry.change_number = start_seq + index
             entry.entry_revision = (entry.entry_revision or 0) + 1
             entry.last_device_id = caller_device_id
-            deleted_items.append(make_tombstone_payload(
-                clipboard_id=entry.clipboard_id, blob_version=entry.blob_version,
-                timestamp=now, change_number=entry.change_number,
-                entry_revision=entry.entry_revision, last_device_id=caller_device_id,
-            ))
+            deleted_items.append(
+                make_tombstone_payload(
+                    clipboard_id=entry.clipboard_id,
+                    blob_version=entry.blob_version,
+                    timestamp=now,
+                    change_number=entry.change_number,
+                    entry_revision=entry.entry_revision,
+                    last_device_id=caller_device_id,
+                )
+            )
         return deleted_items, len(active_entries)
 
     deleted_items, deleted_count = await async_run_in_write_transaction(db, mutate)

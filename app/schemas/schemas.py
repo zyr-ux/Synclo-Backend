@@ -20,14 +20,15 @@ class AuthContext:
     device_id: Optional[str] = None
 
 
-
 class DeviceRegister(BaseModel):
     device_id: str = Field(..., min_length=1, max_length=128)
     device_name: str = Field(..., min_length=1, max_length=128)
     os: Optional[str] = Field(None, max_length=32)
 
+
 class DeviceRename(BaseModel):
     device_name: str = Field(..., min_length=1, max_length=128)
+
 
 class DeviceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -38,6 +39,7 @@ class DeviceOut(BaseModel):
     last_seen: Optional[datetime] = None
     is_online: bool = False
     push_enabled: bool = False
+
 
 class PushSubscription(BaseModel):
     push_subscription: str = Field(..., max_length=512)
@@ -51,14 +53,14 @@ class PushSubscription(BaseModel):
         parsed = urlparse(v)
         if not parsed.scheme or not parsed.netloc:
             raise ValueError("Invalid URL format")
-        
+
         if parsed.scheme == "http":
             is_local = parsed.hostname in LOOPBACK_HOSTS
             if Settings.HTTPS_ONLY and not is_local:
                 raise ValueError("Push endpoint must use HTTPS when HTTPS_ONLY is enabled")
         elif parsed.scheme != "https":
             raise ValueError("Push endpoint must use HTTPS or HTTP")
-            
+
         return v
 
 
@@ -85,6 +87,7 @@ class ClipboardIn(BaseModel):
         if v is None:
             return None
         import base64
+
         try:
             base64.b64decode(v, validate=True)
         except Exception:
@@ -100,6 +103,7 @@ class ClipboardIn(BaseModel):
         if not self.is_deleted and self.ciphertext is None:
             raise ValueError("ciphertext cannot be null for active clipboard entries")
         return self
+
 
 class ClipboardOut(BaseModel):
     id: str
@@ -122,17 +126,18 @@ class ClipboardPinUpdate(BaseModel):
     pinned_at: Optional[datetime] = None
 
 
-
 class Token(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
     username: Optional[str] = None
 
+
 class TokenWithE2EE(Token):
     encrypted_master_key: str
     salt: str
     kdf_version: int
+
 
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -150,8 +155,10 @@ class UserWithE2EE(BaseModel):
     salt: str
     kdf_version: int
 
+
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
+
 
 class UserLoginWithDevice(BaseModel):
     email: EmailStr
@@ -159,6 +166,7 @@ class UserLoginWithDevice(BaseModel):
     device_id: str = Field(..., min_length=1, max_length=128)
     device_name: Optional[str] = Field(None, max_length=128)
     os: Optional[str] = Field(None, max_length=32)
+
 
 class UserRegisterWithDevice(BaseModel):
     email: EmailStr
@@ -173,9 +181,11 @@ class UserRegisterWithDevice(BaseModel):
     recovery_wrapped_master_key: str = Field(..., max_length=2048)
     recovery_key_verifier: str = Field(..., max_length=512)
 
+
 class SessionInfo(BaseModel):
     device_id: str
     expiry: datetime
+
 
 class PasswordChange(BaseModel):
     old_auth_key: str = Field(..., max_length=512)
@@ -186,11 +196,14 @@ class PasswordChange(BaseModel):
     new_recovery_wrapped_master_key: Optional[str] = Field(None, max_length=2048)
     new_recovery_key_verifier: Optional[str] = Field(None, max_length=512)
 
+
 class RecoveryMaterialRequest(BaseModel):
     email: EmailStr
 
+
 class RecoveryMaterialResponse(BaseModel):
     recovery_wrapped_master_key: str = Field(..., max_length=2048)
+
 
 class AccountRecoveryRequest(BaseModel):
     email: EmailStr
@@ -205,13 +218,16 @@ class AccountRecoveryRequest(BaseModel):
     device_name: Optional[str] = Field("Recovered Device", max_length=128)
     os: Optional[str] = Field(None, max_length=32)
 
+
 class RecoveryKeyRotateRequest(BaseModel):
     new_recovery_wrapped_master_key: str = Field(..., max_length=2048)
     new_recovery_key_verifier: str = Field(..., max_length=512)
 
+
 class SaltResponse(BaseModel):
     salt: str
     kdf_version: int
+
 
 class ClipboardSyncResponse(BaseModel):
     entries: List[ClipboardOut]
@@ -235,4 +251,3 @@ class EmailUpdateResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
-

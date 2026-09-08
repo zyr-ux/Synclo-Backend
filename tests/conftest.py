@@ -1,23 +1,30 @@
-import sys
-import os
-
-# Prevent creation of bytecode (.pyc) files and __pycache__ directories
-sys.dont_write_bytecode = True
-os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
-
 import base64
 import datetime
+import os
+import sys
 import time
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock
+
+import fastapi_limiter
+import fastapi_limiter.depends
 import pytest
+import redis.asyncio
 from fastapi import Request, Response
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-# 1. Early Mocking of Redis and FastAPILimiter
-mock_redis_module = MagicMock()
+from app.core.database import SessionLocal, configure_sqlite_engine
+from app.main import app
+from app.models.models import Base
+from app.services.auth import get_db
+
+# Prevent creation of bytecode (.pyc) files and __pycache__ directories
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
+# Early Mocking of Redis and FastAPILimiter
 mock_redis_client = AsyncMock()
 
 mock_pubsub = MagicMock()
@@ -25,9 +32,11 @@ mock_pubsub.psubscribe = AsyncMock()
 mock_pubsub.subscribe = AsyncMock()
 mock_pubsub.close = AsyncMock()
 
+
 async def _empty_async_iter():
     if False:
         yield None
+
 
 mock_pubsub.listen.return_value = _empty_async_iter()
 mock_redis_client.pubsub = MagicMock(return_value=mock_pubsub)
@@ -35,28 +44,16 @@ mock_lock = AsyncMock()
 mock_lock.acquire = AsyncMock(return_value=False)
 mock_lock.release = AsyncMock(return_value=True)
 mock_redis_client.lock = MagicMock(return_value=mock_lock)
-mock_redis_module.Redis.from_url.return_value = mock_redis_client
-sys.modules["redis.asyncio"] = mock_redis_module
+redis.asyncio.Redis.from_url = MagicMock(return_value=mock_redis_client)
 
-mock_limiter = MagicMock()
-mock_limiter.FastAPILimiter.init = AsyncMock()
-sys.modules["fastapi_limiter"] = mock_limiter
+fastapi_limiter.FastAPILimiter.init = AsyncMock()
 
-class MockRateLimiter:
-    def __init__(self, times=1, seconds=1, **kwargs):
-        pass
 
-    async def __call__(self, request: Request, response: Response):
-        pass
+async def _mock_rate_limiter_call(self, request: Request, response: Response):
+    return None
 
-mock_limiter_depends = MagicMock()
-mock_limiter_depends.RateLimiter = MockRateLimiter
-sys.modules["fastapi_limiter.depends"] = mock_limiter_depends
 
-from app.main import app
-from app.models.models import Base
-from app.services.auth import get_db
-from app.core.database import SessionLocal, configure_sqlite_engine
+fastapi_limiter.depends.RateLimiter.__call__ = _mock_rate_limiter_call
 
 
 @pytest.fixture(scope="session")
@@ -94,6 +91,7 @@ def db_session(engine):
 @pytest.fixture
 def client(db_session):
     from unittest.mock import patch
+
     app.dependency_overrides[get_db] = lambda: db_session
     with patch("alembic.command.upgrade"):
         with TestClient(app) as test_client:
@@ -104,6 +102,7 @@ def client(db_session):
 @pytest.fixture
 def user_factory(client):
     """Helper factory to register unique test users."""
+
     def _create_user(
         email=None,
         username="testuser",
@@ -177,6 +176,7 @@ def auth_headers(auth_user):
 
 # Helper Fixtures
 
+
 @pytest.fixture
 def random_base64():
     """Provides factory function to generate random base64 strings."""
@@ -196,6 +196,7 @@ def clip_payload():
 
 
 # Helper Functions
+
 
 def generate_random_base64(length=32):
     """Generate a random base64-encoded string of the given byte length."""

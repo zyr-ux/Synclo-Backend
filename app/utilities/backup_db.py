@@ -11,6 +11,7 @@ from typing import Optional
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass
@@ -19,9 +20,9 @@ except ImportError:
 def get_default_source_db() -> Path:
     db_url = os.environ.get("DATABASE_URL", "sqlite:///./data/synclo.db")
     if db_url.startswith("sqlite:///./"):
-        return Path(db_url[len("sqlite:///./"):])
+        return Path(db_url[len("sqlite:///./") :])
     elif db_url.startswith("sqlite:///"):
-        return Path(db_url[len("sqlite:///"):])
+        return Path(db_url[len("sqlite:///") :])
     return Path("data/synclo.db")
 
 
@@ -73,7 +74,9 @@ def perform_backup(
 
     backup_dir.mkdir(parents=True, exist_ok=True)
     timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    temp_fd, temp_path_str = tempfile.mkstemp(prefix="synclo_backup_", suffix=".tmp", dir=str(backup_dir))
+    temp_fd, temp_path_str = tempfile.mkstemp(
+        prefix="synclo_backup_", suffix=".tmp", dir=str(backup_dir)
+    )
     # Close file handle before SQLite opens the database on Windows
     os.close(temp_fd)
     temp_path = Path(temp_path_str)
@@ -97,7 +100,10 @@ def perform_backup(
             try:
                 from cryptography.fernet import Fernet
             except ImportError:
-                print("ERROR: 'cryptography' package is required for encrypted backups.", file=sys.stderr)
+                print(
+                    "ERROR: 'cryptography' package is required for encrypted backups.",
+                    file=sys.stderr,
+                )
                 if temp_path.exists():
                     temp_path.unlink()
                 return None
@@ -107,13 +113,15 @@ def perform_backup(
             with open(temp_path, "rb") as f:
                 raw_bytes = f.read()
             encrypted_bytes = cipher.encrypt(raw_bytes)
-            
+
             final_filename = f"synclo_backup_{timestamp_str}.db.enc"
             final_path = backup_dir / final_filename
             with open(final_path, "wb") as f:
                 f.write(encrypted_bytes)
             temp_path.unlink()
-            print(f"SUCCESS: Encrypted backup created: {final_path} ({final_path.stat().st_size} bytes)")
+            print(
+                f"SUCCESS: Encrypted backup created: {final_path} ({final_path.stat().st_size} bytes)"
+            )
         else:
             print(
                 "NOTICE: BACKUP_ENCRYPTION_KEY is unset. Creating unencrypted .db snapshot.\n"
@@ -123,7 +131,9 @@ def perform_backup(
             final_filename = f"synclo_backup_{timestamp_str}.db"
             final_path = backup_dir / final_filename
             shutil.move(str(temp_path), str(final_path))
-            print(f"SUCCESS: Unencrypted backup created: {final_path} ({final_path.stat().st_size} bytes)")
+            print(
+                f"SUCCESS: Unencrypted backup created: {final_path} ({final_path.stat().st_size} bytes)"
+            )
 
         try:
             os.chmod(final_path, 0o600)
@@ -161,12 +171,17 @@ def restore_backup(
         if is_encrypted:
             encryption_key = key or os.environ.get("BACKUP_ENCRYPTION_KEY")
             if not encryption_key:
-                print("ERROR: BACKUP_ENCRYPTION_KEY is required to restore an encrypted backup (.db.enc).", file=sys.stderr)
+                print(
+                    "ERROR: BACKUP_ENCRYPTION_KEY is required to restore an encrypted backup (.db.enc).",
+                    file=sys.stderr,
+                )
                 return False
             try:
                 from cryptography.fernet import Fernet
             except ImportError:
-                print("ERROR: 'cryptography' package is required to decrypt backup.", file=sys.stderr)
+                print(
+                    "ERROR: 'cryptography' package is required to decrypt backup.", file=sys.stderr
+                )
                 return False
 
             print(f"Decrypting {backup_file.name} for restoration test...")
@@ -187,18 +202,24 @@ def restore_backup(
         print("Integrity check PASSED.")
 
         if verify_only:
-            print(f"SUCCESS: Verification successful. Sandbox database verified without modifying {target_db}.")
+            print(
+                f"SUCCESS: Verification successful. Sandbox database verified without modifying {target_db}."
+            )
             return True
 
         print(f"Restoring database to target location: {target_db}...")
         target_db.parent.mkdir(parents=True, exist_ok=True)
         if target_db.exists():
-            safety_copy = target_db.with_suffix(f".pre_restore_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}")
+            safety_copy = target_db.with_suffix(
+                f".pre_restore_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+            )
             print(f"Saving pre-restore safety copy: {safety_copy}")
             shutil.copy2(str(target_db), str(safety_copy))
 
         shutil.copy2(str(sandbox_db), str(target_db))
-        print(f"SUCCESS: Database restored successfully to {target_db} ({target_db.stat().st_size} bytes).")
+        print(
+            f"SUCCESS: Database restored successfully to {target_db} ({target_db.stat().st_size} bytes)."
+        )
         return True
 
     except Exception as exc:
@@ -213,11 +234,20 @@ def main():
         description="Synclo transaction-safe SQLite database backup and recovery utility."
     )
     parser.add_argument("--source", type=Path, default=None, help="Path to source SQLite database")
-    parser.add_argument("--dest", type=Path, default=None, help="Destination directory for backups (defaults to BACKUP_DIR or data/backups)")
+    parser.add_argument(
+        "--dest",
+        type=Path,
+        default=None,
+        help="Destination directory for backups (defaults to BACKUP_DIR or data/backups)",
+    )
     parser.add_argument("--key", type=str, default=None, help="Fernet encryption key")
-    parser.add_argument("--retention-days", type=int, default=30, help="Backup retention period in days")
+    parser.add_argument(
+        "--retention-days", type=int, default=30, help="Backup retention period in days"
+    )
     parser.add_argument("--restore", type=Path, default=None, help="Path to backup file to restore")
-    parser.add_argument("--verify-restore", type=Path, default=None, help="Dry-run verify restore in sandbox")
+    parser.add_argument(
+        "--verify-restore", type=Path, default=None, help="Dry-run verify restore in sandbox"
+    )
     parser.add_argument("--target", type=Path, default=None, help="Target path for restore")
 
     args = parser.parse_args()

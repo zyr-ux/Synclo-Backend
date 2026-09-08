@@ -5,16 +5,15 @@ description = "Zero-Knowledge, real-time clipboard synchronization backend"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0" }
-authors = [
-    { name = "zyr-ux" }
-]
+authors = [{ name = "zyr-ux" }]
 
-keywords = ["clipboard", 
-            "synchronization", 
-            "fastapi", 
-            "zero-knowledge", 
-            "e2ee", 
-            "websockets"
+keywords = [
+    "clipboard",
+    "synchronization",
+    "fastapi",
+    "zero-knowledge",
+    "e2ee",
+    "websockets",
 ]
 
 classifiers = [
@@ -61,7 +60,24 @@ dev = [
     "pytest-cov>=5.0.0",
     "pytest-mock>=3.14.0",
     "httpx==0.28.1",
+    "ruff>=0.4.0",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [".git", ".venv", "alembic", "data", "logs"]
+
+[tool.ruff.lint]
+select = [
+    "E", # pycodestyle errors
+    "F", # Pyflakes
+    "W", # pycodestyle warnings
+]
+ignore = [
+    "E501", # line too long (handled gracefully, don't break CI for occasional long strings/comments)
+]
+
 
 [build-system]
 requires = ["setuptools>=61.0"]

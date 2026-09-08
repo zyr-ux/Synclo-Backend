@@ -24,7 +24,9 @@ def test_device_registration_and_list(client, auth_user):
         "device_name": "Pixel 8",
         "os": "Android 14",
     }
-    res_reg = client.post("/api/v1/devices/register", json=dev2_payload, headers=auth_user["headers"])
+    res_reg = client.post(
+        "/api/v1/devices/register", json=dev2_payload, headers=auth_user["headers"]
+    )
     assert res_reg.status_code == 200
     reg_data = res_reg.json()
     assert reg_data["device_id"] == "second_device_phone"
@@ -65,7 +67,7 @@ def test_device_online_presence_and_token_invalidation(client, user_factory):
     user = user_factory()
 
     # 1. Device 1 connects to WebSocket
-    with client.websocket_connect("/ws/v1/sync", headers=user["headers"]) as ws:
+    with client.websocket_connect("/ws/v1/sync", headers=user["headers"]):
         # Check presence -> is_online should be True
         res = client.get("/api/v1/devices", headers=user["headers"])
         assert res.status_code == 200
@@ -93,19 +95,26 @@ def test_remote_device_deletion_closes_websocket_with_code_4003(client, user_fac
     user = user_factory()
 
     # Register device 2
-    dev2_res = client.post("/api/v1/login", json={
-        "email": user["email"],
-        "auth_key": user["auth_key"],
-        "device_id": "dev_to_be_remotely_deleted",
-        "device_name": "Second Phone",
-        "os": "Android",
-    })
+    dev2_res = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "dev_to_be_remotely_deleted",
+            "device_name": "Second Phone",
+            "os": "Android",
+        },
+    )
     token_dev2 = dev2_res.json()["access_token"]
 
     # Device 2 connects to WebSocket
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}) as ws_dev2:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}
+    ) as ws_dev2:
         # Device 1 remotely deletes Device 2 via REST
-        res_del = client.delete("/api/v1/devices/dev_to_be_remotely_deleted", headers=user["headers"])
+        res_del = client.delete(
+            "/api/v1/devices/dev_to_be_remotely_deleted", headers=user["headers"]
+        )
         assert res_del.status_code == 200
 
         # Device 2 should receive 'device_deleted' message and then be disconnected with code 4003
@@ -123,7 +132,7 @@ def test_rename_device_success(client, auth_user):
     res = client.patch(
         f"/api/v1/devices/{dev_id}",
         json={"device_name": "Workstation Pro"},
-        headers=auth_user["headers"]
+        headers=auth_user["headers"],
     )
     assert res.status_code == 200
     data = res.json()
@@ -142,17 +151,13 @@ def test_rename_device_validation_errors(client, auth_user):
     dev_id = auth_user["device_id"]
     # Empty / whitespace-only name
     res_empty = client.patch(
-        f"/api/v1/devices/{dev_id}",
-        json={"device_name": "   "},
-        headers=auth_user["headers"]
+        f"/api/v1/devices/{dev_id}", json={"device_name": "   "}, headers=auth_user["headers"]
     )
     assert res_empty.status_code == 400
 
     # Overly long name (>128 chars rejected by schema or endpoint)
     res_long = client.patch(
-        f"/api/v1/devices/{dev_id}",
-        json={"device_name": "a" * 129},
-        headers=auth_user["headers"]
+        f"/api/v1/devices/{dev_id}", json={"device_name": "a" * 129}, headers=auth_user["headers"]
     )
     assert res_long.status_code == 422
 
@@ -162,7 +167,7 @@ def test_cannot_rename_other_user_device(client, auth_user, user_factory):
     res = client.patch(
         f"/api/v1/devices/{other_user['device_id']}",
         json={"device_name": "Hijacked Device"},
-        headers=auth_user["headers"]
+        headers=auth_user["headers"],
     )
     assert res.status_code == 404
 
@@ -171,7 +176,7 @@ def test_rename_non_existent_device(client, auth_user):
     res = client.patch(
         "/api/v1/devices/non_existent_device_id_123",
         json={"device_name": "Ghost Device"},
-        headers=auth_user["headers"]
+        headers=auth_user["headers"],
     )
     assert res.status_code == 404
 
@@ -183,27 +188,39 @@ def test_cross_user_shared_device_id_isolation(client, user_factory):
     shared_dev_id = "shared_family_pc"
 
     # 1. User A registers the shared device
-    res_a = client.post("/api/v1/devices/register", json={
-        "device_id": shared_dev_id,
-        "device_name": "User A Family PC",
-        "os": "Windows 11",
-    }, headers=user_a["headers"])
+    res_a = client.post(
+        "/api/v1/devices/register",
+        json={
+            "device_id": shared_dev_id,
+            "device_name": "User A Family PC",
+            "os": "Windows 11",
+        },
+        headers=user_a["headers"],
+    )
     assert res_a.status_code == 200
     assert res_a.json()["device_id"] == shared_dev_id
 
     # 2. User B registers the SAME device ID without conflict
-    res_b = client.post("/api/v1/devices/register", json={
-        "device_id": shared_dev_id,
-        "device_name": "User B Family PC",
-        "os": "Windows 11",
-    }, headers=user_b["headers"])
+    res_b = client.post(
+        "/api/v1/devices/register",
+        json={
+            "device_id": shared_dev_id,
+            "device_name": "User B Family PC",
+            "os": "Windows 11",
+        },
+        headers=user_b["headers"],
+    )
     assert res_b.status_code == 200
     assert res_b.json()["device_id"] == shared_dev_id
 
     # 3. User A renames their instance of the shared device
-    res_rename = client.patch(f"/api/v1/devices/{shared_dev_id}", json={
-        "device_name": "User A Renovated PC",
-    }, headers=user_a["headers"])
+    res_rename = client.patch(
+        f"/api/v1/devices/{shared_dev_id}",
+        json={
+            "device_name": "User A Renovated PC",
+        },
+        headers=user_a["headers"],
+    )
     assert res_rename.status_code == 200
     assert res_rename.json()["device_name"] == "User A Renovated PC"
 
@@ -221,12 +238,14 @@ def test_cross_user_shared_device_id_isolation(client, user_factory):
     assert any(d["device_id"] == shared_dev_id for d in list_b_after)
 
     # 5. User A can log in with the shared device ID again without conflict
-    login_a = client.post("/api/v1/login", json={
-        "email": user_a["email"],
-        "auth_key": user_a["auth_key"],
-        "device_id": shared_dev_id,
-        "device_name": "User A Logged In",
-        "os": "Windows 11",
-    })
+    login_a = client.post(
+        "/api/v1/login",
+        json={
+            "email": user_a["email"],
+            "auth_key": user_a["auth_key"],
+            "device_id": shared_dev_id,
+            "device_name": "User A Logged In",
+            "os": "Windows 11",
+        },
+    )
     assert login_a.status_code == 200
-

@@ -202,12 +202,15 @@ def test_account_recovery_revokes_old_sessions(client, user_factory):
     user = user_factory()
     dev1_refresh = user["refresh_token"]
 
-    login_dev2 = client.post("/api/v1/login", json={
-        "email": user["email"],
-        "auth_key": user["auth_key"],
-        "device_id": "dev_02",
-        "device_name": "Second Device",
-    })
+    login_dev2 = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "dev_02",
+            "device_name": "Second Device",
+        },
+    )
     assert login_dev2.status_code == 200
     dev2_refresh = login_dev2.json()["refresh_token"]
 
@@ -285,10 +288,13 @@ def test_manual_recovery_key_rotation_endpoint(client, user_factory):
 
 
 def test_manual_recovery_key_rotation_unauthenticated(client):
-    res = client.post("/api/v1/auth/recovery-key/rotate", json={
-        "new_recovery_wrapped_master_key": generate_random_base64(32),
-        "new_recovery_key_verifier": generate_random_base64(32),
-    })
+    res = client.post(
+        "/api/v1/auth/recovery-key/rotate",
+        json={
+            "new_recovery_wrapped_master_key": generate_random_base64(32),
+            "new_recovery_key_verifier": generate_random_base64(32),
+        },
+    )
     assert res.status_code == 401
 
 
@@ -317,31 +323,37 @@ def test_password_change_rotates_recovery_key_and_verifier(client, user_factory)
     assert res_mat.json()["recovery_wrapped_master_key"] == new_wrapped
 
     # Old verifier rejected
-    res_old = client.post("/api/v1/auth/recover", json={
-        "email": user["email"],
-        "recovery_key_verifier": old_verifier,
-        "new_auth_key": generate_random_base64(32),
-        "new_encrypted_master_key": generate_random_base64(32),
-        "new_salt": generate_random_base64(32),
-        "new_kdf_version": 1,
-        "new_recovery_wrapped_master_key": generate_random_base64(32),
-        "new_recovery_key_verifier": generate_random_base64(32),
-        "device_id": "dev_chk",
-    })
+    res_old = client.post(
+        "/api/v1/auth/recover",
+        json={
+            "email": user["email"],
+            "recovery_key_verifier": old_verifier,
+            "new_auth_key": generate_random_base64(32),
+            "new_encrypted_master_key": generate_random_base64(32),
+            "new_salt": generate_random_base64(32),
+            "new_kdf_version": 1,
+            "new_recovery_wrapped_master_key": generate_random_base64(32),
+            "new_recovery_key_verifier": generate_random_base64(32),
+            "device_id": "dev_chk",
+        },
+    )
     assert res_old.status_code == 401
 
     # New verifier accepted
-    res_new = client.post("/api/v1/auth/recover", json={
-        "email": user["email"],
-        "recovery_key_verifier": new_verifier,
-        "new_auth_key": generate_random_base64(32),
-        "new_encrypted_master_key": generate_random_base64(32),
-        "new_salt": generate_random_base64(32),
-        "new_kdf_version": 1,
-        "new_recovery_wrapped_master_key": generate_random_base64(32),
-        "new_recovery_key_verifier": generate_random_base64(32),
-        "device_id": "dev_chk",
-    })
+    res_new = client.post(
+        "/api/v1/auth/recover",
+        json={
+            "email": user["email"],
+            "recovery_key_verifier": new_verifier,
+            "new_auth_key": generate_random_base64(32),
+            "new_encrypted_master_key": generate_random_base64(32),
+            "new_salt": generate_random_base64(32),
+            "new_kdf_version": 1,
+            "new_recovery_wrapped_master_key": generate_random_base64(32),
+            "new_recovery_key_verifier": generate_random_base64(32),
+            "device_id": "dev_chk",
+        },
+    )
     assert res_new.status_code == 200
 
 
@@ -361,17 +373,20 @@ def test_password_change_preserves_recovery_key(client, user_factory):
     assert res.status_code == 200
 
     # Original verifier still valid for recovery
-    res_rec = client.post("/api/v1/auth/recover", json={
-        "email": user["email"],
-        "recovery_key_verifier": orig_verifier,
-        "new_auth_key": generate_random_base64(32),
-        "new_encrypted_master_key": generate_random_base64(32),
-        "new_salt": generate_random_base64(32),
-        "new_kdf_version": 1,
-        "new_recovery_wrapped_master_key": generate_random_base64(32),
-        "new_recovery_key_verifier": generate_random_base64(32),
-        "device_id": "dev_chk",
-    })
+    res_rec = client.post(
+        "/api/v1/auth/recover",
+        json={
+            "email": user["email"],
+            "recovery_key_verifier": orig_verifier,
+            "new_auth_key": generate_random_base64(32),
+            "new_encrypted_master_key": generate_random_base64(32),
+            "new_salt": generate_random_base64(32),
+            "new_kdf_version": 1,
+            "new_recovery_wrapped_master_key": generate_random_base64(32),
+            "new_recovery_key_verifier": generate_random_base64(32),
+            "device_id": "dev_chk",
+        },
+    )
     assert res_rec.status_code == 200
 
 
@@ -442,7 +457,9 @@ def test_recovery_disconnects_active_websockets(client, user_factory):
     user = user_factory()
     token = user["access_token"]
 
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}) as ws:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
         recover_payload = {
             "email": user["email"],
             "recovery_key_verifier": user["recovery_key_verifier"],

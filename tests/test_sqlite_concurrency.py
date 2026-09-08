@@ -48,9 +48,7 @@ def test_write_transaction_handles_shared_connection_across_sessions():
     with Session(engine) as second_session:
         run_in_write_transaction(
             second_session,
-            lambda: second_session.execute(
-                text("INSERT INTO values_table (value) VALUES (1)")
-            ),
+            lambda: second_session.execute(text("INSERT INTO values_table (value) VALUES (1)")),
         )
         assert second_session.execute(text("SELECT COUNT(*) FROM values_table")).scalar_one() == 1
 
@@ -87,6 +85,7 @@ def test_auth_write_transaction_retries_on_contention(monkeypatch):
 
     attempts = 0
     with Session(engine) as session:
+
         def mutate():
             nonlocal attempts
             attempts += 1
@@ -170,18 +169,24 @@ def test_file_backed_sqlite_concurrent_write_transactions(tmp_path):
     configure_sqlite_engine(engine)
 
     with Session(engine) as session:
-        session.execute(text("CREATE TABLE concurrent_test (id INTEGER PRIMARY KEY AUTOINCREMENT, worker_id INT)"))
+        session.execute(
+            text(
+                "CREATE TABLE concurrent_test (id INTEGER PRIMARY KEY AUTOINCREMENT, worker_id INT)"
+            )
+        )
         session.commit()
 
     num_workers = 10
 
     def worker(worker_id: int):
         with Session(engine) as worker_session:
+
             def mutate():
                 worker_session.execute(
                     text("INSERT INTO concurrent_test (worker_id) VALUES (:wid)"),
                     {"wid": worker_id},
                 )
+
             run_in_write_transaction(worker_session, mutate, max_retries=10, base_delay=0.01)
 
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
@@ -193,4 +198,3 @@ def test_file_backed_sqlite_concurrent_write_transactions(tmp_path):
         count = verify_session.execute(text("SELECT COUNT(*) FROM concurrent_test")).scalar_one()
         assert count == num_workers
     engine.dispose()
-

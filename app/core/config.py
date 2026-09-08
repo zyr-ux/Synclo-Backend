@@ -21,11 +21,16 @@ except Exception as _e:
 
 def _load_allowed_push_domains(file_path: str | None = None) -> set[str]:
     default_domains = {"ntfy.sh", "push.nextcloud.com", "up.kde.org", "unifiedpush.org"}
-    path = Path(file_path) if file_path else (Path(__file__).resolve().parents[1] / "utilities" / "push_providers.json")
+    path = (
+        Path(file_path)
+        if file_path
+        else (Path(__file__).resolve().parents[1] / "utilities" / "push_providers.json")
+    )
     if not path.exists():
         return default_domains
     try:
         import json
+
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
             domains = set(data.get("allowed_domains", []))
@@ -57,7 +62,9 @@ class Settings:
 
     REFRESH_TOKEN_HASH_KEY = os.getenv("REFRESH_TOKEN_HASH_KEY")
     if not REFRESH_TOKEN_HASH_KEY:
-        raise RuntimeError("REFRESH_TOKEN_HASH_KEY environment variable is required for refresh token HMAC")
+        raise RuntimeError(
+            "REFRESH_TOKEN_HASH_KEY environment variable is required for refresh token HMAC"
+        )
     if len(REFRESH_TOKEN_HASH_KEY) < 16:
         raise RuntimeError("REFRESH_TOKEN_HASH_KEY must be at least 16 characters long")
     REFRESH_TOKEN_HASH_KEY = REFRESH_TOKEN_HASH_KEY.encode("utf-8")
@@ -73,15 +80,23 @@ class Settings:
     HTTPS_ONLY = os.getenv("HTTPS_ONLY", "false").lower() in ("true", "1", "yes")
 
     ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
-    ALLOW_ARBITRARY_PUSH_ENDPOINTS = os.getenv("ALLOW_ARBITRARY_PUSH_ENDPOINTS", "false").lower() in ("true", "1", "yes")
-    ALLOW_LOCAL_PUSH_ENDPOINTS = os.getenv("ALLOW_LOCAL_PUSH_ENDPOINTS", "false").lower() in ("true", "1", "yes")
+    ALLOW_ARBITRARY_PUSH_ENDPOINTS = os.getenv(
+        "ALLOW_ARBITRARY_PUSH_ENDPOINTS", "false"
+    ).lower() in ("true", "1", "yes")
+    ALLOW_LOCAL_PUSH_ENDPOINTS = os.getenv("ALLOW_LOCAL_PUSH_ENDPOINTS", "false").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
     PUSH_PROVIDERS_FILE = os.getenv(
         "PUSH_PROVIDERS_FILE",
-        str(Path(__file__).resolve().parents[1] / "utilities" / "push_providers.json")
+        str(Path(__file__).resolve().parents[1] / "utilities" / "push_providers.json"),
     )
     ALLOWED_PUSH_DOMAINS = _load_allowed_push_domains(PUSH_PROVIDERS_FILE)
 
-    TRUSTED_PROXIES = [p.strip() for p in os.getenv("TRUSTED_PROXIES", "127.0.0.1,::1").split(",") if p.strip()]
+    TRUSTED_PROXIES = [
+        p.strip() for p in os.getenv("TRUSTED_PROXIES", "127.0.0.1,::1").split(",") if p.strip()
+    ]
 
     BACKUP_ENCRYPTION_KEY = os.getenv("BACKUP_ENCRYPTION_KEY", None)
     BACKUP_RETENTION_DAYS = int(os.getenv("BACKUP_RETENTION_DAYS", "30"))
@@ -92,4 +107,3 @@ class Settings:
             raise RuntimeError("ALLOW_ARBITRARY_PUSH_ENDPOINTS cannot be enabled in production")
         if ALLOW_LOCAL_PUSH_ENDPOINTS:
             raise RuntimeError("ALLOW_LOCAL_PUSH_ENDPOINTS cannot be enabled in production")
-

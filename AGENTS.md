@@ -64,7 +64,7 @@ Before editing any code, please review the **[ARCHITECTURE.md](file:///E:/Files/
 ### Rule 5: Rate Limiting & Safety
 *   **Apply Limiter:** Sensitive and write endpoints must use the `FastAPILimiter` dependency. Example:
   ```python
-  dependencies=[Depends(RateLimiter(times=30, seconds=60))]
+  dependencies = [Depends(RateLimiter(times=30, seconds=60))]
   ```
 
 ### Rule 6: Mobile Push Notifications (UnifiedPush)

@@ -16,7 +16,7 @@ from app.core.config import Settings
 
 def test_https_only_redirects_insecure_remote_http_requests(client, monkeypatch):
     monkeypatch.setattr(Settings, "HTTPS_ONLY", True)
-    
+
     response = client.get("http://api.synclo.com/api/health", follow_redirects=False)
     assert response.status_code == 307
     assert response.headers["Location"] == "https://api.synclo.com/api/health"
@@ -24,8 +24,10 @@ def test_https_only_redirects_insecure_remote_http_requests(client, monkeypatch)
 
 def test_https_only_accepts_reverse_proxied_https_requests(client, monkeypatch):
     monkeypatch.setattr(Settings, "HTTPS_ONLY", True)
-    
-    response = client.get("http://api.synclo.com/api/health", headers={"x-forwarded-proto": "https"})
+
+    response = client.get(
+        "http://api.synclo.com/api/health", headers={"x-forwarded-proto": "https"}
+    )
     assert response.status_code == 200
     assert "Strict-Transport-Security" in response.headers
     assert "max-age=31536000" in response.headers["Strict-Transport-Security"]
@@ -33,6 +35,7 @@ def test_https_only_accepts_reverse_proxied_https_requests(client, monkeypatch):
 
 def test_https_only_rejects_forwarded_proto_from_untrusted_proxy(client, monkeypatch):
     import app.main as app_main
+
     monkeypatch.setattr(Settings, "HTTPS_ONLY", True)
     monkeypatch.setattr(Settings, "TRUSTED_PROXIES", ["10.0.0.1"])
     monkeypatch.setattr(app_main, "LOOPBACK_HOSTS", frozenset({"localhost", "testserver"}))
@@ -47,10 +50,9 @@ def test_https_only_rejects_forwarded_proto_from_untrusted_proxy(client, monkeyp
     assert response.headers["Location"] == "https://api.synclo.com/api/health"
 
 
-
 def test_https_only_allows_loopback_without_hsts_on_plain_http(client, monkeypatch):
     monkeypatch.setattr(Settings, "HTTPS_ONLY", True)
-    
+
     # Loopback request over plain HTTP skips redirection and avoids poisoning HSTS cache
     response = client.get("/api/health")
     assert response.status_code == 200
@@ -59,7 +61,7 @@ def test_https_only_allows_loopback_without_hsts_on_plain_http(client, monkeypat
 
 def test_https_disabled_allows_insecure_http_and_omits_hsts(client, monkeypatch):
     monkeypatch.setattr(Settings, "HTTPS_ONLY", False)
-    
+
     response = client.get("http://192.168.1.50:8000/api/health", follow_redirects=False)
     assert response.status_code == 200
     assert "Strict-Transport-Security" not in response.headers
@@ -71,8 +73,7 @@ def test_websocket_insecure_rejected_when_https_only(client, monkeypatch, auth_u
 
     # When connecting from a remote non-loopback host over plain ws without x-forwarded-proto
     with client.websocket_connect(
-        "ws://remote.synclo.com/ws/v1/sync",
-        headers={"Authorization": f"Bearer {token}"}
+        "ws://remote.synclo.com/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
     ) as websocket:
         data = websocket.receive_json()
         assert data["type"] == "error"
@@ -91,6 +92,3 @@ def test_global_security_headers_present_on_all_http_responses(client):
     assert response.headers.get("X-Frame-Options") == "DENY"
     assert response.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
     assert response.headers.get("X-XSS-Protection") == "0"
-
-
-

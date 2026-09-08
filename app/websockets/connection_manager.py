@@ -13,6 +13,7 @@ from app.core.metrics import (
 
 logger = logging.getLogger("clipboard_sync")
 
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, Dict[str, WebSocket]] = {}
@@ -57,7 +58,9 @@ class ConnectionManager:
             try:
                 await self.redis.publish(self._channel(user_id), json.dumps(envelope))
             except Exception as exc:
-                WEBSOCKET_BROADCAST_FAILURES_TOTAL.labels(operation="disconnect_device_publish").inc()
+                WEBSOCKET_BROADCAST_FAILURES_TOTAL.labels(
+                    operation="disconnect_device_publish"
+                ).inc()
                 logger.warning("WebSocket device disconnect publication failed: %s", exc)
 
     async def _disconnect_device_local(self, user_id: str, device_id: str):
@@ -65,10 +68,12 @@ class ConnectionManager:
             ws = self.active_connections[user_id].get(device_id)
             if ws:
                 try:
-                    await ws.send_json({
-                        "type": "device_deleted",
-                        "message": "This device has been removed from your account"
-                    })
+                    await ws.send_json(
+                        {
+                            "type": "device_deleted",
+                            "message": "This device has been removed from your account",
+                        }
+                    )
                     await ws.close(code=4003)
                 except (RuntimeError, ConnectionError):
                     pass
@@ -126,7 +131,9 @@ class ConnectionManager:
     def is_device_online(self, user_id: str, device_id: str) -> bool:
         return device_id in self.get_user_devices(user_id)
 
-    async def broadcast_to_user(self, user_id: str, message: dict, exclude_device: Optional[str] = None):
+    async def broadcast_to_user(
+        self, user_id: str, message: dict, exclude_device: Optional[str] = None
+    ):
         event_type = message.get("type", "unknown") if isinstance(message, dict) else "unknown"
         WEBSOCKET_EVENTS_TOTAL.labels(event_type=event_type).inc()
 
@@ -145,7 +152,9 @@ class ConnectionManager:
                 WEBSOCKET_BROADCAST_FAILURES_TOTAL.labels(operation="broadcast_publish").inc()
                 logger.warning("WebSocket broadcast publication failed: %s", exc)
 
-    async def _broadcast_local(self, user_id: str, message: dict, exclude_device: Optional[str] = None):
+    async def _broadcast_local(
+        self, user_id: str, message: dict, exclude_device: Optional[str] = None
+    ):
         for device_id, ws in list(self.get_user_devices(user_id).items()):
             if device_id != exclude_device:
                 try:

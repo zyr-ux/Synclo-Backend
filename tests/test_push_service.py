@@ -17,8 +17,7 @@ Scenarios Targeted:
 
 import asyncio
 import contextlib
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -31,7 +30,6 @@ from app.services.push_service import (
     push_service,
     send_push_notification,
     dispatch_push_to_user_devices,
-    launch_background_push,
 )
 from tests.conftest import make_clipboard_payload
 
@@ -42,9 +40,7 @@ def test_register_push_subscription_success(client, auth_user, db_session):
 
     push_url = "https://ntfy.sh/up_synclo_test_device_1"
     res = client.put(
-        f"/api/v1/devices/{device_id}/push",
-        json={"push_subscription": push_url},
-        headers=headers
+        f"/api/v1/devices/{device_id}/push", json={"push_subscription": push_url}, headers=headers
     )
     assert res.status_code == 200
     data = res.json()
@@ -54,6 +50,7 @@ def test_register_push_subscription_success(client, auth_user, db_session):
     # The database stores an encrypted subscription, not the bearer URL.
     from app.models.models import Device
     from app.services.push_service import decrypt_push_subscription
+
     device = db_session.query(Device).filter_by(device_id=device_id).first()
     assert device.push_subscription != push_url
     assert decrypt_push_subscription(device.push_subscription) == push_url
@@ -74,7 +71,7 @@ def test_remove_push_subscription(client, auth_user):
     client.put(
         f"/api/v1/devices/{device_id}/push",
         json={"push_subscription": "https://ntfy.sh/up_synclo_test_remove"},
-        headers=headers
+        headers=headers,
     )
 
     # Delete push subscription
@@ -90,6 +87,7 @@ def test_remove_push_subscription(client, auth_user):
 
 def test_push_subscription_url_validation(client, auth_user, monkeypatch):
     from app.core.config import Settings
+
     device_id = auth_user["device_id"]
     headers = auth_user["headers"]
 
@@ -97,7 +95,7 @@ def test_push_subscription_url_validation(client, auth_user, monkeypatch):
     res_bad = client.put(
         f"/api/v1/devices/{device_id}/push",
         json={"push_subscription": "not-a-valid-url"},
-        headers=headers
+        headers=headers,
     )
     assert res_bad.status_code == 422
 
@@ -105,7 +103,7 @@ def test_push_subscription_url_validation(client, auth_user, monkeypatch):
     res_ftp = client.put(
         f"/api/v1/devices/{device_id}/push",
         json={"push_subscription": "ftp://files.example.com/push"},
-        headers=headers
+        headers=headers,
     )
     assert res_ftp.status_code == 422
 
@@ -114,7 +112,7 @@ def test_push_subscription_url_validation(client, auth_user, monkeypatch):
     res_http_remote = client.put(
         f"/api/v1/devices/{device_id}/push",
         json={"push_subscription": "http://external-push.example.com/endpoint"},
-        headers=headers
+        headers=headers,
     )
     assert res_http_remote.status_code == 422
 
@@ -122,7 +120,7 @@ def test_push_subscription_url_validation(client, auth_user, monkeypatch):
     res_http_local = client.put(
         f"/api/v1/devices/{device_id}/push",
         json={"push_subscription": "http://localhost:8080/up_dev_test"},
-        headers=headers
+        headers=headers,
     )
     assert res_http_local.status_code == 200
     assert res_http_local.json()["push_enabled"] is True
@@ -132,7 +130,7 @@ def test_push_subscription_url_validation(client, auth_user, monkeypatch):
     res_http_remote_allowed = client.put(
         f"/api/v1/devices/{device_id}/push",
         json={"push_subscription": "http://192.168.1.100:8080/up_lan_endpoint"},
-        headers=headers
+        headers=headers,
     )
     assert res_http_remote_allowed.status_code == 200
     assert res_http_remote_allowed.json()["push_enabled"] is True
@@ -143,13 +141,12 @@ def test_cannot_modify_other_user_push_subscription(client, auth_user, user_fact
     res = client.put(
         f"/api/v1/devices/{other_user['device_id']}/push",
         json={"push_subscription": "https://ntfy.sh/up_other"},
-        headers=auth_user["headers"]
+        headers=auth_user["headers"],
     )
     assert res.status_code == 404
 
     res_del = client.delete(
-        f"/api/v1/devices/{other_user['device_id']}/push",
-        headers=auth_user["headers"]
+        f"/api/v1/devices/{other_user['device_id']}/push", headers=auth_user["headers"]
     )
     assert res_del.status_code == 404
 
@@ -176,7 +173,9 @@ async def test_send_push_notification_success(mocker):
     mocker.patch(
         "app.services.push_service._validate_endpoint_and_resolve",
         new_callable=AsyncMock,
-        return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)),
+        return_value=EndpointValidationResult(
+            EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)
+        ),
     )
     stream_mock, mock_resp = mock_http_stream(status_code=200)
     mock_stream = mocker.patch("httpx.AsyncClient.stream", side_effect=stream_mock)
@@ -196,17 +195,15 @@ def test_empty_body_push_subscription_rejected(client, auth_user):
     headers = auth_user["headers"]
 
     # Empty payload {} should be rejected with 422
-    res = client.put(
-        f"/api/v1/devices/{device_id}/push",
-        json={},
-        headers=headers
-    )
+    res = client.put(f"/api/v1/devices/{device_id}/push", json={}, headers=headers)
     assert res.status_code == 422
 
 
 @pytest.mark.parametrize("status_code", [400, 404, 410])
 @pytest.mark.asyncio
-async def test_send_push_notification_stale_self_healing(client, auth_user, db_session, mocker, status_code):
+async def test_send_push_notification_stale_self_healing(
+    client, auth_user, db_session, mocker, status_code
+):
     device_id = auth_user["device_id"]
     email = auth_user["email"]
 
@@ -214,7 +211,7 @@ async def test_send_push_notification_stale_self_healing(client, auth_user, db_s
     client.put(
         f"/api/v1/devices/{device_id}/push",
         json={"push_subscription": f"https://ntfy.sh/up_stale_{status_code}"},
-        headers=auth_user["headers"]
+        headers=auth_user["headers"],
     )
 
     user = db_session.query(User).filter_by(email=email).first()
@@ -224,12 +221,16 @@ async def test_send_push_notification_stale_self_healing(client, auth_user, db_s
     mocker.patch(
         "app.services.push_service._validate_endpoint_and_resolve",
         new_callable=AsyncMock,
-        return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)),
+        return_value=EndpointValidationResult(
+            EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)
+        ),
     )
     stream_mock, _ = mock_http_stream(status_code=status_code)
     mocker.patch("httpx.AsyncClient.stream", side_effect=stream_mock)
 
-    result = await send_push_notification(device_id, f"https://ntfy.sh/up_stale_{status_code}", user_id)
+    result = await send_push_notification(
+        device_id, f"https://ntfy.sh/up_stale_{status_code}", user_id
+    )
     assert result is False
 
     # Check that the device's push_subscription was pruned (self-healed) in DB
@@ -250,7 +251,9 @@ async def test_send_push_notification_timeout_handling(mocker):
     mocker.patch(
         "app.services.push_service._validate_endpoint_and_resolve",
         new_callable=AsyncMock,
-        return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)),
+        return_value=EndpointValidationResult(
+            EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)
+        ),
     )
     mocker.patch("httpx.AsyncClient.stream", side_effect=httpx.TimeoutException("Timeout"))
 
@@ -263,16 +266,23 @@ async def test_push_service_ssrf_and_stream_capping(mocker):
     from app.services.push_service import EndpointValidationStatus, _validate_endpoint_and_resolve
 
     # 1. Embedded credentials rejected
-    assert (await _validate_endpoint_and_resolve("https://user:pass@ntfy.sh/push")).status == EndpointValidationStatus.SSRF_BLOCKED
+    assert (
+        await _validate_endpoint_and_resolve("https://user:pass@ntfy.sh/push")
+    ).status == EndpointValidationStatus.SSRF_BLOCKED
 
     # 2. Non-standard HTTPS port rejected
-    assert (await _validate_endpoint_and_resolve("https://ntfy.sh:8443/push")).status == EndpointValidationStatus.SSRF_BLOCKED
+    assert (
+        await _validate_endpoint_and_resolve("https://ntfy.sh:8443/push")
+    ).status == EndpointValidationStatus.SSRF_BLOCKED
 
     # 3. Disallowed scheme (e.g. gopher://)
-    assert (await _validate_endpoint_and_resolve("gopher://ntfy.sh/push")).status == EndpointValidationStatus.SSRF_BLOCKED
+    assert (
+        await _validate_endpoint_and_resolve("gopher://ntfy.sh/push")
+    ).status == EndpointValidationStatus.SSRF_BLOCKED
 
     # 4. Resolved private / loopback / cloud metadata IP blocked
     import socket
+
     for blocked_ip in ("127.0.0.1", "10.0.0.1", "192.168.1.1", "169.254.169.254", "::1"):
         family = socket.AF_INET if ":" not in blocked_ip else socket.AF_INET6
         sockaddr = (blocked_ip, 443) if family == socket.AF_INET else (blocked_ip, 443, 0, 0)
@@ -288,7 +298,9 @@ async def test_push_service_ssrf_and_stream_capping(mocker):
     mocker.patch(
         "app.services.push_service._validate_endpoint_and_resolve",
         new_callable=AsyncMock,
-        return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)),
+        return_value=EndpointValidationResult(
+            EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)
+        ),
     )
     oversized_body = b"X" * 20000  # 20 KB
     stream_mock, response = mock_http_stream(status_code=200, body=oversized_body)
@@ -304,7 +316,9 @@ async def test_push_response_cap_aborts_an_oversized_chunk(mocker):
     mocker.patch(
         "app.services.push_service._validate_endpoint_and_resolve",
         new_callable=AsyncMock,
-        return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)),
+        return_value=EndpointValidationResult(
+            EndpointValidationStatus.VALID, details=("ntfy.sh", "1.2.3.4", 443)
+        ),
     )
     response = MagicMock()
     response.status_code = 200
@@ -323,7 +337,9 @@ async def test_push_response_cap_aborts_an_oversized_chunk(mocker):
 
     mocker.patch("httpx.AsyncClient.stream", side_effect=stream_mock)
 
-    result = await send_push_notification("dev_chunk_capped", "https://ntfy.sh/up_chunk", "user_123")
+    result = await send_push_notification(
+        "dev_chunk_capped", "https://ntfy.sh/up_chunk", "user_123"
+    )
 
     assert result is False
     assert chunks == [b"should-not-be-consumed"]
@@ -386,7 +402,9 @@ async def test_send_push_notification_context_lifecycle(mocker):
     mocker.patch(
         "app.services.push_service._validate_endpoint_and_resolve",
         new_callable=AsyncMock,
-        return_value=EndpointValidationResult(EndpointValidationStatus.VALID, details=("ntfy.sh", "198.51.100.99", 443)),
+        return_value=EndpointValidationResult(
+            EndpointValidationStatus.VALID, details=("ntfy.sh", "198.51.100.99", 443)
+        ),
     )
 
     observed_pin_during_call = None
@@ -422,14 +440,32 @@ async def test_dispatch_push_to_user_devices(client, user_factory, db_session, m
     user_id = user_record.user_id
 
     # Register Device 2 and Device 3
-    client.post("/api/v1/devices/register", json={"device_id": "dev_phone", "device_name": "Phone"}, headers=user["headers"])
-    client.post("/api/v1/devices/register", json={"device_id": "dev_tablet", "device_name": "Tablet"}, headers=user["headers"])
+    client.post(
+        "/api/v1/devices/register",
+        json={"device_id": "dev_phone", "device_name": "Phone"},
+        headers=user["headers"],
+    )
+    client.post(
+        "/api/v1/devices/register",
+        json={"device_id": "dev_tablet", "device_name": "Tablet"},
+        headers=user["headers"],
+    )
 
     # Configure push on Device 1 and Device 2 (leave Device 3 without push)
-    client.put(f"/api/v1/devices/{user['device_id']}/push", json={"push_subscription": "https://ntfy.sh/up_dev1"}, headers=user["headers"])
-    client.put("/api/v1/devices/dev_phone/push", json={"push_subscription": "https://ntfy.sh/up_dev2"}, headers=user["headers"])
+    client.put(
+        f"/api/v1/devices/{user['device_id']}/push",
+        json={"push_subscription": "https://ntfy.sh/up_dev1"},
+        headers=user["headers"],
+    )
+    client.put(
+        "/api/v1/devices/dev_phone/push",
+        json={"push_subscription": "https://ntfy.sh/up_dev2"},
+        headers=user["headers"],
+    )
 
-    mock_send = mocker.patch.object(push_service, "send_push_notification", new_callable=AsyncMock, return_value=True)
+    mock_send = mocker.patch.object(
+        push_service, "send_push_notification", new_callable=AsyncMock, return_value=True
+    )
 
     # Dispatch excluding Device 1 (the sender)
     await dispatch_push_to_user_devices(user_id=user_id, exclude_device=user["device_id"])
@@ -447,13 +483,12 @@ def test_clipboard_write_triggers_push_dispatch(client, auth_user, db_session, m
     user_id = user.user_id
 
     clip_id = "test_clip_push_trigger"
-    res = client.post("/api/v1/clipboard", json=make_clipboard_payload(clip_id), headers=auth_user["headers"])
+    res = client.post(
+        "/api/v1/clipboard", json=make_clipboard_payload(clip_id), headers=auth_user["headers"]
+    )
     assert res.status_code == 200
 
-    mock_launch.assert_called_once_with(
-        user_id=user_id,
-        exclude_device=auth_user["device_id"]
-    )
+    mock_launch.assert_called_once_with(user_id=user_id, exclude_device=auth_user["device_id"])
 
 
 def test_websocket_sync_triggers_push_dispatch(client, auth_user, db_session, mocker):
@@ -463,16 +498,15 @@ def test_websocket_sync_triggers_push_dispatch(client, auth_user, db_session, mo
     user_id = user.user_id
 
     token = auth_user["access_token"]
-    with client.websocket_connect("/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}) as ws:
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
         clip_id = "ws_push_trigger_item"
         ws.send_json(make_clipboard_payload(clip_id))
         ack = ws.receive_json()
         assert ack.get("type") == "ack"
 
-    mock_launch.assert_called_once_with(
-        user_id=user_id,
-        exclude_device=auth_user["device_id"]
-    )
+    mock_launch.assert_called_once_with(user_id=user_id, exclude_device=auth_user["device_id"])
 
 
 @pytest.mark.asyncio
@@ -524,4 +558,3 @@ async def test_push_service_transient_dns_failure_does_not_prune(mocker, db_sess
     prune_spy.assert_not_called()
     db_session.refresh(device)
     assert device.push_subscription is not None
-

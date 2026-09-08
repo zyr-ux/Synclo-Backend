@@ -29,5 +29,3 @@ def test_api_docs_and_openapi_endpoints_accessible(client):
     openapi_resp = client.get("/api/openapi.json")
     assert openapi_resp.status_code == 200
     assert "openapi" in openapi_resp.json()
-
-

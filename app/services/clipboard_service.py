@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
-from app.core.database import async_run_in_write_transaction, run_in_write_transaction
+from app.core.database import async_run_in_write_transaction
 
 from app.models.models import Clipboard, User
 from app.schemas.schemas import ClipboardIn, ClipboardPinUpdate
@@ -22,9 +22,7 @@ def allocate_batch_sync_sequence(db: Session, user_id: str, count: int = 1) -> i
         return int(user.sync_sequence or 0)
 
     db.execute(
-        update(User)
-        .where(User.user_id == user_id)
-        .values(sync_sequence=User.sync_sequence + count)
+        update(User).where(User.user_id == user_id).values(sync_sequence=User.sync_sequence + count)
     )
     db.refresh(user, attribute_names=["sync_sequence"])
     return int(user.sync_sequence or 0)
@@ -54,12 +52,12 @@ def _evaluate_lww_conflict(
         else:
             if existing.ciphertext == incoming_ciphertext and existing.nonce == incoming_nonce:
                 return "noop", "identical payload and timestamp"
-            
+
             existing_dev = existing.last_device_id or ""
             inc_dev = incoming_device_id or ""
             if inc_dev == existing_dev:
                 return "reject", "same-device equal timestamp collision"
-            
+
             # Lexicographical device_id tie-breaker for identical timestamps
             if inc_dev > existing_dev:
                 return "accept", "tie-breaker won"
@@ -101,13 +99,19 @@ async def upsert_clipboard(
 
         if existing is not None:
             decision, reason = _evaluate_lww_conflict(
-                existing, incoming_ts, raw_ciphertext, raw_nonce,
-                caller_device_id, False,
+                existing,
+                incoming_ts,
+                raw_ciphertext,
+                raw_nonce,
+                caller_device_id,
+                False,
             )
             if decision == "noop":
                 return existing, "clipboard updated", is_new, was_deleted, True
             if decision == "reject":
-                raise HTTPException(status_code=409, detail=f"Conflict detected: write rejected ({reason})")
+                raise HTTPException(
+                    status_code=409, detail=f"Conflict detected: write rejected ({reason})"
+                )
 
             entry = existing
             entry.ciphertext = raw_ciphertext
@@ -118,26 +122,44 @@ async def upsert_clipboard(
             entry.is_deleted = False
             entry.deleted_at = None
             entry.is_pinned = data.is_pinned
-            entry.pinned_at = ensure_utc(data.pinned_at) if data.pinned_at else (
-                datetime.now(timezone.utc) if data.is_pinned else None
+            entry.pinned_at = (
+                ensure_utc(data.pinned_at)
+                if data.pinned_at
+                else (datetime.now(timezone.utc) if data.is_pinned else None)
             )
             entry.entry_revision = (entry.entry_revision or 0) + 1
         else:
             entry = Clipboard(
-                clipboard_id=data.id, user_id=user_id, ciphertext=raw_ciphertext,
-                nonce=raw_nonce, blob_version=data.blob_version, timestamp=incoming_ts,
-                is_deleted=False, deleted_at=None, is_pinned=data.is_pinned,
-                pinned_at=ensure_utc(data.pinned_at) if data.pinned_at else (
-                    datetime.now(timezone.utc) if data.is_pinned else None
-                ), updated_at=datetime.now(timezone.utc), entry_revision=1,
+                clipboard_id=data.id,
+                user_id=user_id,
+                ciphertext=raw_ciphertext,
+                nonce=raw_nonce,
+                blob_version=data.blob_version,
+                timestamp=incoming_ts,
+                is_deleted=False,
+                deleted_at=None,
+                is_pinned=data.is_pinned,
+                pinned_at=ensure_utc(data.pinned_at)
+                if data.pinned_at
+                else (datetime.now(timezone.utc) if data.is_pinned else None),
+                updated_at=datetime.now(timezone.utc),
+                entry_revision=1,
             )
             db.add(entry)
 
         entry.change_number = allocate_sync_sequence(db, user_id)
         entry.last_device_id = caller_device_id
-        return entry, "clipboard updated" if not is_new else "clipboard synced", is_new, was_deleted, False
+        return (
+            entry,
+            "clipboard updated" if not is_new else "clipboard synced",
+            is_new,
+            was_deleted,
+            False,
+        )
 
-    entry, ret_status, is_new, was_deleted, is_noop = await async_run_in_write_transaction(db, mutate)
+    entry, ret_status, is_new, was_deleted, is_noop = await async_run_in_write_transaction(
+        db, mutate
+    )
     db.refresh(entry)
 
     if is_noop:
@@ -150,14 +172,20 @@ async def upsert_clipboard(
     await manager.broadcast_to_user(
         user_id=user_id,
         message={
-            "type": "clipboard_sync", "id": entry.clipboard_id,
-            "ciphertext": data.ciphertext, "nonce": data.nonce,
-            "blob_version": entry.blob_version, "timestamp": to_iso_utc(entry.timestamp),
-            "is_deleted": False, "is_pinned": entry.is_pinned,
+            "type": "clipboard_sync",
+            "id": entry.clipboard_id,
+            "ciphertext": data.ciphertext,
+            "nonce": data.nonce,
+            "blob_version": entry.blob_version,
+            "timestamp": to_iso_utc(entry.timestamp),
+            "is_deleted": False,
+            "is_pinned": entry.is_pinned,
             "pinned_at": to_iso_utc(entry.pinned_at) if entry.pinned_at else None,
-            "change_number": entry.change_number, "entry_revision": entry.entry_revision,
+            "change_number": entry.change_number,
+            "entry_revision": entry.entry_revision,
             "last_device_id": entry.last_device_id,
-        }, exclude_device=caller_device_id,
+        },
+        exclude_device=caller_device_id,
     )
     return entry, ret_status, False
 
@@ -176,14 +204,23 @@ async def soft_delete_clipboard(
         entry = db.query(Clipboard).filter_by(user_id=user_id, clipboard_id=clipboard_id).first()
         if entry is not None:
             decision, reason = _evaluate_lww_conflict(
-                entry, del_ts, None, None, caller_device_id, True,
+                entry,
+                del_ts,
+                None,
+                None,
+                caller_device_id,
+                True,
             )
             if decision == "reject":
-                raise HTTPException(status_code=409, detail=f"Conflict: deletion rejected ({reason})")
+                raise HTTPException(
+                    status_code=409, detail=f"Conflict: deletion rejected ({reason})"
+                )
             if decision == "noop":
                 return None
         else:
-            entry = Clipboard(clipboard_id=clipboard_id, user_id=user_id, blob_version=1, entry_revision=0)
+            entry = Clipboard(
+                clipboard_id=clipboard_id, user_id=user_id, blob_version=1, entry_revision=0
+            )
             db.add(entry)
 
         entry.ciphertext = None
@@ -206,10 +243,14 @@ async def soft_delete_clipboard(
     await manager.broadcast_to_user(
         user_id=user_id,
         message=make_tombstone_payload(
-            clipboard_id=clipboard_id, blob_version=entry.blob_version,
-            timestamp=entry.timestamp, change_number=entry.change_number,
-            entry_revision=entry.entry_revision, last_device_id=entry.last_device_id,
-        ), exclude_device=caller_device_id,
+            clipboard_id=clipboard_id,
+            blob_version=entry.blob_version,
+            timestamp=entry.timestamp,
+            change_number=entry.change_number,
+            entry_revision=entry.entry_revision,
+            last_device_id=entry.last_device_id,
+        ),
+        exclude_device=caller_device_id,
     )
     return {"status": "clipboard deleted", "id": clipboard_id}, False
 
@@ -226,7 +267,9 @@ async def update_pin_status(
         if not item:
             raise HTTPException(status_code=404, detail="Clipboard entry not found")
         if item.is_deleted:
-            raise HTTPException(status_code=400, detail="Cannot pin or unpin a deleted clipboard entry")
+            raise HTTPException(
+                status_code=400, detail="Cannot pin or unpin a deleted clipboard entry"
+            )
 
         item.is_pinned = pin_data.is_pinned
         now = datetime.now(timezone.utc)

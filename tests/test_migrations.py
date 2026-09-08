@@ -1,9 +1,7 @@
-import os
 import shutil
 import sqlite3
 import tempfile
 from pathlib import Path
-import pytest
 from alembic.config import Config
 from alembic import command
 from cryptography.fernet import Fernet
@@ -20,34 +18,41 @@ from app.utilities.decrypt_db import decrypt_database
 def test_baseline_migration_applies_cleanly():
     temp_dir = tempfile.mkdtemp(prefix="synclo_test_migration_")
     test_db_path = Path(temp_dir) / "test_baseline.db"
-    
+
     try:
         # Create Alembic config pointing to the test DB
         alembic_cfg = Config("alembic.ini")
         alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{test_db_path}")
-        
+
         # Run upgrade head
         command.upgrade(alembic_cfg, "head")
         assert test_db_path.exists()
-        
+
         # Inspect created tables
         conn = sqlite3.connect(str(test_db_path))
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = {row[0] for row in cursor.fetchall()}
-        
-        expected_tables = {"users", "devices", "refresh_tokens", "blacklisted_tokens", "clipboard", "alembic_version"}
+
+        expected_tables = {
+            "users",
+            "devices",
+            "refresh_tokens",
+            "blacklisted_tokens",
+            "clipboard",
+            "alembic_version",
+        }
         assert expected_tables.issubset(tables)
-        
+
         # Check integrity
         cursor.execute("PRAGMA integrity_check;")
         res = cursor.fetchone()
         assert res[0] == "ok"
-        
+
         # Verify columns on clipboard table
         cursor.execute("PRAGMA table_info(clipboard);")
         columns = {row[1]: {"notnull": row[3], "dflt_value": row[4]} for row in cursor.fetchall()}
-        
+
         assert "change_number" in columns
         assert columns["change_number"]["notnull"] == 1
         assert "entry_revision" in columns
@@ -55,7 +60,7 @@ def test_baseline_migration_applies_cleanly():
         assert "last_device_id" in columns
         assert "is_pinned" in columns
         assert "pinned_at" in columns
-        
+
         conn.close()
 
         # Verify ORM models map 1:1 against the migrated database
@@ -142,7 +147,7 @@ def test_backup_and_restore_workflow():
     source_db = Path(temp_dir) / "source.db"
     backup_dir = Path(temp_dir) / "backups"
     restore_target = Path(temp_dir) / "restored.db"
-    
+
     try:
         # Initialize source DB with a table and record
         conn = sqlite3.connect(str(source_db))
@@ -150,48 +155,48 @@ def test_backup_and_restore_workflow():
         conn.execute("INSERT INTO test_data (note) VALUES ('backup_verification');")
         conn.commit()
         conn.close()
-        
+
         # 1. Unencrypted backup
         backup_path = perform_backup(source_db, backup_dir, key=None)
         assert backup_path is not None
         assert backup_path.exists()
         assert backup_path.suffix == ".db"
-        
+
         # Verify restore
         verify_ok = restore_backup(backup_path, restore_target, verify_only=True)
         assert verify_ok is True
-        
+
         # Actual restore
         restore_ok = restore_backup(backup_path, restore_target, verify_only=False)
         assert restore_ok is True
         assert restore_target.exists()
-        
+
         conn_res = sqlite3.connect(str(restore_target))
         row = conn_res.execute("SELECT note FROM test_data;").fetchone()
         assert row[0] == "backup_verification"
         conn_res.close()
-        
+
         # 2. Encrypted backup
         key = Fernet.generate_key().decode()
         enc_backup_path = perform_backup(source_db, backup_dir, key=key)
         assert enc_backup_path is not None
         assert enc_backup_path.name.endswith(".db.enc")
-        
+
         # Verify restore with correct key
         verify_enc_ok = restore_backup(enc_backup_path, restore_target, key=key, verify_only=True)
         assert verify_enc_ok is True
-        
+
         # Decrypt with decrypt_db utility
         manual_decrypted = Path(temp_dir) / "manual_decrypted.db"
         dec_ok = decrypt_database(enc_backup_path, manual_decrypted, key=key)
         assert dec_ok is True
         assert manual_decrypted.exists()
-        
+
         conn_dec = sqlite3.connect(str(manual_decrypted))
         row_dec = conn_dec.execute("SELECT note FROM test_data;").fetchone()
         assert row_dec[0] == "backup_verification"
         conn_dec.close()
-        
+
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -226,7 +231,6 @@ def test_schema_parity_between_alembic_and_orm():
     """
     from sqlalchemy import inspect, create_engine
     from app.core.database import Base
-    import app.models.models  # ensure models are registered on Base.metadata
 
     temp_dir = tempfile.mkdtemp(prefix="synclo_test_parity_")
     test_db_path = Path(temp_dir) / "test_parity.db"
@@ -248,7 +252,9 @@ def test_schema_parity_between_alembic_and_orm():
         for table_name, orm_table in Base.metadata.tables.items():
             migrated_cols = {col["name"]: col for col in inspector.get_columns(table_name)}
             for col in orm_table.columns:
-                assert col.name in migrated_cols, f"Column {table_name}.{col.name} missing in migration"
+                assert col.name in migrated_cols, (
+                    f"Column {table_name}.{col.name} missing in migration"
+                )
                 mig_col = migrated_cols[col.name]
                 # Compare nullability
                 assert col.nullable == mig_col["nullable"], (
@@ -275,4 +281,3 @@ def test_schema_parity_between_alembic_and_orm():
         engine.dispose()
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
-
