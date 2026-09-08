@@ -119,6 +119,7 @@ services:
     environment:
       SECRET_KEY: "change_this_to_a_random_hex_key" # change this
       REFRESH_TOKEN_HASH_KEY: "change_this_to_a_random_hex_key" # change this
+      ENVIRONMENT: "production"
       HTTPS_ONLY: "true"
       CLIPBOARD_RETENTION_DAYS: "30"
       TOMBSTONE_RETENTION_DAYS: "30"
