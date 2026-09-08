@@ -231,7 +231,7 @@ def _get_target_push_endpoints(
 
 
 def _is_allowed_domain(hostname: Optional[str]) -> bool:
-    if Settings.ALLOW_ARBITRARY_PUSH_ENDPOINTS:
+    if Settings.ENVIRONMENT != "production":
         return True
     if not hostname:
         return False
@@ -244,7 +244,7 @@ def _is_allowed_domain(hostname: Optional[str]) -> bool:
 
 
 def _is_safe_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if Settings.ALLOW_LOCAL_PUSH_ENDPOINTS:
+    if Settings.ENVIRONMENT != "production":
         return True
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
         return ip.ipv4_mapped.is_global
@@ -269,7 +269,7 @@ async def _validate_endpoint_and_resolve(endpoint: str) -> EndpointValidationRes
 
     if parsed.scheme == "http":
         if not (
-            Settings.ALLOW_LOCAL_PUSH_ENDPOINTS
+            Settings.ENVIRONMENT != "production"
             or (not Settings.HTTPS_ONLY and hostname in LOOPBACK_HOSTS)
         ):
             logger.warning("SSRF: Plain HTTP rejected for push endpoint")
@@ -289,7 +289,7 @@ async def _validate_endpoint_and_resolve(endpoint: str) -> EndpointValidationRes
         return EndpointValidationResult(
             EndpointValidationStatus.SSRF_BLOCKED, reason=f"Non-standard HTTPS port {port}"
         )
-    if parsed.scheme == "http" and not Settings.ALLOW_LOCAL_PUSH_ENDPOINTS and port != 80:
+    if parsed.scheme == "http" and Settings.ENVIRONMENT == "production" and port != 80:
         logger.warning(f"SSRF: Non-standard port {port} rejected for HTTP push endpoint")
         return EndpointValidationResult(
             EndpointValidationStatus.SSRF_BLOCKED, reason=f"Non-standard HTTP port {port}"

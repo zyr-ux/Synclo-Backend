@@ -262,7 +262,9 @@ async def test_send_push_notification_timeout_handling(mocker):
 
 
 @pytest.mark.asyncio
-async def test_push_service_ssrf_and_stream_capping(mocker):
+async def test_push_service_ssrf_and_stream_capping(mocker, monkeypatch):
+    from app.core.config import Settings
+    monkeypatch.setattr(Settings, "ENVIRONMENT", "production")
     from app.services.push_service import EndpointValidationStatus, _validate_endpoint_and_resolve
 
     # 1. Embedded credentials rejected

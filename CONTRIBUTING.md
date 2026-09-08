@@ -6,25 +6,29 @@ Thank you for your interest in contributing to the Synclo Backend! This guide wi
 
 ## 1. Project Overview
 
-Synclo is a real-time, secure, end-to-end encrypted clipboard synchronization service. 
+Synclo is a real-time, secure, zero-knowledge end-to-end encrypted clipboard synchronization service.
 
-For a detailed breakdown of the backend system architecture, security design, and file-by-file code explanations, please refer to the **[ARCHITECTURE.md](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/ARCHITECTURE.md)** document.
+For exhaustive specifications on system architecture, cryptographic key derivations, REST endpoints, WebSocket wire frames, and database models, please consult **[ARCHITECTURE.md](ARCHITECTURE.md)**. If you are developing with AI coding assistants, please also review **[AGENTS.md](AGENTS.md)**.
 
-- **Zero-Knowledge Architecture:** The server never sees the user's raw password, the decryption keys (Master Key), or the raw clipboard data.
-- **Data Encrypted at Rest:** Clipboard content is encrypted on the client side before being transmitted to the server.
-- **Soft Delete & Tombstones:** A soft delete strategy ensures offline/online client synchronization works flawlessly, even after long periods of offline use.
+- **Zero-Knowledge Architecture:** The server is solely an encrypted relay and blind storage mediator. Plaintext passwords, Master Keys, derived keys, or decrypted clipboard payloads must never reach the server, be accepted by APIs, or appear in logs.
+- **Single-Node VPS / Homelab Focus:** The backend is designed exclusively as a single-node deployment (via Docker Compose or bare-metal SQLite and local Redis) for personal VPS or homelab servers. Multi-node clustering or distributed systems complexity is intentionally out of scope.
+- **Data Encrypted at Rest & in Flight:** Clipboard content is encrypted client-side with AES-256-GCM before transmission. In production, transport security is strictly enforced via HTTPS/WSS.
+- **Soft Delete & Deterministic Synchronization:** Deleted items transition into tombstone records with immediate payload eradication, ensuring reliable offline-to-online delta reconciliation across devices.
 
 ---
 
 ## 2. Technology Stack
 
 - **Language:** Python 3.12+
-- **Web Framework:** FastAPI
-- **ORM & DB:** SQLAlchemy & SQLite (for local persistence)
-- **Migrations:** Alembic
-- **Real-Time Pub/Sub:** Redis
-- **Containerization:** Docker & Docker Compose
-- **Security:** OAuth2 (JWT), Bcrypt (Auth Key Hashing), Fernet/AES-GCM (used on client side)
+- **Web Framework:** FastAPI & Uvicorn
+- **ORM & Database:** SQLAlchemy & SQLite (WAL mode with `BEGIN IMMEDIATE` write concurrency)
+- **Database Migrations:** Alembic
+- **Real-Time Pub/Sub & Rate Limiting:** Redis & FastAPILimiter
+- **Push Notifications:** UnifiedPush (with SSRF protection, IP pinning, and auto-pruning)
+- **Observability & Telemetry:** Prometheus metrics (`/metrics`)
+- **Code Style & Linting:** Ruff
+- **Testing:** Pytest & pytest-asyncio
+- **Containerization:** Docker (multi-stage build) & Docker Compose
 
 ---
 
@@ -33,9 +37,9 @@ For a detailed breakdown of the backend system architecture, security design, an
 Follow these steps to set up your local development environment:
 
 ### Prerequisites
-- Python 3.12 installed on your machine.
-- Redis server running locally or via Docker.
-- (Optional) Docker and Docker Compose installed.
+- Python 3.12 or newer installed.
+- Redis server running locally or via Docker (`docker run -d -p 6379:6379 redis:7-alpine`).
+- Git installed.
 
 ### Step 1: Clone the Repository
 ```bash
@@ -53,9 +57,9 @@ source .venv/bin/activate
 ```
 
 **On Windows:**
-```cmd
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\Activate.ps1
 ```
 
 ### Step 3: Install Dependencies
@@ -65,36 +69,23 @@ pip install -e ".[dev]"
 ```
 
 ### Step 4: Configure Environment Variables
-Create a `.env` file in the root directory. You can copy the structure below:
+Copy the template configuration from [.env.example](.env.example):
+```bash
+# macOS/Linux
+cp .env.example .env
 
-```env
-# JWT settings
-SECRET_KEY=your_secure_random_hex_string
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=15
-REFRESH_TOKEN_HASH_KEY=your_hmac_secret_key_at_least_16_chars
-REFRESH_TOKEN_EXPIRE_DAYS=30
-
-# DB settings
-DATABASE_URL=sqlite:///./data/synclo.db
-REDIS_URL=redis://localhost:6379
-# Required by the production Compose stack; use a strong random value.
-REDIS_PASSWORD=change_this_to_a_strong_random_password
-
-# Soft Delete settings
-TOMBSTONE_RETENTION_DAYS=30
-
-# Clipboard Retention Policy (in days, 0 = disabled)
-CLIPBOARD_RETENTION_DAYS=30
-
-# Security & HTTPS Mode (set to false only for local development/self-hosting without SSL)
-HTTPS_ONLY=true
+# Windows PowerShell
+Copy-Item .env.example .env
 ```
 
-Registration and email changes intentionally return a conflict when an email is already registered. This is an accepted account-enumeration tradeoff for immediate client feedback; both endpoints are tightly rate-limited. A future verification-email flow could replace these distinguishable responses.
+Review `.env` and set appropriate development keys:
+- `SECRET_KEY` and `REFRESH_TOKEN_HASH_KEY`: Secure random strings (at least 32 and 16 characters respectively).
+- `HTTPS_ONLY`: Set to `false` for local development.
+- `DATABASE_URL`: Defaults to `sqlite:///./data/synclo.db`.
+- `REDIS_URL`: Defaults to `redis://localhost:6379`.
 
 ### Step 5: Run Database Migrations
-Migrations run automatically on application startup. However, you can also run them manually using:
+Migrations apply automatically on application startup, but you can also run them manually:
 ```bash
 alembic upgrade head
 ```
@@ -104,65 +95,76 @@ Run the FastAPI development server:
 ```bash
 uvicorn app.main:app --reload --port 8000
 ```
-The server will start at `http://localhost:8000`. You can access the interactive API documentation (ReDoc) at `http://localhost:8000/api/docs`.
+- API root: `http://localhost:8000`
+- Interactive API docs (ReDoc): `http://localhost:8000/api/docs`
+- Health check: `http://localhost:8000/api/health`
+- Prometheus metrics: `http://localhost:8000/metrics`
 
 ---
 
 ## 4. Development Guidelines
 
-To maintain code quality and security, please follow these guidelines when writing code:
+To maintain code quality, security, and architectural simplicity, please adhere to the following standards:
 
 ### Core Architectural Rules
-1. **Preserve Zero-Knowledge Security:** Under no circumstances should the server receive, log, store, or process raw passwords, master keys, or decrypted clipboard content.
-2. **Use Soft Deletes for Clipboard Entries:** 
-   - Never run `DELETE` queries on clipboard entries directly.
-   - Toggle `is_deleted = True` and set `deleted_at = datetime.now(timezone.utc)`.
-   - Ensure you broadcast a deletion event to the client over WebSockets upon deletion.
-3. **Database Changes:** 
-   - If you modify database models in `app/models/models.py`, you **must** generate a new migration revision:
-     ```bash
-     alembic revision --autogenerate -m "describe your changes"
-     ```
-   - Review the generated script in `/alembic/versions` to ensure it is correct.
-4. **Pydantic Schema Validation:** Keep request/response schemas strictly validated in `app/schemas/schemas.py`.
+1. **Preserve Zero-Knowledge Invariants:** Plaintext passwords, Master Keys, derived keys, or decrypted clipboard content must never touch the server, be accepted in API schemas, or be logged.
+2. **SQLite Concurrency Rule:** **Never call bare `db.commit()`**. All database mutations must use `run_in_write_transaction` or `async_run_in_write_transaction` from [app/core/database.py](app/core/database.py) to acquire immediate write locks (`BEGIN IMMEDIATE`) and prevent SQLite lock escalation deadlocks.
+3. **Soft Deletes for Clipboard Entries:** 
+   - Never execute raw `DELETE` SQL on active clipboard entries.
+   - Use `soft_delete_clipboard` in [app/services/clipboard_service.py](app/services/clipboard_service.py) to toggle `is_deleted = True`, clear ciphertext/nonce payloads, unpin the item, and record `deleted_at`.
+   - Broadcast tombstone frames over WebSockets and trigger background push notifications.
+4. **Code Simplicity & Human Comprehension:** Write explicit, readable logic over clever abstractions. Avoid dense one-liners, speculative generalizations, or deep wrapper hierarchies. Code should be immediately understandable by any engineer without friction.
+5. **Database Model Changes:** Any modification to models in [app/models/models.py](app/models/models.py) requires an Alembic migration:
+   ```bash
+   alembic revision --autogenerate -m "describe your changes"
+   ```
+   Always inspect the generated script in `alembic/versions/` to verify constraints, indexes, and nullability.
+6. **Documentation Updates:** When adding a new endpoint, schema change, or system behavior, document the technical specification directly in **[ARCHITECTURE.md](ARCHITECTURE.md)**. If [README.md](README.md) needs updates, discuss it in your PR or ask repository maintainers first.
 
 ---
 
-## 5. Running Tests
+## 5. Verification Checklist (Before Submitting)
 
-Before submitting a Pull Request, verify that all tests pass. Always run the tests inside your configured virtual environment (`.venv`).
+Before submitting a Pull Request, execute the full 2-step verification suite locally:
 
-### Execution
-
-**Option A: With the virtual environment activated**
+### 1. Code Style & Linting
+Run Ruff to check formatting and code conventions:
 ```bash
-# Activate .venv
-# macOS/Linux: source .venv/bin/activate
-# Windows: .venv\Scripts\activate
+# macOS/Linux
+.venv/bin/ruff check .
 
-pytest
+# Windows PowerShell
+.venv\Scripts\ruff.exe check .
 ```
 
-**Option B: Direct execution via `.venv` binary**
+### 2. Automated Test Suite
+Run the complete Pytest suite (all tests must pass, including migration application and schema parity verification via `tests/test_migrations.py`):
 ```bash
-# Windows (PowerShell/CMD):
-.venv\Scripts\pytest.exe
+# macOS/Linux
+.venv/bin/pytest -v
 
-# macOS/Linux (Bash/Zsh):
-.venv/bin/pytest
-```
-
-To run tests with detailed verbosity or test coverage:
-```bash
-pytest -v
-pytest --cov=app tests/
+# Windows PowerShell
+.venv\Scripts\pytest.exe -v
 ```
 
 ---
 
-## 6. How to Submit a Pull Request
+## 6. Guidelines for Contributors Using AI Coding Agents
 
-1. **Fork the Repository:** Create a copy of the repository under your GitHub account.
-2. **Create a Feature Branch:** Name your branch descriptively (e.g., `feature/add-websocket-heartbeat` or `fix/jwt-expiration`).
-3. **Commit Your Changes:** Keep commits small and write meaningful commit messages.
-4. **Push & Create PR:** Push your branch to GitHub and open a Pull Request. Provide a clear summary of what your changes accomplish.
+While we welcome the use of modern development tooling, including AI coding assistants (such as Antigravity, Claude, Cursor, ChatGPT, or Copilot), the following strict policies apply to all AI-assisted contributions:
+
+- **Personal Code Ownership & Comprehension:** You are 100% accountable for every line of code you submit. Before opening a Pull Request, you must take the time to read, understand, and verify the changes yourself. If requested during review, **you are required to be able to explain the code you added**, including design decisions, concurrency implications, and error handling. Comments like *"the AI generated this"* or inability to explain the code will result in immediate PR rejection.
+- **No Fully AI-Generated PRs (No Slop):** Pull requests that are blindly generated by AI—including generic, robotic AI-generated PR titles and descriptions, hallucinated bullet points, or unreviewed auto-generated diffs—**are not accepted** and will be closed immediately without review.
+- **Human-Authored PR Descriptions:** Your PR title and description must be written by you (a human contributor). Clearly articulate what problem you are solving, why your approach was chosen, and describe your testing and verification steps in your own words.
+- **Feed Guidelines to Your Agent:** If you use an agentic AI coding workflow, ensure you point your assistant to **[ARCHITECTURE.md](ARCHITECTURE.md)** and **[AGENTS.md](AGENTS.md)**. Your agent must respect our zero-knowledge invariant, single-node VPS/homelab constraint, explicit simplicity guidelines, and SQLite concurrency rules (`run_in_write_transaction`).
+
+---
+
+## 7. How to Submit a Pull Request
+
+1. **Fork the Repository:** Create a personal fork on GitHub.
+2. **Create a Topic Branch:** Use a descriptive branch name (e.g., `fix/sqlite-busy-timeout` or `feat/recovery-key-rotation`).
+3. **Understand Your Changes:** Ensure you understand all added or modified logic thoroughly and can defend the changes during code review.
+4. **Keep Changes Focused:** Separate refactoring from feature work or bug fixes.
+5. **Pass All Verifications:** Ensure Ruff linting and all Pytest tests pass cleanly.
+6. **Open a Pull Request:** Provide a genuine, human-authored description explaining what was changed, why it was changed, and note which verification steps were run.

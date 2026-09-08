@@ -40,9 +40,9 @@ graph TD
 
 *   **REST HTTP Endpoints:** Handle authentication, session tokens, device registrations, and fallback manual clipboard transfers.
 *   **WebSocket Endpoints:** Maintain persistent connections for low-latency, real-time clipboard sync.
-*   **ConnectionManager:** Coordinates WebSocket sessions. Uses Redis Pub/Sub to relay sync events between backend worker processes (and across nodes if the deployment is later expanded).
+*   **ConnectionManager:** Coordinates WebSocket sessions. Uses Redis Pub/Sub to relay sync events between backend worker processes with node-level echo suppression. The backend is designed strictly as a single-node server for VPS / homelab self-hosting without multi-node clustering or distributed overhead.
 *   **Redis:** Provides Pub/Sub, distributed rate-limit counters, and the periodic-cleanup lock. It is authenticated, health-checked, memory-bounded, and intentionally ephemeral; Redis is not a source of durable application data.
-*   **Database (SQLite):** Stores user login hashes, device registries, session tokens, and encrypted clipboard entry history (tombstones).
+*   **Database (SQLite):** Stores user login hashes, device registries, session tokens, and encrypted clipboard entry history (tombstones). Operates in WAL mode with serializable write transactions.
 *   **Cleanup Service:** Background workers running periodic purges on old expired data and tombstones.
 
 ---
@@ -97,9 +97,12 @@ sequenceDiagram
 #### A. Initial Registration
 1.  **Generate Local Secret Elements:** Generate a 256-bit `Master Key` and a random 128-bit `Salt` client-side.
 2.  **Key Derivation:** Derive a 256-bit `Derived Key` via PBKDF2-HMAC-SHA256 (100,000 iterations). Compute the `Auth Key` by taking the HMAC-SHA256 of the `Derived Key`:
-    $$\text{Auth Key} = \text{HMAC-SHA256}(\text{Derived Key}, \text{"auth\\_key"})$$
+    ```text
+    Auth Key = HMAC-SHA256(Derived Key, "auth_key")
+    ```
 3.  **Local Wrapping:** Encrypt the `Master Key` using the `Derived Key` via **AES-256-GCM** to output the `Encrypted Master Key`.
-4.  **Transmission:** Submit the base64-encoded `Auth Key`, `Encrypted Master Key`, `Salt`, KDF version, and device data to `POST /api/v1/register`.
+4.  **Recovery Kit Generation:** Generate a random 256-bit `Recovery Key` client-side. Derive `K_rec = HKDF(Recovery Key, "recovery_wrap")` to wrap the `Master Key` via AES-256-GCM into `recovery_wrapped_master_key`. Compute the verifier `V_rec = HKDF(Recovery Key, "recovery_verify")` to output `recovery_key_verifier`.
+5.  **Transmission:** Submit the base64-encoded `Auth Key`, `Encrypted Master Key`, `Salt`, KDF version, `recovery_wrapped_master_key`, `recovery_key_verifier`, and device data to `POST /api/v1/register`.
 
 #### B. Logging In
 1.  **Retrieve Salt:** Query `GET /api/v1/auth/salt?email=<email>` to fetch the KDF Salt.
@@ -133,12 +136,29 @@ In conventional multi-tenant web applications, user enumeration is typically mas
 
 ## 3. Data Synchronization & Tombstone Pattern
 
-To synchronize deletions to offline clients, Synclo uses a soft-deletion pattern:
-- **Tombstones:** Deleted clipboard items are not purged immediately. They are marked `is_deleted = True` and given a `deleted_at` server timestamp.
-- **Delta Sync:** Offline clients query `/api/v1/clipboard/sync` using a `since` timestamp parameter. The server returns all clipboard updates (inserts, modifications, and tombstones) where `updated_at > since`.
-- **Pin System:** Active clipboard entries can be pinned (`is_pinned = True`), keeping them synchronized across devices. Pinned entries are bypassed and preserved during a bulk delete request (`DELETE /api/v1/clipboard`). They are only soft-deleted when targeted specifically (`DELETE /api/v1/clipboard/{id}`), which automatically sets `is_pinned = False`.
-- **Retention Cleanup:** A background thread running every 24 hours purges tombstones older than `TOMBSTONE_RETENTION_DAYS` (default: 30 days) to prevent database bloating.
-- **Expired Sync Prevention:** If a client requests a delta sync with a `since` timestamp older than the 30-day retention cutoff, the server rejects it with `410 Gone`. The client is forced to wipe its local database and perform a fresh full sync.
+Synclo implements a deterministic, multi-master synchronization model combining monotonic sequence counters, Last-Write-Wins (LWW) conflict resolution, server-side retention pruning, and a soft-deletion tombstone lifecycle:
+
+### Monotonic Sequence & Keyset Cursor Pagination (Primary Sync)
+- **User Sync Sequence:** Each user record maintains a strictly monotonic integer counter `User.sync_sequence` in SQLite. Every clipboard write, pin state update, or soft-deletion atomically increments this counter via `allocate_sync_sequence` or `allocate_batch_sync_sequence` and assigns it to `Clipboard.change_number`.
+- **Keyset Cursor Pagination:** Offline and reconnecting clients query `/api/v1/clipboard/sync?since_change_number={cursor}&limit={limit}`. The server executes a fast, indexed scan (`ix_clipboard_user_change_number`) returning items where `change_number > since_change_number` ordered by `change_number ASC`.
+- **Revision Tracking:** Each clipboard record carries an integer `entry_revision` (incremented on each edit or tombstone) and `last_device_id` to assist clients in resolving local multi-master merges.
+- **Legacy Timestamp Fallback:** If `since_change_number` is omitted, clients can fall back to timestamp-based delta sync (`since={iso_timestamp}&offset={offset}&limit={limit}`).
+
+### Deterministic Last-Write-Wins (LWW) Conflict Resolution
+Concurrent writes and cross-device edits are resolved deterministically on the server via `_evaluate_lww_conflict` in `app/services/clipboard_service.py`:
+1. **Timestamp Precedence:** An incoming mutation with a strictly newer client `timestamp` wins (`accept`). An incoming mutation with a timestamp older than the existing record is rejected with `409 Conflict` (`reject`).
+2. **Identical Timestamp Tie-Breaker:** When an incoming mutation has a timestamp equal to the existing record:
+   - If `ciphertext` and `nonce` are identical, the write is treated as an idempotent `noop`.
+   - If payloads differ across different devices, the collision is deterministically resolved using a lexicographical comparison of `device_id` (`incoming_device_id > existing_device_id` wins).
+   - If payloads differ on the same device at the same timestamp, the write is rejected with `409 Conflict`.
+3. **Tombstone Resurrection:** An incoming edit can resurrect a soft-deleted tombstone only if its `timestamp` is strictly newer than the tombstone's timestamp.
+4. **Tombstone Acceptance:** An incoming tombstone is accepted if its timestamp is >= the existing record's timestamp.
+
+### Soft Deletion & Tombstone Lifecycle
+- **Tombstones:** When a clipboard item is deleted, it is soft-deleted: `is_deleted = True`, `deleted_at = now`, `ciphertext = None`, `nonce = None`, `is_pinned = False`, and `pinned_at = None`. Payloads are wiped immediately at the moment of deletion.
+- **Pin System:** Active clipboard entries can be pinned (`is_pinned = True`), keeping them permanently synchronized. Pinned entries are strictly preserved during bulk delete requests (`DELETE /api/v1/clipboard`). Targeted single-item deletion (`DELETE /api/v1/clipboard/{id}`) soft-deletes the item and clears its pin.
+- **Server-Wide Age-Based Auto-Pruning:** Unpinned items older than `CLIPBOARD_RETENTION_DAYS` (default: 30 days) are automatically soft-deleted into tombstones upon new clipboard writes, during delta sync, and during periodic maintenance (`run_all_cleanup`). Pinned items are strictly immune to auto-pruning. Unpinning an item (`PATCH /api/v1/clipboard/{id}/pin`) resets its `updated_at` timestamp, granting a fresh retention grace period.
+- **Tombstone Retention & Expired Sync Prevention:** A background loop (`periodic_cleanup`) running every 24 hours permanently purges tombstones older than `TOMBSTONE_RETENTION_DAYS` (default: 30 days). If a client requests delta sync with a timestamp or `since_change_number` older than this 30-day retention cutoff, the server returns `410 Gone`. The client must wipe its local cache and perform a full resynchronization.
 
 ---
 
@@ -186,7 +206,7 @@ Sent after the database write succeeds:
 ```
 
 #### D. Server Broadcast Update (Server ➔ Other Clients)
-Broadcasts incoming changes/tombstones to other devices:
+Broadcasts incoming changes or tombstones to other devices:
 ```json
 {
   "type": "clipboard_sync",
@@ -196,7 +216,11 @@ Broadcasts incoming changes/tombstones to other devices:
   "nonce": null,
   "blob_version": 1,
   "is_deleted": true,
-  "is_pinned": false
+  "is_pinned": false,
+  "pinned_at": null,
+  "change_number": 42,
+  "entry_revision": 2,
+  "last_device_id": "unique_device_id_string"
 }
 ```
 
@@ -216,24 +240,21 @@ Pushed to other connected user devices when a new device is registered:
   "type": "device_added",
   "device": {
     "device_id": "unique_device_id_string",
-    "device_name": "My iPhone 15",
-    "os": "iOS"
+    "device_name": "My Phone",
+    "os": "Android"
   }
 }
 ```
 
 #### H. Device Updated Notification (Server ➔ Other Clients)
-Pushed to other connected user devices when an existing device updates its metadata (e.g. OS version during login or display name via PATCH):
+Pushed to other connected user devices when an existing device updates its metadata (e.g. display name via `PATCH /api/v1/devices/{device_id}`):
 ```json
 {
   "type": "device_updated",
   "device": {
     "device_id": "unique_device_id_string",
-    "device_name": "My iPhone 15",
-    "os": "iOS",
-    "last_seen": "2026-08-30T12:00:00Z",
-    "is_online": true,
-    "push_enabled": true
+    "device_name": "Workstation PC",
+    "os": "Linux"
   }
 }
 ```
@@ -323,7 +344,7 @@ Retrieves the recovery-wrapped master key for account recovery (public, pre-auth
     }
     ```
 *   **Errors:**
-    *   `404 Not Found`: Recovery material not available or email not found.
+    *   `401 Unauthorized`: Could not recover account (uniform response prevents email enumeration).
     *   `429 Too Many Requests`: Rate limit exceeded.
 
 ---
@@ -408,7 +429,8 @@ Registers a new user and registers the first device (Async).
     {
       "access_token": "eyJhbGciOi...",
       "refresh_token": "plain_refresh_token_string",
-      "token_type": "bearer"
+      "token_type": "bearer",
+      "username": "tester"
     }
     ```
 *   **Errors:**
@@ -438,6 +460,7 @@ Logs in a user and registers/updates the device connection (Async).
       "access_token": "eyJhbGciOi...",
       "refresh_token": "plain_refresh_token_string",
       "token_type": "bearer",
+      "username": "tester",
       "email": "user@example.com",
       "encrypted_master_key": "base64_encoded_wrapped_key",
       "salt": "base64_encoded_salt",
@@ -771,7 +794,11 @@ Fetches the latest active clipboard entry.
       "updated_at": "2026-06-14T14:15:31Z",
       "is_deleted": false,
       "deleted_at": null,
-      "is_pinned": false
+      "is_pinned": false,
+      "pinned_at": null,
+      "change_number": 42,
+      "entry_revision": 1,
+      "last_device_id": "device_123"
     }
     ```
 *   **Errors:**
@@ -783,7 +810,8 @@ Fetches the latest active clipboard entry.
 Debug endpoint to retrieve all clipboard items.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Query Parameters:**
-*   `include_deleted` (boolean, optional, default: `false`): Include deleted tombstones in response.
+    *   `include_deleted` (boolean, optional, default: `false`): Include deleted tombstones in response.
+    *   `limit` (integer, optional, default: `100`, ge: `1`, le: `500`): Maximum entries to return.
 *   **Response (200 OK):**
     ```json
     [
@@ -796,7 +824,11 @@ Debug endpoint to retrieve all clipboard items.
         "updated_at": "2026-06-14T14:15:31Z",
         "is_deleted": false,
         "deleted_at": null,
-        "is_pinned": false
+        "is_pinned": false,
+        "pinned_at": null,
+        "change_number": 42,
+        "entry_revision": 1,
+        "last_device_id": "device_123"
       }
     ]
     ```
@@ -804,12 +836,13 @@ Debug endpoint to retrieve all clipboard items.
 ---
 
 #### `GET /api/v1/clipboard/sync`
-Delta sync endpoint for clients coming online to download changes.
+Delta sync endpoint for clients coming online to download changes. Supports high-performance monotonic keyset cursor pagination (`since_change_number`) as primary sync mode, with legacy timestamp-offset pagination as fallback.
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Query Parameters:**
-    *   `since` (ISO 8601 string, optional): Fetch updates modified after this server-time.
-    *   `limit` (integer, optional, default: 1000): Pagination limit.
-    *   `offset` (integer, optional, default: 0): Pagination offset.
+    *   `since_change_number` (integer, optional, ge: `0`): Monotonic sequence cursor. Returns entries where `change_number > since_change_number`. Preferred for all clients.
+    *   `since` (ISO 8601 string, optional): Fetch updates modified after this server-time (legacy fallback).
+    *   `limit` (integer, optional, default: `100`, ge: `1`, le: `1000`): Page size limit.
+    *   `offset` (integer, optional, default: `0`, ge: `0`): Pagination offset (legacy fallback).
 *   **Response (200 OK):**
     ```json
     {
@@ -823,16 +856,22 @@ Delta sync endpoint for clients coming online to download changes.
           "updated_at": "2026-06-14T14:18:01Z",
           "is_deleted": true,
           "deleted_at": "2026-06-14T14:18:00Z",
-          "is_pinned": false
+          "is_pinned": false,
+          "pinned_at": null,
+          "change_number": 43,
+          "entry_revision": 2,
+          "last_device_id": "device_123"
         }
       ],
-      "next_offset": 1,
+      "next_cursor": 43,
       "has_more": false,
-      "total_count": 1
+      "next_offset": 1,
+      "total_count": null
     }
     ```
+    *(When using `since_change_number`, `next_cursor` contains the highest change number in the batch and `total_count` is `null` to avoid expensive database table counts)*
 *   **Errors:**
-    *   `410 Gone`: Triggered if the `since` timestamp is older than the `TOMBSTONE_RETENTION_DAYS` (30 days). The client must wipe its local cache and perform a full sync.
+    *   `410 Gone`: Triggered if the `since` timestamp or `since_change_number` is older than pruned retention (`TOMBSTONE_RETENTION_DAYS` / 30 days). The client must wipe its local cache and perform a full initial sync.
 
 ---
 
@@ -884,7 +923,10 @@ Lightweight endpoint to toggle the pin status of an active clipboard item withou
       "is_deleted": false,
       "deleted_at": null,
       "is_pinned": true,
-      "pinned_at": "2026-08-30T14:18:00Z"
+      "pinned_at": "2026-08-30T14:18:00Z",
+      "change_number": 44,
+      "entry_revision": 2,
+      "last_device_id": "device_123"
     }
     ```
 *   **Errors:**
@@ -979,83 +1021,92 @@ When a client exceeds the request limit (typically 5 to 30 requests per minute d
 
 ### Core Setup & Configurations (`app/core/`)
 
-#### [config.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/core/config.py)
+#### [config.py](app/core/config.py)
 Loads environment configurations from `.env` files into a static `Settings` class. It performs startup security assertions, validating keys such as `SECRET_KEY`, `REFRESH_TOKEN_HASH_KEY`, `CLIPBOARD_RETENTION_DAYS`, and `HTTPS_ONLY`.
 
-#### [constants.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/core/constants.py)
+#### [constants.py](app/core/constants.py)
 Defines project-wide size constraints (e.g. max ciphertext length of 64KB, salt lengths) and lists valid protocol and KDF versions.
 
-#### [database.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/core/database.py)
+#### [database.py](app/core/database.py)
 Configures the SQLAlchemy engine and SQLite session pool, defining database connection options.
 
-#### [logging_config.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/core/logging_config.py)
+#### [logging_config.py](app/core/logging_config.py)
 Initializes stdout stream loggers and rotating file log handlers writing logs to the `/app/logs/` folder.
 
-#### [metrics.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/core/metrics.py)
+#### [metrics.py](app/core/metrics.py)
 Initializes Prometheus instrumentation middleware and exposes the `/metrics` endpoint with custom zero-knowledge metrics tracking active WebSockets, event dispatches, push notification latencies, and status outcomes.
 
 ---
 
 ### Database Models & Schemas
 
-#### [models.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/models/models.py)
+#### [models.py](app/models/models.py)
 Declares database entities mapping users, devices, refresh tokens, blacklisted tokens, and clipboard tables.
 
-#### [schemas.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/schemas/schemas.py)
+#### [schemas.py](app/schemas/schemas.py)
 Defines Pydantic v2 schemas used to filter and validate request JSON bodies, push URLs, and serialize responses.
 
 ---
 
 ### Core Business Logic (`app/services/`)
 
-#### [auth.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/auth.py)
+#### [auth.py](app/services/auth.py)
 Coordinates JWT token encoding/decoding, password validation, and request authentication dependencies (`get_current_user`).
 
-#### [clipboard_service.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/clipboard_service.py)
+#### [clipboard_service.py](app/services/clipboard_service.py)
 Encapsulates clipboard entry persistence, optimistic concurrency checks, sequence allocation, pinning, soft-deletion, and push dispatches.
 
-#### [serializers.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/serializers.py)
+#### [serializers.py](app/services/serializers.py)
 Converts raw database byte fields (e.g., binary ciphertext, salt blobs) into base64-encoded strings for JSON serializations.
 
-#### [push_service.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/services/push_service.py)
+#### [push_service.py](app/services/push_service.py)
 Dispatches asynchronous zero-knowledge push notifications (`{"type": "push"}`) to UnifiedPush/FCM distributors with 5s timeout and automatic 400/404/410 stale subscription self-healing.
 
 ---
 
 ### Operational Utilities (`app/utilities/`)
 
-#### [helpers.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/utilities/helpers.py)
+#### [helpers.py](app/utilities/helpers.py)
 Provides cryptographic helpers (`hash_refresh_token`, `strict_b64decode`), ISO 8601 UTC date formatting, and database maintenance routines (expired token revocations, tombstone purges, and clipboard pruning).
+
+#### [backup_db.py](app/utilities/backup_db.py)
+Implements zero-downtime database backups using SQLite's Online Backup API (`sqlite3.Connection.backup`), encrypts output snapshots using Fernet symmetric encryption with key derivation from `BACKUP_ENCRYPTION_KEY`, manages timestamped backup directories, retention rotation (`BACKUP_RETENTION_COUNT`), and backup health verification.
+
+#### [decrypt_db.py](app/utilities/decrypt_db.py)
+Standalone CLI decryption utility enabling self-hosters to safely decrypt and restore encrypted SQLite database snapshots on the local host using the configured encryption passphrase.
+
+#### [push_providers.json](app/utilities/push_providers.json)
+Curated registry and domain allowlist for validated UnifiedPush providers and distributors.
 
 ---
 
 ### API Routers & Endpoints (`app/endpoints/`)
 
-#### [auth_endpoints.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/endpoints/auth_endpoints.py)
+#### [auth_endpoints.py](app/endpoints/auth_endpoints.py)
 Processes accounts, sessions, password changes, token rotations, logouts, user deletions, profile retrievals, and username/email updates.
 
-#### [device_endpoints.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/endpoints/device_endpoints.py)
+#### [device_endpoints.py](app/endpoints/device_endpoints.py)
 Manages device list registries, device renaming, push subscription management, and remote device exclusions.
 
-#### [clipboard_endpoints.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/endpoints/clipboard_endpoints.py)
+#### [clipboard_endpoints.py](app/endpoints/clipboard_endpoints.py)
 Manages manual HTTP clipboard operations, delta updates, item pinning, history clears, and deletes.
 
-#### [websocket_endpoints.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/endpoints/websocket_endpoints.py)
+#### [websocket_endpoints.py](app/endpoints/websocket_endpoints.py)
 Handles client WebSocket upgrades (including TLS/WSS enforcement), heartbeat protocols, writes/deletes, asynchronous database saves via `asyncio.to_thread` pools, and broadcasts.
 
 ---
 
 ### WebSocket Connection Management
 
-#### [connection_manager.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/websockets/connection_manager.py)
+#### [connection_manager.py](app/websockets/connection_manager.py)
 Monitors connection sockets in a thread-safe nested dictionary. Integrates authenticated Redis Pub/Sub channels to distribute broadcasts between backend worker processes. Pub/Sub events are transient; clients recover missed changes through SQLite-backed delta sync.
 
 ---
 
 ### Application Entry Point
 
-#### [main.py](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/app/main.py)
-Initializes the FastAPI application instance. Configures transport security middleware (`https_enforcement_middleware`), automatic migrations (`alembic upgrade head`), Redis connection pools, rate limits, Prometheus telemetry instrumentation (`/metrics`), periodic background cleanup loops, and global exception handlers.
+#### [main.py](app/main.py)
+Loads the FastAPI application instance. Configures transport security middleware (`https_enforcement_middleware`), automatic migrations (`alembic upgrade head`), Redis connection pools, rate limits, Prometheus telemetry instrumentation (`/metrics`), periodic background cleanup loops, and global exception handlers.
 
 ## 7. Database Schema Reference
 
@@ -1072,6 +1123,10 @@ erDiagram
         binary encrypted_master_key
         binary salt
         int kdf_version
+        binary recovery_wrapped_master_key
+        string recovery_key_verifier
+        int session_epoch
+        int sync_sequence
     }
     devices {
         int id PK
@@ -1096,6 +1151,9 @@ erDiagram
         boolean is_pinned
         datetime pinned_at
         datetime updated_at
+        int change_number
+        int entry_revision
+        string last_device_id
     }
     refresh_tokens {
         int id PK
@@ -1128,10 +1186,14 @@ erDiagram
 *   **`encrypted_master_key`** (`LargeBinary`, Not Null): Client-wrapped master decryption key (AES-256-GCM encrypted).
 *   **`salt`** (`LargeBinary`, Not Null): 16-byte KDF salt used during password hashing.
 *   **`kdf_version`** (`Integer`, Not Null, Default `1`): Argon2/PBKDF2 settings version.
+*   **`recovery_wrapped_master_key`** (`LargeBinary`, Not Null): AES-256-GCM wrapped master key encrypted with the client's derived Emergency Recovery Key.
+*   **`recovery_key_verifier`** (`String`, Not Null): Bcrypt hash of the client-derived recovery key verifier for zero-knowledge pre-flight authentication.
+*   **`session_epoch`** (`Integer`, Not Null, Default `1`): Monotonically incremented epoch counter used to immediately invalidate all existing sessions and refresh tokens on account recovery.
+*   **`sync_sequence`** (`Integer`, Not Null, Default `0`): Monotonically incrementing user-scoped counter providing gapless sequence numbers for clipboard mutations.
 
 #### B. `devices` Table
 *   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary identifier.
-*   **`device_id`** (`String`, Unique, Index, Not Null): Client-generated unique device string.
+*   **`device_id`** (`String`, Index, Not Null): Client-generated unique device string.
 *   **`device_name`** (`String`): Friendly name assigned to the device.
 *   **`os`** (`String`, Nullable): Device OS metadata.
 *   **`user_id`** (`String`, FK, Index): References `users.user_id` (UUID).
@@ -1140,41 +1202,62 @@ erDiagram
 *   **`push_subscription_updated_at`** (`DateTime`, Nullable): Timestamp when push subscription was registered or modified.
 
 #### C. `clipboard` Table
-*   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary key (renamed from `index`).
-*   **`clipboard_id`** (`String`, Unique, Index, Not Null): Client-generated item UUID (renamed from `id`).
-*   **`user_id`** (`String`, FK): References `users.user_id` (UUID).
+*   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary key.
+*   **`clipboard_id`** (`String`, Index, Not Null): Client-generated item UUID.
+*   **`user_id`** (`String`, FK, Index): References `users.user_id` (UUID).
 *   **`ciphertext`** (`LargeBinary`, Nullable): Encrypted clipboard content (purged/null when soft-deleted).
 *   **`nonce`** (`LargeBinary`, Nullable): AES-GCM IV (purged/null when soft-deleted).
 *   **`blob_version`** (`Integer`, Not Null, Default `1`): Encrypted payload structural schema version.
-*   **`timestamp`** (`DateTime`): Client-side copying event timestamp.
-*   **`is_deleted`** (`Boolean`, Index): Indicates if the item is a soft-deleted tombstone.
+*   **`timestamp`** (`DateTime`, Index, Not Null): Client-side copying event timestamp.
+*   **`is_deleted`** (`Boolean`, Index, Not Null, Default `0`): Indicates if the item is a soft-deleted tombstone.
 *   **`deleted_at`** (`DateTime`, Index, Nullable): Server timestamp of soft-deletion.
 *   **`is_pinned`** (`Boolean`, Index, Not Null, Default `0`): Protects items from bulk clear operations and auto-pruning.
 *   **`pinned_at`** (`DateTime`, Index, Nullable): Server timestamp when the item was pinned.
 *   **`updated_at`** (`DateTime`, Index, Not Null): Server modification time used for offline client delta updates.
+*   **`change_number`** (`Integer`, Not Null, Default `0`): Monotonic sequence number allocated from `User.sync_sequence` for fast keyset cursor delta sync.
+*   **`entry_revision`** (`Integer`, Not Null, Default `1`): Monotonically incrementing per-item revision counter for deterministic LWW conflict resolution.
+*   **`last_device_id`** (`String`, Nullable): ID of the device that authored the latest revision.
 
 #### D. `refresh_tokens` Table
 *   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary identifier.
-*   **`user_id`** (`String`, FK): References `users.user_id` (UUID).
+*   **`user_id`** (`String`, FK, Index): References `users.user_id` (UUID).
 *   **`token`** (`String`, Unique, Index): HMAC-SHA256 hash of the refresh token string.
-*   **`expiry`** (`DateTime`, Index): Expiration timestamp.
+*   **`expiry`** (`DateTime`, Index, Not Null): Expiration timestamp.
 *   **`device_id`** (`String`, Not Null): ID of the device associated with this session token.
-*   **`token_id`** (`String`, Index, Not Null): Token family ID used for Rotation & Theft Detection (renamed from `family_id`).
-*   **`is_revoked`** (`Boolean`, Default `False`): Tracks whether token has already been rotated.
+*   **`token_id`** (`String`, Index, Not Null): Token family ID used for Rotation & Theft Detection.
+*   **`is_revoked`** (`Boolean`, Not Null, Default `False`): Tracks whether token has already been rotated.
 
 #### E. `blacklisted_tokens` Table
 *   **`id`** (`Integer`, PK, Auto-increment): Database-internal primary identifier.
 *   **`token`** (`String`, Unique, Not Null): Invalidated access token value.
 *   **`expiry`** (`DateTime`, Index, Not Null): Expiration time of token.
 
+### Table Constraints & Compound Indexes
+
+To prevent data corruption and race conditions at the database level, the following constraints and composite indexes are enforced:
+
+*   **Check Constraints:**
+    *   `chk_clipboard_deleted_state`: `(is_deleted = 0 AND deleted_at IS NULL) OR (is_deleted = 1 AND deleted_at IS NOT NULL)` (tombstone state integrity).
+    *   `chk_clipboard_payload_pair`: `(ciphertext IS NULL AND nonce IS NULL) OR (ciphertext IS NOT NULL AND nonce IS NOT NULL)` (payload completeness).
+    *   `chk_clipboard_deleted_not_pinned`: `NOT (is_deleted = 1 AND is_pinned = 1)` (deleted items cannot remain pinned).
+    *   `chk_clipboard_pinned_has_timestamp`: `NOT (is_pinned = 1 AND pinned_at IS NULL)` (pinned items must carry a pinning timestamp).
+*   **Unique Constraints:**
+    *   `uq_clipboard_user_id_clipboard_id`: Enforces scoped uniqueness on `(user_id, clipboard_id)`.
+    *   `uq_device_user_id_device_id`: Enforces scoped uniqueness on `(user_id, device_id)`.
+*   **Compound Performance Indexes:**
+    *   `ix_clipboard_user_change_number`: `(user_id, change_number)` for `O(log N)` keyset cursor delta queries.
+    *   `ix_clipboard_user_deleted_at`: `(user_id, is_deleted, deleted_at)` for high-speed retention auto-pruning.
+
 ---
 
 ## 8. Database Schema Migration & Infrastructure
 
-- **[alembic.ini](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/alembic.ini):** Configures Alembic migration routes.
-- **[Dockerfile](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/Dockerfile):** Hardened multi-stage build (builder stage with compiler toolchain &rarr; minimal runtime stage without build tools) based on `python:3.12.9-slim-bookworm` with unprivileged non-root execution (`USER appuser`, UID/GID 10001) and integrated `HEALTHCHECK` probing `/api/health`.
-- **[compose.yaml](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/compose.yaml):** Production-hardened orchestration for single-node FastAPI + Redis deployment. Synclo backend runs as non-root (`user: "10001:10001"`), with `init: true` (tini process reaper), `security_opt: [no-new-privileges:true]`, log rotation caps, and a universal Python `urllib.request` healthcheck against `/api/health`. Redis is isolated in the `synclo-network` bridge, password-protected via `REDIS_PASSWORD`, resource-capped (`--maxmemory 256mb --maxmemory-policy noeviction`), and health-checked (`redis-cli ping`), ensuring Synclo backend only starts after Redis is ready (`condition: service_healthy`).
-- **[tests/](file:///E:/Files/Code-Stuff/Projects/Synclo-Backend/tests/):** Standardized pytest integration test suite targeting delta sync limits, device creation/revocation, pagination, pin toggles, and push services (executed via the `.venv` virtual environment).
+- **[alembic/versions/0001_v1_baseline.py](alembic/versions/0001_v1_baseline.py):** Consolidated baseline migration revision establishing the full production schema, table constraints, foreign keys, and indexes in a single clean migration step.
+- **[alembic.ini](alembic.ini):** Configures Alembic migration routes and logging.
+- **SQLite Concurrency & WAL Mode:** SQLite is configured with Write-Ahead Logging (`PRAGMA journal_mode=WAL;`), synchronous NORMAL (`PRAGMA synchronous=NORMAL;`), and a busy timeout of 5,000ms (`PRAGMA busy_timeout=5000;`). To eliminate lock escalation deadlocks (`sqlite3.OperationalError: database is locked`), all database write operations strictly utilize `run_in_write_transaction` / `async_run_in_write_transaction`, which acquire an immediate write lock (`BEGIN IMMEDIATE`) with exponential backoff retries.
+- **[Dockerfile](Dockerfile):** Hardened multi-stage build (builder stage with compiler toolchain &rarr; minimal runtime stage without build tools) based on `python:3.12.9-slim-bookworm` with unprivileged non-root execution (`USER appuser`, UID/GID 10001) and integrated `HEALTHCHECK` probing `/api/health`.
+- **[compose.yaml](compose.yaml):** Production-hardened orchestration for single-node FastAPI + Redis deployment. Synclo backend runs as non-root (`user: "10001:10001"`), with `init: true` (tini process reaper), `security_opt: [no-new-privileges:true]`, log rotation caps, and a universal Python `urllib.request` healthcheck against `/api/health`. Redis is isolated in the `synclo-network` bridge, password-protected via `REDIS_PASSWORD`, resource-capped (`--maxmemory 256mb --maxmemory-policy noeviction`), and health-checked (`redis-cli ping`), ensuring Synclo backend only starts after Redis is ready (`condition: service_healthy`).
+- **[tests/](tests/):** Standardized pytest integration test suite targeting delta sync limits, device creation/revocation, pagination, pin toggles, push services, SQLite write contention, and automated Alembic schema parity (executed via the `.venv` virtual environment).
 
 ---
 
@@ -1227,8 +1310,14 @@ Synclo-Backend/
 │   │   └── schemas.py         # Data transfer objects and API schemas
 │   ├── services/              # Domain logic and background tasks
 │   │   ├── auth.py            # Password hashing, JWT creation, token rotation helpers
+│   │   ├── clipboard_service.py # Persistence, LWW conflict checks, sequence allocation, pinning
 │   │   ├── push_service.py    # UnifiedPush background dispatcher and self-healing cleanup
-│   │   └── utils.py           # Background pruning, maintenance tasks, token blacklist cleanup
+│   │   └── serializers.py     # Base64 serialization and tombstone payload builders
+│   ├── utilities/             # Operational scripts and maintenance routines
+│   │   ├── backup_db.py       # Online SQLite backup and Fernet encryption manager
+│   │   ├── decrypt_db.py      # Standalone backup decryption CLI tool
+│   │   ├── helpers.py         # Cryptographic helpers, token hashing, UTC normalization, cleanup
+│   │   └── push_providers.json # Allowlist for validated UnifiedPush distributors
 │   ├── websockets/            # Real-time WebSocket engine
 │   │   └── connection_manager.py # In-memory connection tracker & Redis Pub/Sub cluster bus
 │   └── main.py                # Application initialization, middleware, and startup lifecycles
@@ -1244,8 +1333,10 @@ Synclo-Backend/
 │   ├── test_health.py         # Health checks and OpenAPI documentation tests
 │   ├── test_https_mode.py     # HTTPS/WSS security and transport enforcement tests
 │   ├── test_metrics.py        # Prometheus telemetry metric tests
+│   ├── test_migrations.py     # Alembic baseline migration, backup/restore, and ORM schema parity tests
 │   ├── test_push_service.py   # UnifiedPush dispatch and stale endpoint recovery tests
 │   ├── test_recovery.py       # Zero-Knowledge account recovery tests
+│   ├── test_sqlite_concurrency.py # SQLite WAL concurrency, write lock contention, and retry tests
 │   └── test_websockets.py     # Real-time WebSocket communication and broadcast tests
 ├── .dockerignore              # Exclusions for Docker image builds
 ├── .env.example               # Template for local environment configuration

@@ -80,30 +80,9 @@ class Settings:
     HTTPS_ONLY = os.getenv("HTTPS_ONLY", "false").lower() in ("true", "1", "yes")
 
     ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
-    ALLOW_ARBITRARY_PUSH_ENDPOINTS = os.getenv(
-        "ALLOW_ARBITRARY_PUSH_ENDPOINTS", "false"
-    ).lower() in ("true", "1", "yes")
-    ALLOW_LOCAL_PUSH_ENDPOINTS = os.getenv("ALLOW_LOCAL_PUSH_ENDPOINTS", "false").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
-    PUSH_PROVIDERS_FILE = os.getenv(
-        "PUSH_PROVIDERS_FILE",
-        str(Path(__file__).resolve().parents[1] / "utilities" / "push_providers.json"),
-    )
+    PUSH_PROVIDERS_FILE = Path(__file__).resolve().parents[1] / "utilities" / "push_providers.json"
     ALLOWED_PUSH_DOMAINS = _load_allowed_push_domains(PUSH_PROVIDERS_FILE)
-
-    TRUSTED_PROXIES = [
-        p.strip() for p in os.getenv("TRUSTED_PROXIES", "127.0.0.1,::1").split(",") if p.strip()
-    ]
 
     BACKUP_ENCRYPTION_KEY = os.getenv("BACKUP_ENCRYPTION_KEY", None)
     BACKUP_RETENTION_DAYS = int(os.getenv("BACKUP_RETENTION_DAYS", "30"))
     BACKUP_DIR = os.getenv("BACKUP_DIR", "data/backups")
-
-    if ENVIRONMENT == "production":
-        if ALLOW_ARBITRARY_PUSH_ENDPOINTS:
-            raise RuntimeError("ALLOW_ARBITRARY_PUSH_ENDPOINTS cannot be enabled in production")
-        if ALLOW_LOCAL_PUSH_ENDPOINTS:
-            raise RuntimeError("ALLOW_LOCAL_PUSH_ENDPOINTS cannot be enabled in production")

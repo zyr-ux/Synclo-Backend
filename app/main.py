@@ -94,7 +94,7 @@ async def security_headers_middleware(request: Request, call_next):
     if Settings.HTTPS_ONLY:
         client_ip = request.client.host if request.client else ""
         forwarded_proto = ""
-        if client_ip in Settings.TRUSTED_PROXIES or client_ip in LOOPBACK_HOSTS:
+        if client_ip in LOOPBACK_HOSTS:
             forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
         is_https = request.url.scheme == "https" or forwarded_proto == "https"
         is_loopback = request.url.hostname in LOOPBACK_HOSTS

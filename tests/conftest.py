@@ -1,7 +1,6 @@
 import base64
 import datetime
 import os
-import sys
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -19,10 +18,6 @@ from app.core.database import SessionLocal, configure_sqlite_engine
 from app.main import app
 from app.models.models import Base
 from app.services.auth import get_db
-
-# Prevent creation of bytecode (.pyc) files and __pycache__ directories
-sys.dont_write_bytecode = True
-os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 # Early Mocking of Redis and FastAPILimiter
 mock_redis_client = AsyncMock()

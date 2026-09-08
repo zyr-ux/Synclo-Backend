@@ -37,8 +37,7 @@ def test_https_only_rejects_forwarded_proto_from_untrusted_proxy(client, monkeyp
     import app.main as app_main
 
     monkeypatch.setattr(Settings, "HTTPS_ONLY", True)
-    monkeypatch.setattr(Settings, "TRUSTED_PROXIES", ["10.0.0.1"])
-    monkeypatch.setattr(app_main, "LOOPBACK_HOSTS", frozenset({"localhost", "testserver"}))
+    monkeypatch.setattr(app_main, "LOOPBACK_HOSTS", frozenset({"10.0.0.1"}))
 
     # Ingress from untrusted IP passing x-forwarded-proto must be ignored and redirected (307)
     response = client.get(

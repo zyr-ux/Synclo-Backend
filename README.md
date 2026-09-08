@@ -74,178 +74,54 @@ Run it twice (once for each key) and insert the generated values into your confi
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | JWT access token expiration time in minutes. |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `30` | Refresh token lifespan in days before re-authentication is required. |
 | `DATABASE_URL` | `sqlite:///./data/synclo.db` | SQLAlchemy database connection string (`sqlite:////app/data/synclo.db` in container setups). |
-| `REDIS_URL` | `redis://redis:6379` | Redis connection string for WebSocket pub/sub broadcasting and rate limiting. Production Compose uses authenticated Redis. |
-| `REDIS_PASSWORD` | *(Required in Compose)* | Password for the production Compose Redis service. Use a strong random value. |
+| `REDIS_URL` | `redis://redis:6379` | Redis connection string for WebSocket pub/sub broadcasting and rate limiting. |
 | `HTTPS_ONLY` | `false` | Enforces strict HTTPS redirection (`307`), HSTS headers, and secure WebSockets (`WSS`). Defaults to `false` if omitted. |
 | `ENVIRONMENT` | `development` | Deployment environment (`development` or `production`). Production enforces strict push endpoint security constraints. |
-| `ALLOW_ARBITRARY_PUSH_ENDPOINTS` | `false` | Allows UnifiedPush subscriptions to non-whitelisted domains. Strictly forbidden in production. |
-| `ALLOW_LOCAL_PUSH_ENDPOINTS` | `false` | Allows UnifiedPush subscriptions to local/private IP addresses and loopback. Strictly forbidden in production. |
-| `PUSH_PROVIDERS_FILE` | `app/utilities/push_providers.json` | Path to the JSON file listing trusted UnifiedPush provider domains. |
-| `TRUSTED_PROXIES` | `127.0.0.1,::1` | Comma-separated list of trusted upstream reverse proxy IP addresses. |
 | `CLIPBOARD_RETENTION_DAYS` | `30` | Auto-pruning retention lifecycle in days for unpinned clipboard items (`0` to disable). Pinned items are immune. |
 | `TOMBSTONE_RETENTION_DAYS` | `30` | Retention duration in days for deletion records (tombstones) enabling offline client synchronization. |
-| `BACKUP_ENCRYPTION_KEY` | `None` *(unset)* | Optional Fernet key used by operational backup utilities (`backup_db.py`) to encrypt SQLite database snapshots (`.db.enc`). |
+| `BACKUP_ENCRYPTION_KEY` | `None` | Optional Fernet key used by operational backup utilities (`backup_db.py`) to encrypt SQLite database snapshots (`.db.enc`). |
 | `BACKUP_RETENTION_DAYS` | `30` | Retention duration in days for database backup snapshots before automatic pruning. |
 | `BACKUP_DIR` | `data/backups` | Directory path where SQLite database backups are stored. |
-| `SYNCLO_DOMAIN` | `synclo.yourdomain.com` | Public domain name used by Caddy in Docker Compose for automatic Let's Encrypt / ZeroSSL certificates. |
 
 ---
 
-### 🚀 Deployment Options
+### 🚀 Deployment & Setup Options
 
-Synclo can be deployed in production with automatic HTTPS or run locally for development. Choose the setup that matches your environment:
+Choose the setup that matches your use case:
 
-*   **[Method 1: All-in-One Docker Stack (Recommended)](#method-1-all-in-one-docker-stack-with-caddy-recommended):** Production-ready, single-file `compose.yaml` with automatic SSL/TLS via embedded Caddy.
-*   **[Method 2: Standalone Docker (Behind Host Reverse Proxy)](#method-2-standalone-docker-behind-host-reverse-proxy):** Run Synclo and Redis in Docker while using an existing Caddy, Nginx, or Traefik service on the host.
-*   **[Method 3: Local Development (from Source)](#method-3-local-development-from-source):** For contributors developing and testing locally.
+*   **[Option 1: Production Deployment (Docker Compose)](#option-1-production-deployment-docker-compose):** Recommended for end-users and self-hosters deploying Synclo with Docker Compose and a host reverse proxy (e.g. Caddy).
+*   **[Option 2: Local Development (from Source)](#option-2-local-development-from-source):** For contributors developing, testing, and running Synclo locally from source.
 
 ---
 
-#### Method 1: All-in-One Docker Stack with Caddy (Recommended)
+#### Option 1: Production Deployment (Docker Compose)
 
-This is the recommended production deployment. It runs **Synclo Backend**, **Redis**, and **Caddy** together using a single, self-contained `compose.yaml` file. Caddy's configuration is embedded directly using Docker Compose `configs`—no separate configuration files on disk are needed.
+For self-hosters and end users running the pre-built Synclo backend. No need to clone the repository.
 
-**1. Create `compose.yaml`:**
-Save the following as `compose.yaml` on your server, replacing `synclo.yourdomain.com` with your public domain and inserting your generated secret keys:
+##### 1. Create Project Directory
+Create the project folder and the persistent `data` and `logs` subdirectories:
+```bash
+mkdir -p Synclo-Backend/data Synclo-Backend/logs
+cd Synclo-Backend
+```
+
+##### 2. Create `compose.yaml`
+Save the following configuration as `compose.yaml` inside your `Synclo-Backend/` directory:
 
 ```yaml
 services:
   synclo-backend:
     image: ghcr.io/zyr-ux/synclo-backend:latest
-    restart: unless-stopped
-    expose:
-      - "8000"
-    environment:
-      SECRET_KEY: "change_this_to_a_random_hex_key"
-      REFRESH_TOKEN_HASH_KEY: "change_this_to_a_random_hex_key"
-      DATABASE_URL: "sqlite:////app/data/synclo.db"
-      REDIS_URL: "redis://:${REDIS_PASSWORD}@redis:6379/0"
-      REDIS_PASSWORD: "change_this_to_a_strong_random_password"
-      HTTPS_ONLY: "true"
-      CLIPBOARD_RETENTION_DAYS: "30"
-      TOMBSTONE_RETENTION_DAYS: "30"
-    user: "10001:10001"
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-    depends_on:
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-  redis:
-    image: redis:7-alpine
-    container_name: redis
-    restart: unless-stopped
-    environment:
-      REDIS_PASSWORD: "${REDIS_PASSWORD}"
-    command:
-      - redis-server
-      - --requirepass
-      - "${REDIS_PASSWORD}"
-      - --maxmemory
-      - 256mb
-      - --maxmemory-policy
-      - noeviction
-    expose:
-      - 6379
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
-
-  caddy:
-    image: caddy:2-alpine
-    container_name: caddy
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      SYNCLO_DOMAIN: "synclo.yourdomain.com" # Change this
-    configs:
-      - source: caddyfile
-        target: /etc/caddy/Caddyfile
-    volumes:
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      synclo-backend:
-        condition: service_healthy
-
-configs:
-  caddyfile:
-    content: |
-      {$SYNCLO_DOMAIN} {
-          encode gzip zstd
-
-          @backend {
-              path /api/* /ws/*
-          }
-
-          handle @backend {
-              reverse_proxy synclo-backend:8000 {
-                  header_up Host {host}
-                  header_up X-Real-IP {remote_host}
-                  header_up X-Forwarded-For {remote_host}
-                  header_up X-Forwarded-Proto {scheme}
-              }
-          }
-
-          handle {
-              error "Not Found" 404
-          }
-      }
-
-volumes:
-  caddy_data:
-  caddy_config:
-```
-
-**2. Start the Stack:**
-```bash
-docker compose up -d
-```
-The stack will start and Caddy will automatically provision TLS certificates for your domain. You can monitor the logs with:
-```bash
-docker compose logs -f
-```
-
-Once running, you can explore the interactive API documentation (ReDoc) at `https://<your-domain>/api/docs`.
-
----
-
-#### Method 2: Standalone Docker (Behind Host Reverse Proxy)
-
-Use this method if you already run a reverse proxy (such as Caddy or Nginx) directly on your host OS.
-
-**1. Create `compose.yaml`:**
-Run the backend and Redis container stack:
-
-```yaml
-services:
-  synclo-backend:
-    image: ghcr.io/zyr-ux/synclo-backend:latest
+    container_name: synclo-backend
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      SECRET_KEY: "change_this_to_a_random_hex_key"
-      REFRESH_TOKEN_HASH_KEY: "change_this_to_a_random_hex_key"
-      DATABASE_URL: "sqlite:////app/data/synclo.db"
-      REDIS_URL: "redis://:${REDIS_PASSWORD}@redis:6379/0"
-      REDIS_PASSWORD: "change_this_to_a_strong_random_password"
+      SECRET_KEY: "change_this_to_a_random_hex_key" # change this
+      REFRESH_TOKEN_HASH_KEY: "change_this_to_a_random_hex_key" # change this
       HTTPS_ONLY: "true"
       CLIPBOARD_RETENTION_DAYS: "30"
       TOMBSTONE_RETENTION_DAYS: "30"
-    user: "10001:10001"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -263,12 +139,8 @@ services:
     image: redis:7-alpine
     container_name: redis
     restart: unless-stopped
-    environment:
-      REDIS_PASSWORD: "${REDIS_PASSWORD}"
     command:
       - redis-server
-      - --requirepass
-      - "${REDIS_PASSWORD}"
       - --maxmemory
       - 256mb
       - --maxmemory-policy
@@ -276,87 +148,90 @@ services:
     expose:
       - 6379
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 5s
+```
 
-Start the containers:
+##### 3. Generate Secret Keys & Configure
+Generate two random 32-byte hexadecimal secrets:
+```bash
+openssl rand -hex 32
+```
+Run it twice (once for `SECRET_KEY` and once for `REFRESH_TOKEN_HASH_KEY`) and insert these values directly into your `compose.yaml` file.
+
+##### 4. Start the Stack
+Launch the containers in detached mode:
 ```bash
 docker compose up -d
 ```
 
-**2. Configure Host Reverse Proxy (Caddy Example):**
-Add the following block to your host's `/etc/caddy/Caddyfile`, replacing `synclo.yourdomain.com` with your domain:
-
-```caddyfile
-synclo.yourdomain.com {
-    encode gzip zstd
-
-    @backend {
-        path /api/* /ws/*
-    }
-
-    handle @backend {
-        reverse_proxy localhost:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-For {remote_host}
-            header_up X-Forwarded-Proto {scheme}
-        }
-    }
-
-    handle {
-        error "Not Found" 404
-    }
-}
+###### 📁 Persistent Host Data & Logs
+Docker mounts your host directories (`./data` and `./logs`) into the container. All database files and logs are directly accessible on your host machine inside `Synclo-Backend/`:
+```text
+Synclo-Backend/
+├── compose.yaml
+├── data/
+│   ├── synclo.db               # SQLite database file
+│   └── backups/                # Database backup snapshots
+└── logs/
+    └── server.log              # Live application logs
 ```
-
-Reload Caddy to apply changes:
+You can view the logs directly on your host:
 ```bash
-sudo systemctl reload caddy
+tail -f logs/server.log
+# Or through Docker Compose:
+docker compose logs -f
 ```
+
+##### 5. Configure Reverse Proxy (Caddy Example)
+Expose Synclo to your domain with automatic HTTPS using a system-wide Caddy installation:
+
+1. Open your host's Caddy configuration:
+   ```bash
+   sudo vim /etc/caddy/Caddyfile
+   ```
+
+2. Add the reverse proxy block, replacing `synclo.yourdomain.com` with your actual domain:
+   ```caddyfile
+   synclo.yourdomain.com {
+       encode gzip zstd
+
+       @backend {
+           path /api/* /ws/*
+       }
+
+       handle @backend {
+           reverse_proxy localhost:8000 {
+               header_up Host {host}
+               header_up X-Real-IP {remote_host}
+               header_up X-Forwarded-For {remote_host}
+               header_up X-Forwarded-Proto {scheme}
+           }
+       }
+
+       handle {
+           error "Not Found" 404
+       }
+   }
+   ```
+
+3. Reload Caddy:
+   ```bash
+   sudo systemctl reload caddy
+   ```
+
+Once running, your server's interactive API documentation (ReDoc) is accessible at `https://<your-domain>/api/docs`.
 
 ---
 
-## 🛠️ Operational Utilities
-
-The `app/utilities/` folder provides administrative tools and helper routines for database maintenance and disaster recovery:
-
-### 1. Database Backups (`app/utilities/backup_db.py`)
-Performs transaction-safe online SQLite backups with integrity verification, optional Fernet encryption, and automatic retention pruning:
-```bash
-# Create standard .db snapshot:
-python app/utilities/backup_db.py
-
-# Create encrypted .db.enc snapshot (recommended for defense-in-depth against metadata exposure):
-python app/utilities/backup_db.py --key "<fernet-key>"
-
-# Dry-run test restoration into a sandboxed temporary directory:
-python app/utilities/backup_db.py --verify-restore data/backups/synclo_backup_YYYYMMDD_HHMMSS.db.enc --key "<fernet-key>"
-
-# Restore backup to active database:
-python app/utilities/backup_db.py --restore data/backups/synclo_backup_YYYYMMDD_HHMMSS.db.enc --key "<fernet-key>"
-```
-
-### 2. Manual Backup Decryption (`app/utilities/decrypt_db.py`)
-Dedicated, standalone CLI utility allowing administrators to decrypt any `.db.enc` backup file into a standard SQLite `.db` database without running the backend:
-```bash
-python app/utilities/decrypt_db.py data/backups/synclo_backup_YYYYMMDD_HHMMSS.db.enc --output restored.db --key "<fernet-key>"
-```
-
-### 3. Push Distributor Domain Allowlist (`app/utilities/push_providers.json`)
-Lists trusted UnifiedPush provider domains (`ntfy.sh`, `push.nextcloud.com`, `up.kde.org`, `unifiedpush.org`). You can add custom self-hosted distributor domains by updating this file or mounting a custom JSON file.
-
-
----
-
-#### Method 3: Local Development (from Source)
+#### Option 2: Local Development (from Source)
 
 For contributors and developers running Synclo locally from source:
 
-**Option A: Docker Compose (Local Build)**
+##### Option A: Docker Compose (Local Build)
 1. **Clone & Configure:**
    ```bash
    git clone https://github.com/zyr-ux/Synclo-Backend.git
@@ -368,7 +243,7 @@ For contributors and developers running Synclo locally from source:
    docker compose up -d --build
    ```
 
-**Option B: Manual Setup (Python Virtual Environment)**
+##### Option B: Manual Setup (Python Virtual Environment)
 1. **Clone & Configure:**
    ```bash
    git clone https://github.com/zyr-ux/Synclo-Backend.git

@@ -25,7 +25,7 @@ async def _validate_ws_security(websocket: WebSocket) -> bool:
     if Settings.HTTPS_ONLY:
         client_ip = websocket.client.host if websocket.client else ""
         forwarded_proto = ""
-        if client_ip in Settings.TRUSTED_PROXIES or client_ip in LOOPBACK_HOSTS:
+        if client_ip in LOOPBACK_HOSTS:
             forwarded_proto = websocket.headers.get("x-forwarded-proto", "").lower()
         is_secure = websocket.url.scheme == "wss" or forwarded_proto in ("https", "wss")
         is_loopback = websocket.url.hostname in LOOPBACK_HOSTS
