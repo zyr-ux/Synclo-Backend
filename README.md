@@ -4,7 +4,7 @@
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=white)](https://www.docker.com/)
 [![Redis](https://img.shields.io/badge/Redis-DC382D?style=flat&logo=redis&logoColor=white)](https://redis.io/)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/zyr-ux/Synclo-Backend/docker-publish.yml?style=flat)](https://github.com/zyr-ux/Synclo-Backend/actions/workflows/docker-publish.yml)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/zyr-ux/Synclo-Backend/ci.yml?style=flat)](https://github.com/zyr-ux/Synclo-Backend/actions/workflows/ci.yml)
 
 **Synclo** is a secure, cross-platform clipboard manager that keeps your clipboard seamlessly in sync across your devices (Desktop, Mobile, Web).
 
@@ -16,17 +16,12 @@ Built on a **Zero-Knowledge Architecture**, the backend acts strictly as an encr
 
 ## 🚀 Key Features
 
-*   🔒 **Zero-Knowledge Security:** Plaintext passwords, Master Keys, and decrypted clipboard entries never touch the server. All payloads are AES-encrypted before transmission.
-*   ⚡ **Real-Time Push Synchronization:** Employs WebSockets for instant propagation of clipboard updates across client devices.
-*   📲 **Mobile Background Push Notifications:** Integrated with UnifiedPush / FCM distributors for energy-efficient silent background wake-ups on Android devices.
-*   🌐 **Multi-Instance Scalability:** Uses Redis Pub/Sub underneath to distribute WebSocket broadcasts, enabling the backend to scale across multiple server nodes.
-*   🔄 **Smart Delta Synchronization:** Employs a soft-delete (tombstone) strategy to support robust synchronization for devices transitioning between offline and online states.
-*   📌 **Granular Pin Management:** Lightweight dedicated pinning system ensuring pinned clipboard items are preserved during bulk history purges and immune to auto-pruning.
-*   📊 **Age-Based Clipboard Retention & Auto-Pruning:** Server-wide configurable retention lifecycle (`CLIPBOARD_RETENTION_DAYS`) with automatic tombstone pruning for older unpinned entries while preserving pinned items.
-*   🔒 **HTTPS & Transport Security:** Strict HTTPS/WSS enforcement mode (`HTTPS_ONLY`) with automatic HTTP-to-HTTPS redirection, HSTS headers, reverse proxy support (`X-Forwarded-Proto`), and loopback development exemptions.
-*   📈 **Observability & Prometheus Telemetry:** Exposes anonymized, privacy-preserving operational metrics at `/metrics`.
-*   🛡️ **Advanced Session Security:** Uses Refresh Token Rotation, token reuse detection, and global rate limiting to protect against session theft and brute-force attacks.
-*   🔐 **Zero-Knowledge User Observability Design:** Structural email-less design where public ingress points (`/register`, `/auth/salt`) provide immediate, honest client feedback bounded by Redis rate limiters, while internal auth and recovery endpoints return uniform error responses (`401`) to prevent side-channel disclosures.
+*   🔒 **Zero-Knowledge Architecture:** End-to-end client encryption ensures passwords, Master Keys, and decrypted clipboard contents never touch the server.
+*   ⚡ **Instant Real-Time Sync:** WebSockets backed by Redis Pub/Sub deliver immediate clipboard propagation across all active devices.
+*   📲 **Silent Mobile Wake-Ups:** Native UnifiedPush integration enables energy-efficient, background synchronization on Android.
+*   🔄 **Reliable Offline Catch-Up:** Smart delta synchronization and tombstone records ensure devices seamlessly reconcile after being offline.
+*   📊 **Configurable Data Retention:** Automated server-side lifecycle pruning for old clips and tombstones keeps local SQLite storage fast and lightweight.
+*   🛡️ **Hardened Session Security:** Built-in Refresh Token Rotation, token reuse detection, Redis rate limiting, and strict HTTPS/WSS enforcement.
 
 ---
 

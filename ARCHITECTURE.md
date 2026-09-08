@@ -35,13 +35,13 @@ graph TD
     WS_End --> PushServ
     PushServ --> Dist["UnifiedPush Distributors / Webhooks"]
     
-    Manager ---|"Redis Pub/Sub"| Redis[("Authenticated Redis (ephemeral)")]
+    Manager ---|"Redis Pub/Sub"| Redis[("Local Redis (ephemeral)")]
 ```
 
 *   **REST HTTP Endpoints:** Handle authentication, session tokens, device registrations, and fallback manual clipboard transfers.
 *   **WebSocket Endpoints:** Maintain persistent connections for low-latency, real-time clipboard sync.
 *   **ConnectionManager:** Coordinates WebSocket sessions. Uses Redis Pub/Sub to relay sync events between backend worker processes with node-level echo suppression. The backend is designed strictly as a single-node server for VPS / homelab self-hosting without multi-node clustering or distributed overhead.
-*   **Redis:** Provides Pub/Sub, distributed rate-limit counters, and the periodic-cleanup lock. It is authenticated, health-checked, memory-bounded, and intentionally ephemeral; Redis is not a source of durable application data.
+*   **Redis:** Provides Pub/Sub, distributed rate-limit counters, and the periodic-cleanup lock. It is isolated on the private container bridge network, health-checked, memory-bounded, and intentionally ephemeral; Redis is not a source of durable application data.
 *   **Database (SQLite):** Stores user login hashes, device registries, session tokens, and encrypted clipboard entry history (tombstones). Operates in WAL mode with serializable write transactions.
 *   **Cleanup Service:** Background workers running periodic purges on old expired data and tombstones.
 
@@ -289,15 +289,49 @@ Pushed to other connected user devices when the user successfully changes their 
 }
 ```
 
-### WebSocket Close Status Codes
+### WebSocket Server-to-Client Error Frames & Close Codes
 
-*   `1000`: Normal closure.
-*   `1008`: Policy Violation (Insecure WebSocket connection rejected when `HTTPS_ONLY` is enabled, or authentication credentials invalid/blacklisted).
-*   `4001`: Token Expired. Perform token refresh and reconnect.
-*   `4002`: Ping/Pong Timeout. Reconnect (possible network drop).
-*   `4003`: Device Deleted Remotely. Clear local state, logout user, redirect to login.
-*   `4004`: Credentials Changed. Active sessions terminated when password or recovery key is rotated or used. Prompt user to re-authenticate.
-*   `1011`: Internal Server Error. Reconnect with exponential backoff.
+When an error occurs on the WebSocket connection, the server sends a structured JSON error frame before or instead of terminating the connection:
+
+#### In-Band Error Frames (Connection Preserved)
+*   **Validation / Payload Errors:**
+    ```json
+    { "type": "error", "message": "Missing required fields (id, timestamp)" }
+    ```
+    ```json
+    { "type": "error", "message": "Invalid payload: <validation_error_details>" }
+    ```
+*   **LWW Write / Deletion Conflicts:**
+    ```json
+    {
+      "type": "error",
+      "id": "c1f77d33-bc42-4916-b847-ec4b868e4bf9",
+      "code": "conflict",
+      "message": "Conflict detected: write rejected (stale timestamp)"
+    }
+    ```
+*   **Internal Processing Error:**
+    ```json
+    { "type": "error", "message": "Internal error processing clipboard item" }
+    ```
+
+#### Fatal Error Frames & Connection Termination Codes
+
+| Close Code | Close Reason / Frame Dispatched | Trigger Condition & Client Action |
+| :--- | :--- | :--- |
+| `1000` | Normal Closure | Graceful client disconnect. |
+| `1008` | `{"type": "error", "message": "Insecure WebSocket connection rejected (WSS required)"}` | Plain `ws://` rejected when `HTTPS_ONLY=True` on non-loopback host. Client must use `wss://`. |
+| `1008` | `{"type": "error", "message": "Missing or invalid Authorization header"}` | Missing `Authorization: Bearer <token>` in WebSocket upgrade handshake. |
+| `1008` | `{"type": "error", "message": "Invalid token: missing required fields"}` | JWT payload missing required claims (`sub`, `exp`, `device_id`, or `epoch`). |
+| `1008` | `{"type": "error", "message": "Invalid token"}` | JWT signature invalid or token unparseable. |
+| `1008` | `{"type": "error", "message": "Token has been revoked"}` | Access token is present in the `blacklisted_tokens` table. |
+| `1008` | `{"type": "error", "message": "User not found"}` | User account associated with token was deleted. |
+| `1008` | `{"type": "error", "message": "Unauthorized device"}` | `device_id` in token does not match an active registered device for this user. |
+| `4001` | `{"type": "error", "message": "Token expired"}` | JWT signature expired during handshake or active session. Client must rotate tokens via `POST /api/v1/refresh` and reconnect. |
+| `4002` | Ping/Pong Timeout | Client failed to respond with `{"type": "pong"}` within 10 seconds of server `{"type": "ping"}`. Client should reconnect. |
+| `4003` | `{"type": "device_deleted", "message": "This device has been removed from your account"}` | Device removed remotely by another authorized device. Client must clear local cache, logout, and redirect to login. |
+| `4004` | `{"type": "session_invalidated", "reason": "credentials_changed"}` | User password changed, email modified, or account recovered. Active session epoch invalidated; client must prompt user to re-authenticate. |
+| `1011` | Internal Server Error | Uncaught server exception during message processing. Client should reconnect with exponential backoff. |
 
 ---
 
@@ -306,14 +340,32 @@ Pushed to other connected user devices when the user successfully changes their 
 All protected API endpoints require an Authorization Header: `Authorization: Bearer <access_token>`.
 
 > [!TIP]
-> **Interactive API Documentation (ReDoc):**
-> When the backend server is running, the complete interactive OpenAPI documentation is rendered via ReDoc at `/api/docs`. The raw OpenAPI JSON schema is accessible at `/api/openapi.json`.
-> You can also explore the live API documentation for the official hosted instance at [synclo.zyrux.dev/api/docs](https://synclo.zyrux.dev/api/docs).
+> **Interactive API Documentation (ReDoc & Swagger):**
+> * **Development Mode (`ENVIRONMENT=development`):** Full interactive OpenAPI documentation is available via ReDoc at `/api/docs`, Swagger UI at `/docs`, and raw schema at `/api/openapi.json`.
+> * **Production Mode (`ENVIRONMENT=production`):** Documentation routes (`/docs`, `/api/docs`, `/api/openapi.json`) are completely disabled for attack-surface reduction.
+> * Live hosted documentation is accessible at [synclo.zyrux.dev/api/docs](https://synclo.zyrux.dev/api/docs).
 
-### Authentication Endpoints
+### Common Authentication & Authorization Errors
+
+Protected endpoints requiring `Authorization: Bearer <access_token>` enforce strict zero-knowledge token verification via `get_auth_context`. Any authenticated request may return:
+
+*   `401 Unauthorized`:
+    *   `{"detail": "Not authenticated"}`: Missing `Authorization` header or missing `Bearer ` scheme.
+    *   `{"detail": "Invalid or expired token"}`: Malformed JWT token, invalid signature, expired timestamp, or user account not found.
+    *   `{"detail": "Token has been revoked"}`: Access token is present in the `blacklisted_tokens` table.
+    *   `{"detail": "Session revoked, please re-authenticate"}`: Token session `epoch` counter does not match the user's current `session_epoch` (invalidated by password change, email update, or account recovery).
+*   `403 Forbidden`:
+    *   `{"detail": "Unauthorized device"}`: Device identifier in token is not recognized as an active registered device for this user.
+*   `422 Unprocessable Entity`: Request body or query parameters failed Pydantic schema validation.
+*   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`: Per-IP or per-user rate limit exceeded.
+
+---
+
+### Authentication & User Endpoints
 
 #### `GET /api/v1/auth/salt`
-Retrieves KDF parameters to begin key derivation for login.
+Retrieves KDF parameters to begin key derivation for login (pre-auth).
+*   **Rate Limit:** 10 requests / minute
 *   **Query Parameters:**
     *   `email` (string, required): The user's email address.
 *   **Response (200 OK):**
@@ -324,14 +376,17 @@ Retrieves KDF parameters to begin key derivation for login.
     }
     ```
 *   **Errors:**
-    *   `404 Not Found`: Email not found (prevents email enumeration).
-    *   `429 Too Many Requests`: Rate limit exceeded.
+    *   `400 Bad Request`: `{"detail": "User salt not initialized"}`
+    *   `404 Not Found`: `{"detail": "Email not found"}` (uniform response prevents account probing)
+    *   `422 Unprocessable Entity`: Missing or invalid `email` query parameter
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `POST /api/v1/auth/recovery-material`
-Retrieves the recovery-wrapped master key for account recovery (public, pre-auth endpoint).
-*   **Request Body:**
+Retrieves the recovery-wrapped master key for account recovery (pre-auth).
+*   **Rate Limit:** 5 requests / minute
+*   **Request Body (`RecoveryMaterialRequest`):**
     ```json
     {
       "email": "user@example.com"
@@ -344,14 +399,16 @@ Retrieves the recovery-wrapped master key for account recovery (public, pre-auth
     }
     ```
 *   **Errors:**
-    *   `401 Unauthorized`: Could not recover account (uniform response prevents email enumeration).
-    *   `429 Too Many Requests`: Rate limit exceeded.
+    *   `401 Unauthorized`: `{"detail": "Could not recover account"}` (uniform response prevents email enumeration)
+    *   `422 Unprocessable Entity`: Invalid request body or malformed email format
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `POST /api/v1/auth/recover`
-Recovers an account using the Emergency Recovery Key and mandatory auto-rotation (burn-on-use).
-*   **Request Body:**
+Recovers an account using the Emergency Recovery Key and mandatory auto-rotation (burn-on-use). Invalidates all existing sessions (increments `session_epoch`) and closes active WebSockets with code `4004`.
+*   **Rate Limit:** 3 requests / minute
+*   **Request Body (`AccountRecoveryRequest`):**
     ```json
     {
       "email": "user@example.com",
@@ -373,20 +430,27 @@ Recovers an account using the Emergency Recovery Key and mandatory auto-rotation
       "access_token": "eyJhbGciOi...",
       "refresh_token": "plain_refresh_token_string",
       "token_type": "bearer",
-      "username": "tester"
+      "username": "Alice"
     }
     ```
 *   **Errors:**
-    *   `400 Bad Request`: Validation failure (out of bounds or invalid base64).
-    *   `401 Unauthorized`: Invalid recovery credentials (old verifier mismatch).
-    *   `429 Too Many Requests`: Rate limit exceeded.
+    *   `400 Bad Request`:
+        *   `{"detail": "device_id length out of bounds"}`
+        *   `{"detail": "device_name length out of bounds"}`
+        *   `{"detail": "Unsupported kdf_version"}`
+        *   `{"detail": "Invalid base64 encoding for {field_name}"}`
+        *   `{"detail": "{field_name} length out of bounds"}`
+    *   `401 Unauthorized`: `{"detail": "Could not recover account"}` (old verifier mismatch or non-existent user)
+    *   `422 Unprocessable Entity`: Request validation failure
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `POST /api/v1/auth/recovery-key/rotate`
-Manually regenerates and updates the recovery key for an authenticated user.
+Manually regenerates and updates the recovery key material for an authenticated user.
+*   **Rate Limit:** 5 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
-*   **Request Body:**
+*   **Request Body (`RecoveryKeyRotateRequest`):**
     ```json
     {
       "new_recovery_wrapped_master_key": "base64_encoded_new_recovery_wrapped_key",
@@ -400,19 +464,24 @@ Manually regenerates and updates the recovery key for an authenticated user.
     }
     ```
 *   **Errors:**
-    *   `400 Bad Request`: Validation failure.
-    *   `401 Unauthorized`: Missing or invalid authentication.
+    *   `400 Bad Request`:
+        *   `{"detail": "Invalid base64 encoding for {field_name}"}`
+        *   `{"detail": "{field_name} length out of bounds"}`
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `422 Unprocessable Entity`: Request validation failure
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `POST /api/v1/register`
-Registers a new user and registers the first device (Async).
-> [!NOTE]
-> On successful user and device registration, the server broadcasts a `"device_added"` event over WebSockets to any other connected devices for this user.
-*   **Request Body:**
+Registers a new user and auto-registers their first device. Broadcasts `"device_added"` to any other connected sessions.
+*   **Rate Limit:** 3 requests / minute
+*   **Request Body (`UserRegisterWithDevice`):**
     ```json
     {
       "email": "user@example.com",
+      "username": "Alice",
       "auth_key": "base64_encoded_client_derived_auth_key",
       "device_id": "unique_device_id_string",
       "device_name": "My iPhone 15",
@@ -430,21 +499,26 @@ Registers a new user and registers the first device (Async).
       "access_token": "eyJhbGciOi...",
       "refresh_token": "plain_refresh_token_string",
       "token_type": "bearer",
-      "username": "tester"
+      "username": "Alice"
     }
     ```
 *   **Errors:**
-    *   `400 Bad Request`: Validation failure (lengths out of bounds).
-    *   `409 Conflict`: Email or Device ID already registered.
+    *   `400 Bad Request`:
+        *   `{"detail": "device_id length out of bounds"}`
+        *   `{"detail": "Unsupported kdf_version"}`
+        *   `{"detail": "Invalid base64 encoding for {field_name}"}`
+        *   `{"detail": "{field_name} length out of bounds"}`
+        *   `{"detail": "Registration failed"}`
+    *   `409 Conflict`: `{"detail": "Email already registered"}`
+    *   `422 Unprocessable Entity`: Request validation failure
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `POST /api/v1/login`
-Logs in a user and registers/updates the device connection (Async).
-> [!NOTE]
-> * If a new device is auto-registered during login, a `"device_added"` event is broadcasted.
-> * If an existing device updates its OS version during login, a `"device_updated"` event is broadcasted.
-*   **Request Body:**
+Logs in a user, authenticates device connection, and auto-registers new devices.
+*   **Rate Limit:** 5 requests / minute
+*   **Request Body (`UserLoginWithDevice`):**
     ```json
     {
       "email": "user@example.com",
@@ -460,7 +534,7 @@ Logs in a user and registers/updates the device connection (Async).
       "access_token": "eyJhbGciOi...",
       "refresh_token": "plain_refresh_token_string",
       "token_type": "bearer",
-      "username": "tester",
+      "username": "Alice",
       "email": "user@example.com",
       "encrypted_master_key": "base64_encoded_wrapped_key",
       "salt": "base64_encoded_salt",
@@ -468,15 +542,20 @@ Logs in a user and registers/updates the device connection (Async).
     }
     ```
 *   **Errors:**
-    *   `401 Unauthorized`: Invalid credentials.
-    *   `400 Bad Request`: Device ID length out of bounds.
+    *   `400 Bad Request`:
+        *   `{"detail": "device_id length out of bounds"}`
+        *   `{"detail": "Device registration failed"}`
+    *   `401 Unauthorized`: `{"detail": "Invalid credentials"}`
+    *   `422 Unprocessable Entity`: Request validation failure
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `POST /api/v1/logout`
-Logs out the current device and blacklists the current access token.
+Logs out the current device, revokes its refresh token, and blacklists the active access token.
+*   **Rate Limit:** 10 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
-*   **Request Body:**
+*   **Request Body (`RefreshTokenRequest`):**
     ```json
     {
       "refresh_token": "plain_refresh_token_string"
@@ -488,12 +567,22 @@ Logs out the current device and blacklists the current access token.
       "message": "Logged out successfully"
     }
     ```
+*   **Errors:**
+    *   `400 Bad Request`:
+        *   `{"detail": "Invalid access token"}` (token payload missing required claims)
+        *   `{"detail": "Invalid refresh token"}` (empty or invalid string)
+    *   `401 Unauthorized`:
+        *   `{"detail": "Invalid access token"}` (unparseable JWT)
+        *   `{"detail": "Not authenticated"}` (missing Authorization header)
+    *   `422 Unprocessable Entity`: Request validation failure
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `POST /api/v1/refresh`
-Obtains a new Access/Refresh token pair using Refresh Token Rotation (RTR).
-*   **Request Body:**
+Rotates an existing refresh token and issues a new access/refresh token pair via Refresh Token Rotation (RTR). Detects token reuse (theft) and immediately revokes all tokens across the token family.
+*   **Rate Limit:** 10 requests / minute
+*   **Request Body (`RefreshTokenRequest`):**
     ```json
     {
       "refresh_token": "plain_refresh_token_string"
@@ -504,18 +593,27 @@ Obtains a new Access/Refresh token pair using Refresh Token Rotation (RTR).
     {
       "access_token": "eyJhbGciOi...",
       "refresh_token": "new_plain_refresh_token_string",
-      "token_type": "bearer"
+      "token_type": "bearer",
+      "username": "Alice"
     }
     ```
 *   **Errors:**
-    *   `401 Unauthorized`: Token expired, token invalid, or token reuse detected (triggers immediate revocation of the entire session family).
+    *   `400 Bad Request`: `{"detail": "Invalid refresh token"}`
+    *   `401 Unauthorized`:
+        *   `{"detail": "Refresh token reused. Security alert: Session terminated."}`
+        *   `{"detail": "Invalid refresh token"}`
+        *   `{"detail": "Expired refresh token"}`
+    *   `404 Not Found`: `{"detail": "User not found"}`
+    *   `422 Unprocessable Entity`: Request validation failure
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `POST /api/v1/password/change`
-Changes the user password and updates the wrapped master key.
+Changes the user password and re-wraps the Master Key. Increments `session_epoch`, revokes all existing refresh tokens, and disconnects all active WebSockets with code `4004`.
+*   **Rate Limit:** 5 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
-*   **Request Body:**
+*   **Request Body (`PasswordChange`):**
     ```json
     {
       "old_auth_key": "base64_encoded_old_auth_key",
@@ -523,8 +621,8 @@ Changes the user password and updates the wrapped master key.
       "new_encrypted_master_key": "base64_encoded_rewrapped_key",
       "new_salt": "base64_encoded_new_salt",
       "new_kdf_version": 1,
-      "new_recovery_wrapped_master_key": "base64_encoded_new_recovery_wrapped_key (optional)",
-      "new_recovery_key_verifier": "base64_encoded_new_recovery_verifier (optional)"
+      "new_recovery_wrapped_master_key": "base64_encoded_new_recovery_wrapped_key",
+      "new_recovery_key_verifier": "base64_encoded_new_recovery_verifier"
     }
     ```
 *   **Response (200 OK):**
@@ -534,12 +632,27 @@ Changes the user password and updates the wrapped master key.
     }
     ```
 *   **Errors:**
-    *   `401 Unauthorized`: Incorrect old auth key.
+    *   `400 Bad Request`:
+        *   `{"detail": "Invalid base64 encoding"}`
+        *   `{"detail": "Unsupported kdf_version"}`
+        *   `{"detail": "auth_key length out of bounds"}`
+        *   `{"detail": "salt length out of bounds"}`
+        *   `{"detail": "encrypted_master_key length out of bounds"}`
+        *   `{"detail": "Both new_recovery_wrapped_master_key and new_recovery_key_verifier must be provided together"}`
+        *   `{"detail": "Invalid base64 encoding for {field_name}"}`
+        *   `{"detail": "{field_name} length out of bounds"}`
+    *   `401 Unauthorized`:
+        *   `{"detail": "Incorrect current password"}`
+        *   Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `422 Unprocessable Entity`: Request validation failure
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `GET /api/v1/user`
 Retrieves safe profile information for the authenticated user (no passwords or private cryptographic keys).
+*   **Rate Limit:** 20 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
     ```json
@@ -550,15 +663,18 @@ Retrieves safe profile information for the authenticated user (no passwords or p
       "kdf_version": 1
     }
     ```
+*   **Errors:**
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `PUT /api/v1/user/username`
-Updates the friendly username for the authenticated user.
-> [!NOTE]
-> On successful update, the server broadcasts a `"username_updated"` event over WebSockets to all connected client devices for this user.
+Updates the friendly display username. Broadcasts `"username_updated"` over WebSockets to all other devices.
+*   **Rate Limit:** 5 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
-*   **Request Body:**
+*   **Request Body (`UsernameUpdate`):**
     ```json
     {
       "username": "AliceSmith"
@@ -572,20 +688,21 @@ Updates the friendly username for the authenticated user.
     }
     ```
 *   **Errors:**
-    *   `400 Bad Request`: Username length out of bounds (1-128 characters).
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `422 Unprocessable Entity`: Validation failure (username length must be 3-50 characters)
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `PUT /api/v1/user/email`
-Updates the email address associated with the user account. Because tokens and KDF derivations may bind to email, this endpoint re-verifies the user's `auth_key` and issues a fresh token pair.
-> [!NOTE]
-> On successful update, the server broadcasts an `"email_updated"` event over WebSockets to all other connected client devices for this user.
+Updates the email address associated with the account. Increments `session_epoch`, revokes all other sessions, disconnects active WebSockets with code `4004`, broadcasts `"email_updated"`, and issues a new token pair.
+*   **Rate Limit:** 5 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
-*   **Request Body:**
+*   **Request Body (`EmailUpdate`):**
     ```json
     {
-      "email": "new_email@example.com",
-      "auth_key": "base64_encoded_current_auth_key"
+      "email": "new_email@example.com"
     }
     ```
 *   **Response (200 OK):**
@@ -599,13 +716,20 @@ Updates the email address associated with the user account. Because tokens and K
     }
     ```
 *   **Errors:**
-    *   `401 Unauthorized`: Invalid `auth_key`.
-    *   `409 Conflict`: Email already in use by another account.
+    *   `400 Bad Request`:
+        *   `{"detail": "Invalid or missing device_id in token"}`
+        *   `{"detail": "New email cannot be the same as current email"}`
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `409 Conflict`: `{"detail": "Email already registered"}`
+    *   `422 Unprocessable Entity`: Request validation failure (invalid email format)
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `DELETE /api/v1/delete`
-Permanently deletes the user account, all device records, and all clipboard history.
+Permanently deletes the user account, all device records, and all clipboard history. Disconnects all active WebSockets.
+*   **Rate Limit:** 2 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
     ```json
@@ -613,17 +737,20 @@ Permanently deletes the user account, all device records, and all clipboard hist
       "message": "Your account and all associated data have been deleted."
     }
     ```
+*   **Errors:**
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 ### Device Management Endpoints
 
 #### `POST /api/v1/devices/register`
-Manually adds a new device connection to the user account (Async).
-> [!NOTE]
-> On successful registration, the server broadcasts a `"device_added"` event over WebSockets to any other connected devices for this user.
+Manually adds or updates a device connection for the authenticated user. If new, broadcasts `"device_added"` over WebSockets to other active devices.
+*   **Rate Limit:** 10 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
-*   **Request Body:**
+*   **Request Body (`DeviceRegister`):**
     ```json
     {
       "device_id": "unique_device_id_string",
@@ -643,12 +770,17 @@ Manually adds a new device connection to the user account (Async).
     }
     ```
 *   **Errors:**
-    *   `400 Bad Request`: Device ID length out of bounds.
+    *   `400 Bad Request`: `{"detail": "device_id length out of bounds"}`
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `422 Unprocessable Entity`: Request validation failure
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `GET /api/v1/devices`
-Lists all active devices linked to the user account.
+Lists all active registered devices linked to the authenticated user account.
+*   **Rate Limit:** 20 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
     ```json
@@ -663,11 +795,15 @@ Lists all active devices linked to the user account.
       }
     ]
     ```
+*   **Errors:**
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `PUT /api/v1/devices/{device_id}/push`
-Registers or updates a UnifiedPush webhook subscription URL for the device.
+Registers or updates an encrypted UnifiedPush webhook subscription URL for the device.
 *   **Rate Limit:** 10 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Request Body (`PushSubscription`):**
@@ -688,8 +824,15 @@ Registers or updates a UnifiedPush webhook subscription URL for the device.
     }
     ```
 *   **Errors:**
-    *   `404 Not Found`: Device not found under this user account.
-    *   `422 Unprocessable Entity`: Invalid URL format or non-HTTPS URL in production.
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `404 Not Found`: `{"detail": "Device not found"}`
+    *   `422 Unprocessable Entity`: Pydantic validation failure:
+        *   `push_subscription cannot be empty`
+        *   `Invalid URL format`
+        *   `Push endpoint must use HTTPS when HTTPS_ONLY is enabled`
+        *   `Push endpoint must use HTTPS or HTTP`
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
@@ -709,12 +852,16 @@ Removes the push notification subscription from the specified device.
     }
     ```
 *   **Errors:**
-    *   `404 Not Found`: Device not found under this user account.
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `404 Not Found`: `{"detail": "Device not found"}`
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `DELETE /api/v1/devices/{device_id}`
-Removes a device, revokes its session tokens, and disconnects its active WebSocket.
+Removes a device, immediately revokes its refresh tokens, and disconnects its active WebSocket with code `4003`.
+*   **Rate Limit:** 10 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
     ```json
@@ -723,16 +870,18 @@ Removes a device, revokes its session tokens, and disconnects its active WebSock
     }
     ```
 *   **Errors:**
-    *   `404 Not Found`: Device not found under this user account.
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `404 Not Found`: `{"detail": "Device not found"}`
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `PATCH /api/v1/devices/{device_id}`
-Updates the display name of an existing registered device.
-> [!NOTE]
-> On successful update, the server broadcasts a `"device_updated"` event over WebSockets to all other connected client devices for this user.
+Updates the friendly display name of an existing registered device. Broadcasts `"device_updated"` over WebSockets to other active devices.
+*   **Rate Limit:** 10 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
-*   **Request Body:**
+*   **Request Body (`DeviceRename`):**
     ```json
     {
       "device_name": "Work Laptop"
@@ -749,17 +898,22 @@ Updates the display name of an existing registered device.
     }
     ```
 *   **Errors:**
-    *   `400 Bad Request`: `device_name` length out of bounds (1-128 characters).
-    *   `404 Not Found`: Device not found under this user account.
+    *   `400 Bad Request`: `{"detail": "device_name length out of bounds"}` (1-128 characters)
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `404 Not Found`: `{"detail": "Device not found"}`
+    *   `422 Unprocessable Entity`: Request validation failure
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 ### Clipboard Endpoints
 
 #### `POST /api/v1/clipboard`
-Synchronizes or updates a clipboard item manually via REST.
+Synchronizes, updates, or soft-deletes a clipboard item manually via REST. Broadcasts updates over WebSockets and triggers background UnifiedPush notifications to other devices.
+*   **Rate Limit:** 30 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
-*   **Request Body:**
+*   **Request Body (`ClipboardIn`):**
     ```json
     {
       "id": "c1f77d33-bc42-4916-b847-ec4b868e4bf9",
@@ -767,7 +921,9 @@ Synchronizes or updates a clipboard item manually via REST.
       "nonce": "base64_encoded_nonce",
       "blob_version": 1,
       "timestamp": "2026-06-14T14:15:30Z",
-      "is_pinned": false
+      "is_deleted": false,
+      "is_pinned": false,
+      "pinned_at": null
     }
     ```
 *   **Response (200 OK):**
@@ -777,11 +933,26 @@ Synchronizes or updates a clipboard item manually via REST.
       "id": "c1f77d33-bc42-4916-b847-ec4b868e4bf9"
     }
     ```
+    *(Returns `"status": "clipboard updated"` if modifying an existing active entry, or `"status": "clipboard deleted"` if soft-deleting via `is_deleted: true`)*
+*   **Errors:**
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `404 Not Found`: `{"detail": "User not found"}`
+    *   `409 Conflict`:
+        *   `{"detail": "Conflict detected: write rejected ({reason})"}` (LWW conflict rejection)
+        *   `{"detail": "Conflict: deletion rejected ({reason})"}` (stale deletion rejection)
+    *   `422 Unprocessable Entity`: Request validation failure:
+        *   `Field must be a valid base64-encoded string`
+        *   `ciphertext and nonce must either both be present or both be null`
+        *   `ciphertext cannot be null for active clipboard entries`
+        *   `Unsupported blob_version: {v}`
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `GET /api/v1/clipboard`
-Fetches the latest active clipboard entry.
+Fetches the latest active (non-deleted) clipboard entry for the authenticated user.
+*   **Rate Limit:** 30 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
     ```json
@@ -802,12 +973,16 @@ Fetches the latest active clipboard entry.
     }
     ```
 *   **Errors:**
-    *   `404 Not Found`: No clipboard entries found.
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `404 Not Found`: `{"detail": "No clipboard found"}`
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `GET /api/v1/clipboard/all`
-Debug endpoint to retrieve all clipboard items.
+Debug and full-history retrieval endpoint for clipboard entries.
+*   **Rate Limit:** 20 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Query Parameters:**
     *   `include_deleted` (boolean, optional, default: `false`): Include deleted tombstones in response.
@@ -832,15 +1007,21 @@ Debug endpoint to retrieve all clipboard items.
       }
     ]
     ```
+*   **Errors:**
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `422 Unprocessable Entity`: Validation failure (e.g. `limit` parameter not between 1 and 500)
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `GET /api/v1/clipboard/sync`
-Delta sync endpoint for clients coming online to download changes. Supports high-performance monotonic keyset cursor pagination (`since_change_number`) as primary sync mode, with legacy timestamp-offset pagination as fallback.
+Delta sync endpoint for reconnecting or offline clients to catch up on changes. Supports monotonic sequence keyset cursor pagination (`since_change_number`) as primary sync mode, with legacy timestamp-offset pagination as fallback.
+*   **Rate Limit:** 20 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Query Parameters:**
-    *   `since_change_number` (integer, optional, ge: `0`): Monotonic sequence cursor. Returns entries where `change_number > since_change_number`. Preferred for all clients.
-    *   `since` (ISO 8601 string, optional): Fetch updates modified after this server-time (legacy fallback).
+    *   `since_change_number` (integer, optional, ge: `0`): Monotonic sequence cursor. Returns entries where `change_number > since_change_number`. Preferred mode.
+    *   `since` (ISO 8601 datetime string, optional): Fetch updates modified after this server-time (legacy fallback).
     *   `limit` (integer, optional, default: `100`, ge: `1`, le: `1000`): Page size limit.
     *   `offset` (integer, optional, default: `0`, ge: `0`): Pagination offset (legacy fallback).
 *   **Response (200 OK):**
@@ -871,12 +1052,17 @@ Delta sync endpoint for clients coming online to download changes. Supports high
     ```
     *(When using `since_change_number`, `next_cursor` contains the highest change number in the batch and `total_count` is `null` to avoid expensive database table counts)*
 *   **Errors:**
-    *   `410 Gone`: Triggered if the `since` timestamp or `since_change_number` is older than pruned retention (`TOMBSTONE_RETENTION_DAYS` / 30 days). The client must wipe its local cache and perform a full initial sync.
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `410 Gone`: `{"detail": "Sync state expired. Please wipe local data and resync."}` (triggered if cursor or timestamp is older than pruned retention cutoff)
+    *   `422 Unprocessable Entity`: Query parameter validation failure
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `GET /api/v1/clipboard/{clipboard_id}`
 Retrieves a specific clipboard entry by its client-generated UUID.
+*   **Rate Limit:** 30 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
     ```json
@@ -890,20 +1076,25 @@ Retrieves a specific clipboard entry by its client-generated UUID.
       "is_deleted": false,
       "deleted_at": null,
       "is_pinned": true,
-      "pinned_at": "2026-08-30T14:18:00Z"
+      "pinned_at": "2026-08-30T14:18:00Z",
+      "change_number": 44,
+      "entry_revision": 1,
+      "last_device_id": "device_123"
     }
     ```
 *   **Errors:**
-    *   `404 Not Found`: Clipboard entry not found.
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `404 Not Found`: `{"detail": "Clipboard entry not found"}`
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `PATCH /api/v1/clipboard/{clipboard_id}/pin`
-Lightweight endpoint to toggle the pin status of an active clipboard item without re-transmitting or re-encrypting ciphertext payload blobs.
-> [!NOTE]
-> On successful update, the server broadcasts a lightweight `"clipboard_pin"` metadata event over WebSockets to all connected client devices for this user.
+Lightweight endpoint to toggle the pin status of an active clipboard item without re-transmitting or re-encrypting ciphertext payload blobs. Broadcasts `"clipboard_pin"` over WebSockets and triggers push notifications.
+*   **Rate Limit:** 30 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
-*   **Request Body:**
+*   **Request Body (`ClipboardPinUpdate`):**
     ```json
     {
       "is_pinned": true,
@@ -930,13 +1121,18 @@ Lightweight endpoint to toggle the pin status of an active clipboard item withou
     }
     ```
 *   **Errors:**
-    *   `400 Bad Request`: Cannot pin a deleted clipboard entry.
-    *   `404 Not Found`: Clipboard entry not found.
+    *   `400 Bad Request`: `{"detail": "Cannot pin or unpin a deleted clipboard entry"}`
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `404 Not Found`: `{"detail": "Clipboard entry not found"}`
+    *   `422 Unprocessable Entity`: Request validation failure
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `DELETE /api/v1/clipboard/{clipboard_id}`
-Soft-deletes a single clipboard item (Idempotent).
+Soft-deletes a single clipboard item and purges its ciphertext and nonce. Broadcasts tombstone over WebSockets and triggers push notifications.
+*   **Rate Limit:** 10 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
     ```json
@@ -944,11 +1140,17 @@ Soft-deletes a single clipboard item (Idempotent).
       "message": "Clipboard entry deleted"
     }
     ```
+*   **Errors:**
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `409 Conflict`: `{"detail": "Conflict: deletion rejected ({reason})"}` (stale deletion rejection)
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `DELETE /api/v1/clipboard`
-Soft-deletes all currently active, unpinned clipboard entries (history clearing). Pinned entries are preserved and skipped.
+Soft-deletes all currently active, unpinned clipboard entries (history clear). Pinned entries are strictly preserved and skipped. Broadcasts individual tombstones over WebSockets.
+*   **Rate Limit:** 5 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Response (200 OK):**
     ```json
@@ -957,11 +1159,17 @@ Soft-deletes all currently active, unpinned clipboard entries (history clearing)
     }
     ```
     *(Returns `{"message": "No clipboard entries to delete."}` if history is already empty or only contains pinned items)*
+*   **Errors:**
+    *   `401 Unauthorized`: Common authentication errors
+    *   `403 Forbidden`: `{"detail": "Unauthorized device"}`
+    *   `429 Too Many Requests`: `{"detail": "Rate limit exceeded"}`
 
 ---
 
 #### `GET /api/health`
 Single canonical health status check. Used by client applications to verify server status and check that the target endpoint runs a genuine Synclo server, and by container runtimes (Docker/Compose) to verify process liveness without emitting noisy log entries.
+*   **Authentication:** None (Public)
+*   **Rate Limit:** None (Bypassed)
 *   **Response Headers:**
     *   `Synclo-Server`: `genuine` (used for client-side server identity verification)
 *   **Response Body (200 OK):**
@@ -971,6 +1179,7 @@ Single canonical health status check. Used by client applications to verify serv
       "server": "synclo"
     }
     ```
+*   **Errors:** None under normal operation (`500 Internal Server Error` if server fails to start).
 
 ---
 
@@ -999,6 +1208,33 @@ The server enforces a server-wide retention policy for unpinned clipboard histor
 
 ---
 
+### Environment Variables & Configuration Reference
+
+All server configuration parameters are centralized in `Settings` in [app/core/config.py](app/core/config.py) and loaded from environment variables (or `.env` files):
+
+| Environment Variable | Type | Default Value | Required | Description & Operational Impact |
+| :--- | :--- | :--- | :--- | :--- |
+| `ENVIRONMENT` | String | `"development"` | No | Server operational mode (`development` or `production`). In `production`, interactive API documentation routes (`/docs`, `/api/docs`, `/api/openapi.json`) are disabled, and push notifications strictly require HTTPS. |
+| `SECRET_KEY` | String | *None* | **Yes** | Primary cryptographic secret (min 32 chars). Used to sign and verify JWT access tokens and encrypt UnifiedPush subscription URLs stored in the database. |
+| `REFRESH_TOKEN_HASH_KEY` | String | *None* | **Yes** | Cryptographic HMAC secret (min 16 chars). Used to compute HMAC-SHA256 digests of client refresh tokens before database persistence. |
+| `ALGORITHM` | String | `"HS256"` | No | JWT signing algorithm. Supported values: `HS256`, `HS384`, `HS512`. |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Integer | `15` | No | Lifespan of short-lived JWT access tokens in minutes. |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | Integer | `30` | No | Lifespan of rotating refresh tokens in days. |
+| `DATABASE_URL` | String | `"sqlite:///./data/synclo.db"` | No | SQLAlchemy database connection URI. Default connects to local SQLite file in `./data/`. |
+| `REDIS_URL` | String | `"redis://redis:6379"` | No | Redis connection URI for real-time WebSocket Pub/Sub broadcasting, distributed rate limiting, and cleanup mutexes. Redis is ephemeral and isolated on the private container network. |
+| `HTTPS_ONLY` | Boolean | `false` | No | When `true`, enforces strict transport security: redirects remote plain HTTP to HTTPS (status 307), injects HSTS headers, requires WSS for remote WebSockets, and validates HTTPS for push subscriptions. |
+| `CLIPBOARD_RETENTION_DAYS` | Integer | `30` | No | Server-wide age-based auto-pruning threshold in days. Active unpinned clipboard entries older than this limit are converted to tombstones upon new writes or maintenance. Set to `0` to disable pruning. |
+| `TOMBSTONE_RETENTION_DAYS` | Integer | `30` | No | Soft-deleted tombstone retention limit in days. Tombstones older than this threshold are hard-purged. Delta sync queries (`/clipboard/sync`) with cursors older than this window return `410 Gone`. |
+| `BACKUP_ENCRYPTION_KEY` | String | *None* | No | Fernet encryption passphrase used by `backup_db.py` to encrypt database backups. When set, backup snapshots are encrypted at rest. |
+| `BACKUP_RETENTION_DAYS` | Integer | `30` | No | Number of days to retain encrypted database backup archives before automatic rotation. |
+| `BACKUP_DIR` | String | `"data/backups"` | No | Host or container directory path where encrypted database snapshots and metadata are saved. |
+
+> [!NOTE]
+> **Cleaned & Deprecated Variables:**
+> Legacy or overly complex configuration flags (`ALLOW_ARBITRARY_PUSH_ENDPOINTS`, `ALLOW_LOCAL_PUSH_ENDPOINTS`, `TRUSTED_PROXIES`, `PUSH_PROVIDERS_FILE`, `REDIS_PASSWORD`, and `SYNCLO_DOMAIN`) have been removed from the server configuration. In Synclo's single-node model, loopback reverse proxies and internal container networks are directly trusted, Redis is secured via Docker network isolation without password overhead, and push distributor validation is directly tied to `ENVIRONMENT != "production"`.
+
+---
+
 ### Rate Limiting & API Safety
 
 To protect the server from abuse, rate limits are applied to sensitive endpoints (e.g., registrations, logins, clipboard writes) using the `FastAPILimiter` middleware. Redis stores the rate-limit counters; these counters may reset if the ephemeral Redis service restarts.
@@ -1022,7 +1258,7 @@ When a client exceeds the request limit (typically 5 to 30 requests per minute d
 ### Core Setup & Configurations (`app/core/`)
 
 #### [config.py](app/core/config.py)
-Loads environment configurations from `.env` files into a static `Settings` class. It performs startup security assertions, validating keys such as `SECRET_KEY`, `REFRESH_TOKEN_HASH_KEY`, `CLIPBOARD_RETENTION_DAYS`, and `HTTPS_ONLY`.
+Loads environment configurations from `.env` files into a static `Settings` class. It performs startup security assertions, validating keys such as `SECRET_KEY`, `REFRESH_TOKEN_HASH_KEY`, `ENVIRONMENT`, `CLIPBOARD_RETENTION_DAYS`, and `HTTPS_ONLY`.
 
 #### [constants.py](app/core/constants.py)
 Defines project-wide size constraints (e.g. max ciphertext length of 64KB, salt lengths) and lists valid protocol and KDF versions.
@@ -1256,7 +1492,7 @@ To prevent data corruption and race conditions at the database level, the follow
 - **[alembic.ini](alembic.ini):** Configures Alembic migration routes and logging.
 - **SQLite Concurrency & WAL Mode:** SQLite is configured with Write-Ahead Logging (`PRAGMA journal_mode=WAL;`), synchronous NORMAL (`PRAGMA synchronous=NORMAL;`), and a busy timeout of 5,000ms (`PRAGMA busy_timeout=5000;`). To eliminate lock escalation deadlocks (`sqlite3.OperationalError: database is locked`), all database write operations strictly utilize `run_in_write_transaction` / `async_run_in_write_transaction`, which acquire an immediate write lock (`BEGIN IMMEDIATE`) with exponential backoff retries.
 - **[Dockerfile](Dockerfile):** Hardened multi-stage build (builder stage with compiler toolchain &rarr; minimal runtime stage without build tools) based on `python:3.12.9-slim-bookworm` with unprivileged non-root execution (`USER appuser`, UID/GID 10001) and integrated `HEALTHCHECK` probing `/api/health`.
-- **[compose.yaml](compose.yaml):** Production-hardened orchestration for single-node FastAPI + Redis deployment. Synclo backend runs as non-root (`user: "10001:10001"`), with `init: true` (tini process reaper), `security_opt: [no-new-privileges:true]`, log rotation caps, and a universal Python `urllib.request` healthcheck against `/api/health`. Redis is isolated in the `synclo-network` bridge, password-protected via `REDIS_PASSWORD`, resource-capped (`--maxmemory 256mb --maxmemory-policy noeviction`), and health-checked (`redis-cli ping`), ensuring Synclo backend only starts after Redis is ready (`condition: service_healthy`).
+- **[compose.yaml](compose.yaml):** Production-hardened orchestration for single-node FastAPI + Redis deployment. Synclo backend runs as non-root (`user: "10001:10001"`), with `init: true` (tini process reaper), `security_opt: [no-new-privileges:true]`, log rotation caps, and a universal Python `urllib.request` healthcheck against `/api/health`. Redis is isolated in the `synclo-network` bridge, resource-capped (`--maxmemory 256mb --maxmemory-policy noeviction`), and health-checked (`redis-cli ping`), ensuring Synclo backend only starts after Redis is ready (`condition: service_healthy`).
 - **[tests/](tests/):** Standardized pytest integration test suite targeting delta sync limits, device creation/revocation, pagination, pin toggles, push services, SQLite write contention, and automated Alembic schema parity (executed via the `.venv` virtual environment).
 
 ---
@@ -1288,6 +1524,7 @@ Synclo exposes operational metrics for real-time monitoring via Prometheus and G
 Synclo-Backend/
 ├── .github/
 │   └── workflows/
+│       ├── ci.yml             # Continuous Integration automated test pipeline
 │       └── docker-publish.yml # CI/CD workflow building multi-arch images & publishing to GHCR
 ├── alembic/                   # Database migration history and scripts
 │   ├── versions/              # Individual migration revisions
