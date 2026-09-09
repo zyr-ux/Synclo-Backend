@@ -12,7 +12,7 @@
     },
     {
       "name": "KDE UnifiedPush",
-      "domain": "up.kde.org"
+      "domain": "unifiedpush.kde.org"
     },
     {
       "name": "UnifiedPush Org",
@@ -22,8 +22,7 @@
   "allowed_domains": [
     "ntfy.sh",
     "push.nextcloud.com",
-    "up.kde.org",
-    "unifiedpush.org",
-    "example.com"
+    "unifiedpush.kde.org",
+    "unifiedpush.org"
   ]
 }

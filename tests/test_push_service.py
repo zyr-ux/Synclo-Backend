@@ -17,6 +17,7 @@ Scenarios Targeted:
 
 import asyncio
 import contextlib
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -560,3 +561,34 @@ async def test_push_service_transient_dns_failure_does_not_prune(mocker, db_sess
     prune_spy.assert_not_called()
     db_session.refresh(device)
     assert device.push_subscription is not None
+
+
+def test_load_allowed_push_domains_success_and_fail_fast(tmp_path):
+    from app.core.config import _load_allowed_push_domains
+
+    # 1. Normal valid file
+    valid_file = tmp_path / "valid.json"
+    valid_file.write_text(
+        json.dumps({"allowed_domains": ["ntfy.sh"], "providers": [{"domain": "up.kde.org"}]}),
+        encoding="utf-8",
+    )
+    loaded = _load_allowed_push_domains(valid_file)
+    assert loaded == {"ntfy.sh", "up.kde.org"}
+
+    # 2. Missing file fails fast
+    missing_file = tmp_path / "nonexistent.json"
+    with pytest.raises(RuntimeError, match="Push providers configuration file not found"):
+        _load_allowed_push_domains(missing_file)
+
+    # 3. Empty domains fails fast
+    empty_file = tmp_path / "empty.json"
+    empty_file.write_text(json.dumps({"allowed_domains": [], "providers": []}), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="No allowed push domains configured"):
+        _load_allowed_push_domains(empty_file)
+
+    # 4. Corrupt JSON fails fast
+    corrupt_file = tmp_path / "corrupt.json"
+    corrupt_file.write_text("{invalid json", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Failed to load push providers"):
+        _load_allowed_push_domains(corrupt_file)
+

@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import tomllib
@@ -19,28 +20,26 @@ except Exception as _e:
     raise RuntimeError(f"Failed to parse pyproject.toml: {_e}") from _e
 
 
-def _load_allowed_push_domains(file_path: str | None = None) -> set[str]:
-    default_domains = {"ntfy.sh", "push.nextcloud.com", "up.kde.org", "unifiedpush.org"}
+def _load_allowed_push_domains(file_path: Path | str | None = None) -> set[str]:
     path = (
         Path(file_path)
         if file_path
         else (Path(__file__).resolve().parents[1] / "utilities" / "push_providers.json")
     )
     if not path.exists():
-        return default_domains
+        raise RuntimeError(f"Push providers configuration file not found at: {path}")
     try:
-        import json
-
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            domains = set(data.get("allowed_domains", []))
-            for p in data.get("providers", []):
-                if "domain" in p:
-                    domains.add(p["domain"])
-            return domains or default_domains
+        domains = set(data.get("allowed_domains", []))
+        for p in data.get("providers", []):
+            if "domain" in p:
+                domains.add(p["domain"])
+        if not domains:
+            raise RuntimeError(f"No allowed push domains configured in {path}")
+        return domains
     except Exception as exc:
-        _logger.warning("Failed to load push providers from %s: %s. Using defaults.", path, exc)
-        return default_domains
+        raise RuntimeError(f"Failed to load push providers from {path}: {exc}") from exc
 
 
 class Settings:
