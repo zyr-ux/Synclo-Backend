@@ -292,7 +292,7 @@ def test_password_change_increments_epoch_and_invalidates_all_tokens(client, use
 
 def test_token_without_epoch_claim_rejected(client, auth_user):
     from datetime import datetime, timezone
-    from jose import jwt
+    import jwt
     from app.services.auth import SECRET_KEY, ALGORITHM
 
     # Create a token without epoch

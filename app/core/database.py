@@ -5,8 +5,7 @@ from typing import Callable, TypeVar
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.exc import OperationalError as SAOperationalError
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import Settings
 
@@ -54,7 +53,10 @@ if DATABASE_URL.startswith("sqlite"):
     configure_sqlite_engine(engine)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+
+
+class Base(DeclarativeBase):
+    pass
 
 T = TypeVar("T")
 

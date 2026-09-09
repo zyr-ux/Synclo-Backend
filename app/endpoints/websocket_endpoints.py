@@ -4,7 +4,8 @@ import traceback
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from jose import ExpiredSignatureError, JWTError, jwt
+import jwt
+from jwt import ExpiredSignatureError, InvalidTokenError
 
 from app.core.database import SessionLocal, run_in_write_transaction
 from app.core.config import Settings
@@ -65,7 +66,11 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
 
         if not email or not exp or not device_id or epoch is None:
             logger.warning(
-                f"WebSocket token missing required fields: has_email={bool(email)}, exp={exp}, device_id={device_id}, epoch={epoch}"
+                "WebSocket token missing required fields: has_email=%s, exp=%s, device_id=%s, epoch=%s",
+                bool(email),
+                exp,
+                device_id,
+                epoch,
             )
             await websocket.send_json(
                 {"type": "error", "message": "Invalid token: missing required fields"}
@@ -73,12 +78,12 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
             await websocket.close(code=1008)
             return None
     except ExpiredSignatureError as e:
-        logger.warning(f"WebSocket token validation failed: {e}")
+        logger.warning("WebSocket token validation failed: %s", e)
         await websocket.send_json({"type": "error", "message": "Token expired"})
         await websocket.close(code=4001)
         return None
-    except JWTError as e:
-        logger.warning(f"WebSocket token validation failed: {e}")
+    except InvalidTokenError as e:
+        logger.warning("WebSocket token validation failed: %s", e)
         await websocket.send_json({"type": "error", "message": "Invalid token"})
         await websocket.close(code=1008)
         return None
@@ -138,7 +143,7 @@ def _update_device_last_seen(user_id: str, device_id: str):
 
         run_in_write_transaction(session, mutate)
     except Exception as err:
-        logger.warning(f"Failed to update device last_seen: {err}")
+        logger.warning("Failed to update device last_seen: %s", err)
     finally:
         session.close()
 
@@ -217,7 +222,7 @@ async def _process_clipboard_message(
                 }
             )
     except Exception as exc:
-        logger.error(f"Error processing websocket clipboard item: {exc}")
+        logger.error("Error processing websocket clipboard item: %s", exc)
         await websocket.send_json(
             {
                 "type": "error",
@@ -241,7 +246,7 @@ async def websocket_sync(websocket: WebSocket):
 
     user_id, device_id, exp = auth_result
 
-    logger.info(f"WebSocket connection accepted for user_id={user_id}, device_id={device_id}")
+    logger.info("WebSocket connection accepted for user_id=%s, device_id=%s", user_id, device_id)
     await manager.connect(user_id, device_id, websocket)
 
     try:
@@ -265,7 +270,7 @@ async def websocket_sync(websocket: WebSocket):
                     logger.warning("Client disconnected during ping/pong")
                     break
                 except Exception as e:
-                    logger.warning(f"WebSocket ping/pong failed: {e}")
+                    logger.warning("WebSocket ping/pong failed: %s", e)
                     try:
                         await websocket.close(code=4002)
                     except RuntimeError:
@@ -282,7 +287,7 @@ async def websocket_sync(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error("WebSocket error: %s", e)
         logger.error(traceback.format_exc())
         try:
             await websocket.close(code=1011)

@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi_limiter.depends import RateLimiter
@@ -114,10 +114,8 @@ def get_clipboard_all(
     dependencies=[Depends(RateLimiter(times=20, seconds=60))],
 )
 def get_sync_clipboard(
-    since_change_number: Optional[int] = Query(None, ge=0),
-    since: Optional[datetime] = Query(None),
+    since_change_number: int = Query(..., ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(get_auth_context),
 ):
@@ -126,82 +124,49 @@ def get_sync_clipboard(
     retention_days = Settings.TOMBSTONE_RETENTION_DAYS
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
-    if since_change_number is not None:
-        if since:
-            since_utc = ensure_utc(since)
-            if since_utc < cutoff:
-                raise HTTPException(
-                    status_code=410, detail="Sync state expired. Please wipe local data and resync."
-                )
-
-        oldest_entry = (
-            db.query(Clipboard.change_number, Clipboard.updated_at)
-            .filter(Clipboard.user_id == user_id)
-            .order_by(Clipboard.change_number.asc())
-            .first()
-        )
-        if oldest_entry is not None:
-            if since_change_number > 0 and since_change_number < oldest_entry.change_number - 1:
-                raise HTTPException(
-                    status_code=410, detail="Sync state expired. Please wipe local data and resync."
-                )
-        else:
-            if (current_user.sync_sequence or 0) > since_change_number:
-                raise HTTPException(
-                    status_code=410, detail="Sync state expired. Please wipe local data and resync."
-                )
-
-        entries = (
-            db.query(Clipboard)
-            .filter(
-                Clipboard.user_id == user_id,
-                Clipboard.change_number > since_change_number,
+    oldest_entry = (
+        db.query(Clipboard.change_number, Clipboard.updated_at)
+        .filter(Clipboard.user_id == user_id)
+        .order_by(Clipboard.change_number.asc())
+        .first()
+    )
+    if oldest_entry is not None:
+        if since_change_number > 0 and since_change_number < oldest_entry.change_number - 1:
+            raise HTTPException(
+                status_code=410, detail="Sync state expired. Please wipe local data and resync."
             )
-            .order_by(Clipboard.change_number.asc())
-            .limit(limit + 1)
-            .all()
-        )
-
-        if since_change_number > 0 and entries and ensure_utc(entries[0].updated_at) < cutoff:
+    else:
+        if (current_user.sync_sequence or 0) > since_change_number:
             raise HTTPException(
                 status_code=410, detail="Sync state expired. Please wipe local data and resync."
             )
 
-        has_more = len(entries) > limit
-        if has_more:
-            entries = entries[:limit]
+    entries = (
+        db.query(Clipboard)
+        .filter(
+            Clipboard.user_id == user_id,
+            Clipboard.change_number > since_change_number,
+        )
+        .order_by(Clipboard.change_number.asc())
+        .limit(limit + 1)
+        .all()
+    )
 
-        next_cursor = entries[-1].change_number if entries else None
+    if since_change_number > 0 and entries and ensure_utc(entries[0].updated_at) < cutoff:
+        raise HTTPException(
+            status_code=410, detail="Sync state expired. Please wipe local data and resync."
+        )
 
-        return {
-            "entries": [clipboard_to_response(entry) for entry in entries],
-            "next_offset": offset + len(entries),
-            "has_more": has_more,
-            "total_count": None,
-            "next_cursor": next_cursor,
-        }
+    has_more = len(entries) > limit
+    if has_more:
+        entries = entries[:limit]
 
-    # Legacy timestamp / offset fallback
-    query = db.query(Clipboard).filter(Clipboard.user_id == user_id)
-    if since:
-        since_utc = ensure_utc(since)
-        retention_days = Settings.TOMBSTONE_RETENTION_DAYS
-        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
-        if since_utc < cutoff:
-            raise HTTPException(
-                status_code=410, detail="Sync state expired. Please wipe local data and resync."
-            )
-        query = query.filter(Clipboard.updated_at > since_utc)
-
-    total_count = query.count()
-    entries = query.order_by(Clipboard.updated_at.asc()).offset(offset).limit(limit).all()
+    next_cursor = entries[-1].change_number if entries else None
 
     return {
         "entries": [clipboard_to_response(entry) for entry in entries],
-        "next_offset": offset + len(entries),
-        "has_more": (offset + len(entries)) < total_count,
-        "total_count": total_count,
-        "next_cursor": entries[-1].change_number if entries else None,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
     }
 
 

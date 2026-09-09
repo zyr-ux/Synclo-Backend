@@ -4,7 +4,8 @@ from typing import Optional
 from uuid import uuid4
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.models import User, BlacklistedToken, Device, RefreshToken
@@ -99,5 +100,5 @@ def get_auth_context(
 
         return AuthContext(user=user, device_id=device_id)
 
-    except JWTError:
+    except InvalidTokenError:
         raise credentials_exception

@@ -27,23 +27,23 @@ def clipboard_to_response(entry: Clipboard) -> ClipboardOut:
         updated_at=entry.updated_at,
         is_deleted=entry.is_deleted,
         deleted_at=entry.deleted_at,
-        is_pinned=entry.is_pinned if getattr(entry, "is_pinned", None) is not None else False,
-        pinned_at=getattr(entry, "pinned_at", None),
-        change_number=getattr(entry, "change_number", 0),
-        entry_revision=getattr(entry, "entry_revision", 1),
-        last_device_id=getattr(entry, "last_device_id", None),
+        is_pinned=bool(entry.is_pinned),
+        pinned_at=entry.pinned_at,
+        change_number=entry.change_number or 0,
+        entry_revision=entry.entry_revision or 1,
+        last_device_id=entry.last_device_id,
     )
 
 
 def device_to_response(device: Device, user_id: Optional[str] = None) -> DeviceOut:
-    uid = user_id or getattr(device, "user_id", None)
+    uid = user_id or device.user_id
     return DeviceOut(
         device_id=device.device_id,
         device_name=device.device_name,
         os=device.os,
         last_seen=device.last_seen,
         is_online=manager.is_device_online(uid, device.device_id) if uid else False,
-        push_enabled=bool(getattr(device, "push_subscription", None)),
+        push_enabled=bool(device.push_subscription),
     )
 
 

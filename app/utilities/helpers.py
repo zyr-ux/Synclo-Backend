@@ -158,10 +158,10 @@ def prune_all_users_clipboard(
     db: Session, retention_days: Optional[int] = None
 ) -> List[Tuple[str, dict]]:
     all_tombstones: List[Tuple[str, dict]] = []
-    users = db.query(User).all()
-    for user in users:
-        tombstones = prune_user_clipboard(user.user_id, db, retention_days=retention_days)
-        all_tombstones.extend((user.user_id, tombstone) for tombstone in tombstones)
+    user_ids = [uid for (uid,) in db.query(User.user_id).all()]
+    for user_id in user_ids:
+        tombstones = prune_user_clipboard(user_id, db, retention_days=retention_days)
+        all_tombstones.extend((user_id, tombstone) for tombstone in tombstones)
     return all_tombstones
 
 

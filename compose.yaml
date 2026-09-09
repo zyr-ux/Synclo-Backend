@@ -11,6 +11,9 @@ services:
     init: true
     security_opt:
       - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
     env_file:
       - .env
     restart: unless-stopped

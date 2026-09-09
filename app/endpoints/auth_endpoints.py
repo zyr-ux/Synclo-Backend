@@ -6,7 +6,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi_limiter.depends import RateLimiter
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -322,6 +323,7 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
 async def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
     if not db_user:
+        bcrypt.checkpw(b"dummy", DUMMY_BCRYPT_HASH.encode("utf-8"))
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if not (MIN_DEVICE_ID_LEN <= len(user.device_id) <= MAX_DEVICE_ID_LEN):
@@ -427,7 +429,7 @@ def logout(
         device_id = payload.get("device_id")
         if not exp or not sub:
             raise HTTPException(status_code=400, detail="Invalid access token")
-    except JWTError:
+    except InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid access token")
 
     try:
@@ -580,7 +582,7 @@ async def change_password(
         )
         new_salt_bytes = strict_b64decode(data.new_salt, "new_salt")
     except ValueError as e:
-        logger.error(f"Base64 decoding failed in password change: {e}")
+        logger.error("Base64 decoding failed in password change: %s", e)
         raise HTTPException(status_code=400, detail="Invalid base64 encoding")
 
     if data.new_kdf_version not in ALLOWED_KDF_VERSIONS:

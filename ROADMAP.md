@@ -40,6 +40,20 @@ These capabilities are planned for upcoming minor and major milestones following
 
 ---
 
+### 3. Hardening & Operational Enhancements
+
+#### ⏳ 3.1 Gated Prometheus Metrics Endpoint — **[Planned]**
+* **Status**: Planned
+* **Why**: The `/metrics` endpoint currently exposes operational metrics without authentication.
+* **Architecture**: Restrict access to `/metrics` via HTTP Basic Auth, internal network / IP allowlisting, or toggle visibility behind `ENVIRONMENT != "production"`.
+
+#### ⏳ 3.2 Opportunistic Blacklisted Token Pruning — **[Planned]**
+* **Status**: Planned
+* **Why**: The `blacklisted_tokens` table is currently pruned only once per 24 hours during `run_all_cleanup`.
+* **Architecture**: Implement opportunistic pruning during user logout requests or shorten the periodic cleanup interval to reduce table size and indexing overhead.
+
+---
+
 ## ✅ Completed & Implemented Features
 
 The following core features establish the production-ready foundation for multi-device zero-knowledge synchronization.

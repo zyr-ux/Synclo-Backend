@@ -162,7 +162,7 @@ class ConnectionManager:
                 except (RuntimeError, ConnectionError):
                     self.disconnect(user_id, device_id)
                 except Exception as e:
-                    logger.error(f"Unexpected error broadcasting to device {device_id}: {e}")
+                    logger.error("Unexpected error broadcasting to device %s: %s", device_id, e)
                     self.disconnect(user_id, device_id)
 
     def set_redis(self, redis_client):

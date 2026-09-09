@@ -197,7 +197,9 @@ def test_pinned_at_timestamp_preservation_and_sync(client, auth_headers):
     assert res.status_code == 200
 
     # Sync endpoint should return the item with is_pinned=True and matching pinned_at
-    res_sync = client.get("/api/v1/clipboard/sync", headers=auth_headers)
+    res_sync = client.get(
+        "/api/v1/clipboard/sync", params={"since_change_number": 0}, headers=auth_headers
+    )
     assert res_sync.status_code == 200
     entries = res_sync.json()["entries"]
     match = next(e for e in entries if e["id"] == clip_id)

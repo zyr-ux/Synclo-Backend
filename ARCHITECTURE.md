@@ -134,31 +134,212 @@ In conventional multi-tenant web applications, user enumeration is typically mas
 
 ---
 
-## 3. Data Synchronization & Tombstone Pattern
+## 3. Data Synchronization Architecture & Keyset Cursor Protocol
 
-Synclo implements a deterministic, multi-master synchronization model combining monotonic sequence counters, Last-Write-Wins (LWW) conflict resolution, server-side retention pruning, and a soft-deletion tombstone lifecycle:
+Synclo implements a deterministic, multi-master synchronization model combining monotonic sequence counters, keyset cursor pagination, Last-Write-Wins (LWW) conflict resolution, cryptographic payload zeroing upon soft deletion, and server-side retention pruning.
 
-### Monotonic Sequence & Keyset Cursor Pagination (Primary Sync)
-- **User Sync Sequence:** Each user record maintains a strictly monotonic integer counter `User.sync_sequence` in SQLite. Every clipboard write, pin state update, or soft-deletion atomically increments this counter via `allocate_sync_sequence` or `allocate_batch_sync_sequence` and assigns it to `Clipboard.change_number`.
-- **Keyset Cursor Pagination:** Offline and reconnecting clients query `/api/v1/clipboard/sync?since_change_number={cursor}&limit={limit}`. The server executes a fast, indexed scan (`ix_clipboard_user_change_number`) returning items where `change_number > since_change_number` ordered by `change_number ASC`.
-- **Revision Tracking:** Each clipboard record carries an integer `entry_revision` (incremented on each edit or tombstone) and `last_device_id` to assist clients in resolving local multi-master merges.
-- **Legacy Timestamp Fallback:** If `since_change_number` is omitted, clients can fall back to timestamp-based delta sync (`since={iso_timestamp}&offset={offset}&limit={limit}`).
+### 3.1 Architectural Principles & Invariants
 
-### Deterministic Last-Write-Wins (LWW) Conflict Resolution
-Concurrent writes and cross-device edits are resolved deterministically on the server via `_evaluate_lww_conflict` in `app/services/clipboard_service.py`:
-1. **Timestamp Precedence:** An incoming mutation with a strictly newer client `timestamp` wins (`accept`). An incoming mutation with a timestamp older than the existing record is rejected with `409 Conflict` (`reject`).
-2. **Identical Timestamp Tie-Breaker:** When an incoming mutation has a timestamp equal to the existing record:
-   - If `ciphertext` and `nonce` are identical, the write is treated as an idempotent `noop`.
-   - If payloads differ across different devices, the collision is deterministically resolved using a lexicographical comparison of `device_id` (`incoming_device_id > existing_device_id` wins).
-   - If payloads differ on the same device at the same timestamp, the write is rejected with `409 Conflict`.
-3. **Tombstone Resurrection:** An incoming edit can resurrect a soft-deleted tombstone only if its `timestamp` is strictly newer than the tombstone's timestamp.
-4. **Tombstone Acceptance:** An incoming tombstone is accepted if its timestamp is >= the existing record's timestamp.
+1. **Zero-Knowledge Blind Relay:** The server acts strictly as an encrypted storage mediator. Clipboard entries contain client-encrypted ciphertext blobs (`AES-256-GCM`). The server has no knowledge of master keys or plaintext data and synchronizes payloads purely as opaque records.
+2. **Deterministic Monotonic Total Ordering:** Each user account maintains a single, strictly monotonic sequence counter. Every state mutation (creation, edit, pin, unpin, soft-deletion) advances this sequence. Mutations for a user are totally ordered without ambiguity or clock-skew vulnerabilities.
+3. **Keyset Cursor Efficiency ($O(1)$ Indexed Seeks):** Synchronization utilizes keyset pagination (`change_number > cursor`) over a compound index (`ix_clipboard_user_change_number`). This eliminates the $O(N)$ query degradation and phantom-row drift inherent in offset-based pagination.
+4. **Single-Node SQLite Concurrency:** All mutations and sequence increments execute inside serialized write transactions (`async_run_in_write_transaction` from [`app/core/database.py`](app/core/database.py)) on SQLite in WAL mode, ensuring atomic sequence allocation without deadlocks or gaps.
 
-### Soft Deletion & Tombstone Lifecycle
-- **Tombstones:** When a clipboard item is deleted, it is soft-deleted: `is_deleted = True`, `deleted_at = now`, `ciphertext = None`, `nonce = None`, `is_pinned = False`, and `pinned_at = None`. Payloads are wiped immediately at the moment of deletion.
-- **Pin System:** Active clipboard entries can be pinned (`is_pinned = True`), keeping them permanently synchronized. Pinned entries are strictly preserved during bulk delete requests (`DELETE /api/v1/clipboard`). Targeted single-item deletion (`DELETE /api/v1/clipboard/{id}`) soft-deletes the item and clears its pin.
-- **Server-Wide Age-Based Auto-Pruning:** Unpinned items older than `CLIPBOARD_RETENTION_DAYS` (default: 30 days) are automatically soft-deleted into tombstones upon new clipboard writes, during delta sync, and during periodic maintenance (`run_all_cleanup`). Pinned items are strictly immune to auto-pruning. Unpinning an item (`PATCH /api/v1/clipboard/{id}/pin`) resets its `updated_at` timestamp, granting a fresh retention grace period.
-- **Tombstone Retention & Expired Sync Prevention:** A background loop (`periodic_cleanup`) running every 24 hours permanently purges tombstones older than `TOMBSTONE_RETENTION_DAYS` (default: 30 days). If a client requests delta sync with a timestamp or `since_change_number` older than this 30-day retention cutoff, the server returns `410 Gone`. The client must wipe its local cache and perform a full resynchronization.
+---
+
+### 3.2 Sequence Counters & Change Numbers
+
+#### The User Sequence Counter (`User.sync_sequence`)
+Every user record in the `users` table holds a 64-bit integer counter `sync_sequence` (initialized to `0`). Sequence numbers are allocated via helper functions in [`app/services/clipboard_service.py`](app/services/clipboard_service.py):
+- `allocate_sync_sequence(db, user_id)`: Atomically executes `UPDATE users SET sync_sequence = sync_sequence + 1 WHERE user_id = :uid` and returns the new sequence value.
+- `allocate_batch_sync_sequence(db, user_id, count)`: Allocates a contiguous block of sequence numbers for bulk operations.
+
+#### Per-Entry Change Number (`Clipboard.change_number`)
+Each record in the `clipboard` table has a `change_number` column backed by index `ix_clipboard_user_change_number` on `(user_id, change_number)`.
+
+> [!IMPORTANT]
+> **Mutation Reassignment Invariant:** `change_number` is **not** an immutable creation identifier. Whenever an entry is created, modified, pinned, unpinned, or soft-deleted, its `change_number` is **reassigned to the newly incremented sequence value**. This moves the modified record to the tail of the sequence, ensuring that any client syncing with `since_change_number` will immediately detect and receive the updated record.
+
+#### Revision & Multi-Master Tracking
+- **`entry_revision` (integer):** Incremented by `1` on every edit, pin change, or soft-deletion of an existing record. Helps client-side merge engines identify whether a locally cached version is superseded.
+- **`last_device_id` (string):** Identifies the client device that executed the mutation. Used for echo suppression over WebSockets and as a deterministic tie-breaker during concurrent edits.
+
+---
+
+### 3.3 Keyset Cursor Pagination Protocol (`GET /api/v1/clipboard/sync`)
+
+Clients synchronize clipboard history by querying `GET /api/v1/clipboard/sync`.
+
+#### Query Execution Mechanics
+```sql
+SELECT * FROM clipboard
+WHERE user_id = :current_user_id
+  AND change_number > :since_change_number
+ORDER BY change_number ASC
+LIMIT :limit + 1;
+```
+
+If the returned row count is greater than `limit`, the server sets `has_more: true` and truncates the page to `limit` entries. `next_cursor` is set to the `change_number` of the final entry in the returned page. If no rows match, `next_cursor` is `null` and `has_more: false`.
+
+#### Keyset Cursor vs. Legacy Timestamp Pagination
+
+| Metric / Dimension | Keyset Cursor (`since_change_number`) | Legacy Timestamp (`since` / `offset`) |
+| :--- | :--- | :--- |
+| **Index Usage** | Fast indexed seek (`ix_clipboard_user_change_number`) | Table scan or composite timestamp index |
+| **Performance Complexity** | $O(1)$ seek time regardless of page depth | $O(N)$ scan time as `offset` increases |
+| **Clock Skew Vulnerability** | None (pure integer monotonic ordering) | High (drifting client/server clocks cause missed updates) |
+| **Pagination Drift / Duplicates** | Zero (records mutating during pagination jump to the tail) | Prone to skipped or duplicate items if rows are inserted during pagination |
+| **Database Overhead** | Minimal (`total_count` omitted, no `COUNT(*)` scan) | Heavy (runs `SELECT COUNT(*)` on every page) |
+
+---
+
+### 3.4 Client Synchronization Lifecycle & State Machine
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Client Device
+    actor Server as Synclo Server
+    participant DB as SQLite DB
+    participant WS as WebSocket Hub
+
+    Note over Client: Phase 1: Cold Start / Initial Sync
+    Client->>Server: GET /api/v1/clipboard/sync?since_change_number=0&limit=100
+    Server->>DB: Fetch entries where change_number > 0
+    Server-->>Client: { entries: [...], next_cursor: 45, has_more: true }
+    Client->>Client: Apply entries to local store
+    Client->>Server: GET /api/v1/clipboard/sync?since_change_number=45&limit=100
+    Server-->>Client: { entries: [...], next_cursor: 78, has_more: false }
+    Client->>Client: Save local_sync_cursor = 78
+
+    Note over Client: Phase 2: Live Sync + Reconnection Catch-Up
+    Client->>WS: Connect WebSocket (ws://.../ws/v1/sync)
+    WS-->>Client: 101 Switching Protocols (Connected)
+    Note over Client,WS: Network drop occurs / Client goes offline
+    Note over Server: Mutations occur while client offline (change_number 79..82)
+    Client->>WS: Reconnect WebSocket
+    WS-->>Client: Connected
+    Client->>Server: GET /api/v1/clipboard/sync?since_change_number=78
+    Server-->>Client: { entries: [79..82], next_cursor: 82, has_more: false }
+    Client->>Client: Apply missed entries, local_sync_cursor = 82
+    WS->>Client: Live Event { change_number: 83, ... }
+    Client->>Client: Process live event (change_number 83 > 82), local_sync_cursor = 83
+```
+
+#### Client Implementation Guidelines
+
+1. **Initial Sync (Cold Start):**
+   - Start with `cursor = 0`.
+   - Loop requesting `GET /api/v1/clipboard/sync?since_change_number={cursor}&limit=100`.
+   - Insert/update local database records with returned entries.
+   - If `has_more == true`, set `cursor = next_cursor` and fetch the next page.
+   - Once `has_more == false`, persist `local_sync_cursor = next_cursor` to durable client storage.
+
+2. **Incremental Catch-Up Sync:**
+   - On app launch, network reconnection, or pull-to-refresh, query `GET /api/v1/clipboard/sync?since_change_number={local_sync_cursor}`.
+   - Process returned updates in ascending order.
+   - Update `local_sync_cursor` to the latest `change_number`.
+
+3. **WebSocket Deduplication & Reconciliation:**
+   - When active on WebSockets, events (`clipboard_sync`, `clipboard_delete`, `clipboard_pin`) contain `change_number`.
+   - Ignore incoming events where `change_number <= local_sync_cursor` to avoid redundant processing.
+   - When a newer event arrives, apply the payload and advance `local_sync_cursor = max(local_sync_cursor, event.change_number)`.
+
+---
+
+### 3.5 Soft Deletion, Tombstone Lifecycle & Data Pruning
+
+Synclo strictly avoids immediate hard deletion of active rows so that peer devices can reliably receive deletion events.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active: POST /api/v1/clipboard (Create)
+    Active --> Active: Update / Pin / Unpin (Bump change_number)
+    Active --> Tombstone: DELETE or is_deleted=true\n(Zero payload, bump change_number)
+    Active --> Tombstone: Auto-prune (> 30 days unpinned)\n(Zero payload, bump change_number)
+    Tombstone --> Active: Resurrection\n(Write with newer timestamp)
+    Tombstone --> [*]: Hard Purge (> 30 days old)\n(cleanup_old_tombstones cron)
+```
+
+#### Cryptographic Zeroing on Deletion
+When an entry is soft-deleted (via `DELETE /api/v1/clipboard/{id}`, bulk delete, or incoming mutation with `is_deleted: true`), the server **immediately wipes the encrypted payload**:
+```python
+entry.ciphertext = None
+entry.nonce = None
+entry.is_deleted = True
+entry.deleted_at = datetime.now(timezone.utc)
+entry.is_pinned = False
+entry.pinned_at = None
+entry.change_number = allocate_sync_sequence(db, user_id)
+entry.entry_revision += 1
+```
+Because `ciphertext` and `nonce` are set to `None`, the server no longer retains the ciphertext blob in storage, preserving forward privacy.
+
+#### Client-Side Tombstone Handling
+When a client receives an entry with `is_deleted: true` (either via sync or WebSocket):
+- The client verifies `entry.id`.
+- The client deletes the entry from its local database/cache and removes it from the user interface.
+- The client advances its local sync cursor to include the tombstone's `change_number`.
+
+#### Pin System & Auto-Pruning
+- **Pinned Items:** Entries with `is_pinned = True` are permanently synchronized. They are **never** auto-pruned by retention policies and are skipped during bulk deletion (`DELETE /api/v1/clipboard`).
+- **Age-Based Auto-Pruning (`CLIPBOARD_RETENTION_DAYS` = 30 days):** Unpinned entries older than 30 days are automatically converted into tombstones during clipboard write operations and delta sync requests.
+- **Unpin Grace Period:** Unpinning an item (`PATCH /api/v1/clipboard/{id}/pin`) resets its `updated_at` timestamp to the current time, granting a new 30-day retention grace period.
+
+#### Tombstone Hard Purge
+A daily background worker (`cleanup_old_tombstones` in [`app/utilities/helpers.py`](app/utilities/helpers.py)) permanently deletes tombstones whose `deleted_at` timestamp exceeds `TOMBSTONE_RETENTION_DAYS` (default: 30 days):
+```sql
+DELETE FROM clipboard
+WHERE is_deleted = 1
+  AND deleted_at < :cutoff_timestamp;
+```
+
+---
+
+### 3.6 Staleness Detection & HTTP 410 Gone Recovery
+
+Because tombstones are permanently hard-deleted after 30 days, a client that has been offline for longer than the retention window might have missed deletions for entries that no longer exist in the database.
+
+To prevent silent data corruption or "zombie" entries on disconnected clients, the server validates every sync request against three staleness boundary checks:
+
+#### Server Staleness Boundary Checks
+1. **Sequence Gap Detection:**
+   The server queries the minimum existing `change_number` for the user:
+   ```python
+   oldest_entry = db.query(Clipboard.change_number).filter_by(user_id=user_id).order_by(Clipboard.change_number.asc()).first()
+   if oldest_entry and since_change_number > 0 and since_change_number < (oldest_entry.change_number - 1):
+       raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
+   ```
+   If the client's `since_change_number` is strictly lower than `(oldest_entry.change_number - 1)`, at least one historical tombstone has been purged from SQLite. The server cannot safely guarantee a gap-free delta.
+2. **Purged Sequence Detection:**
+   If the database has zero records for the user, but the user's `sync_sequence` is greater than `since_change_number`, all previously existing entries have been purged.
+3. **Retention Cutoff Validation:**
+   If the oldest record in the returned batch has `updated_at < (now - TOMBSTONE_RETENTION_DAYS)`, the sync state has expired.
+
+#### Client Recovery Protocol on 410 Gone
+When the server returns `HTTP 410 Gone`:
+1. The client catches the `410 Gone` response.
+2. The client halts incremental synchronization.
+3. The client clears all unpinned items from its local storage/cache.
+4. The client resets its stored `local_sync_cursor = 0`.
+5. The client triggers a full cold-start synchronization to download the current state of active entries.
+
+---
+
+### 3.7 Deterministic Last-Write-Wins (LWW) Conflict Resolution
+
+When concurrent mutations occur across devices, the server deterministically resolves collisions via `_evaluate_lww_conflict` in [`app/services/clipboard_service.py`](app/services/clipboard_service.py):
+
+| Scenario | Condition | Decision | Server Action |
+| :--- | :--- | :--- | :--- |
+| **Newer Write** | `incoming.timestamp > existing.timestamp` | `accept` | Apply update, bump `change_number` and `entry_revision`, broadcast to peers. |
+| **Stale Write** | `incoming.timestamp < existing.timestamp` | `reject` | Return `409 Conflict: write rejected (stale timestamp)`. |
+| **Idempotent Retry** | Equal timestamps, identical `ciphertext` and `nonce` | `noop` | Return `200 OK`, do not increment sequence or broadcast. |
+| **Same-Device Collision** | Equal timestamps, differing payloads, same `device_id` | `reject` | Return `409 Conflict: write rejected (same-device equal timestamp collision)`. |
+| **Cross-Device Collision** | Equal timestamps, differing payloads, different devices | Deterministic Tie-Breaker | If `incoming_device_id > existing_device_id` lexicographically: `accept`. Otherwise: `reject` (`409 Conflict`). |
+| **Tombstone Resurrection** | Incoming edit on a soft-deleted tombstone | Timestamp Check | If `incoming.timestamp > existing.timestamp`: `accept` (resurrects entry). Otherwise: `reject` (`409 Conflict`). |
+| **Tombstone Acceptance** | Incoming deletion on an active entry | Timestamp Check | If `incoming.timestamp >= existing.timestamp`: `accept` (tombstone written). Otherwise: `reject` (`409 Conflict`). |
+| **Duplicate Tombstone** | Incoming deletion on an already-deleted entry | Timestamp Check | If `incoming.timestamp > existing.timestamp`: `accept`. Otherwise: `noop`. |
 
 ---
 
@@ -1016,14 +1197,12 @@ Debug and full-history retrieval endpoint for clipboard entries.
 ---
 
 #### `GET /api/v1/clipboard/sync`
-Delta sync endpoint for reconnecting or offline clients to catch up on changes. Supports monotonic sequence keyset cursor pagination (`since_change_number`) as primary sync mode, with legacy timestamp-offset pagination as fallback.
+Delta sync endpoint for reconnecting or offline clients to catch up on changes using monotonic sequence keyset cursor pagination (`since_change_number`).
 *   **Rate Limit:** 20 requests / minute
 *   **Headers:** `Authorization: Bearer <access_token>`
 *   **Query Parameters:**
-    *   `since_change_number` (integer, optional, ge: `0`): Monotonic sequence cursor. Returns entries where `change_number > since_change_number`. Preferred mode.
-    *   `since` (ISO 8601 datetime string, optional): Fetch updates modified after this server-time (legacy fallback).
+    *   `since_change_number` (integer, required, ge: `0`): Monotonic sequence cursor. Returns entries where `change_number > since_change_number`.
     *   `limit` (integer, optional, default: `100`, ge: `1`, le: `1000`): Page size limit.
-    *   `offset` (integer, optional, default: `0`, ge: `0`): Pagination offset (legacy fallback).
 *   **Response (200 OK):**
     ```json
     {
@@ -1045,12 +1224,10 @@ Delta sync endpoint for reconnecting or offline clients to catch up on changes. 
         }
       ],
       "next_cursor": 43,
-      "has_more": false,
-      "next_offset": 1,
-      "total_count": null
+      "has_more": false
     }
     ```
-    *(When using `since_change_number`, `next_cursor` contains the highest change number in the batch and `total_count` is `null` to avoid expensive database table counts)*
+    *(When syncing with `since_change_number`, `next_cursor` contains the highest change number in the batch)*
 *   **Errors:**
     *   `401 Unauthorized`: Common authentication errors
     *   `403 Forbidden`: `{"detail": "Unauthorized device"}`

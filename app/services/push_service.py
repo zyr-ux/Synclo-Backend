@@ -193,9 +193,9 @@ def _prune_stale_endpoint(user_id: str, device_id: str) -> None:
                 device.push_subscription_updated_at = datetime.now(timezone.utc)
 
         run_in_write_transaction(session, mutate)
-        logger.info(f"Pruned stale push subscription for user={user_id} device={device_id}")
+        logger.info("Pruned stale push subscription for user=%s device=%s", user_id, device_id)
     except Exception as e:
-        logger.warning(f"Failed to prune stale push subscription for device {device_id}: {e}")
+        logger.warning("Failed to prune stale push subscription for device %s: %s", device_id, e)
     finally:
         session.close()
 
@@ -224,7 +224,7 @@ def _get_target_push_endpoints(
                 )
         return endpoints
     except Exception as e:
-        logger.error(f"Error querying push subscriptions for user={user_id}: {e}")
+        logger.error("Error querying push subscriptions for user=%s: %s", user_id, e)
         return []
     finally:
         session.close()
@@ -277,7 +277,7 @@ async def _validate_endpoint_and_resolve(endpoint: str) -> EndpointValidationRes
                 EndpointValidationStatus.SSRF_BLOCKED, reason="Plain HTTP rejected"
             )
     elif parsed.scheme != "https":
-        logger.warning(f"SSRF: Unsupported scheme '{parsed.scheme}' for push endpoint")
+        logger.warning("SSRF: Unsupported scheme '%s' for push endpoint", parsed.scheme)
         return EndpointValidationResult(
             EndpointValidationStatus.SSRF_BLOCKED, reason=f"Unsupported scheme '{parsed.scheme}'"
         )
@@ -285,18 +285,18 @@ async def _validate_endpoint_and_resolve(endpoint: str) -> EndpointValidationRes
     # Port restriction: HTTPS must use 443; local dev HTTP may use 80 or explicit local port
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     if parsed.scheme == "https" and port != 443:
-        logger.warning(f"SSRF: Non-standard port {port} rejected for HTTPS push endpoint")
+        logger.warning("SSRF: Non-standard port %s rejected for HTTPS push endpoint", port)
         return EndpointValidationResult(
             EndpointValidationStatus.SSRF_BLOCKED, reason=f"Non-standard HTTPS port {port}"
         )
     if parsed.scheme == "http" and Settings.ENVIRONMENT == "production" and port != 80:
-        logger.warning(f"SSRF: Non-standard port {port} rejected for HTTP push endpoint")
+        logger.warning("SSRF: Non-standard port %s rejected for HTTP push endpoint", port)
         return EndpointValidationResult(
             EndpointValidationStatus.SSRF_BLOCKED, reason=f"Non-standard HTTP port {port}"
         )
 
     if not _is_allowed_domain(hostname):
-        logger.warning(f"SSRF: Domain '{hostname}' is not in ALLOWED_PUSH_DOMAINS")
+        logger.warning("SSRF: Domain '%s' is not in ALLOWED_PUSH_DOMAINS", hostname)
         return EndpointValidationResult(
             EndpointValidationStatus.SSRF_BLOCKED, reason=f"Domain '{hostname}' not allowed"
         )
@@ -307,18 +307,18 @@ async def _validate_endpoint_and_resolve(endpoint: str) -> EndpointValidationRes
             hostname, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM
         )
     except (socket.gaierror, socket.herror, OSError, asyncio.TimeoutError) as e:
-        logger.warning(f"DNS resolution failed transiently for {hostname}: {e}")
+        logger.warning("DNS resolution failed transiently for %s: %s", hostname, e)
         return EndpointValidationResult(
             EndpointValidationStatus.DNS_ERROR, reason=f"DNS resolution failed: {e}"
         )
     except Exception as e:
-        logger.warning(f"DNS resolution error for {hostname}: {e}")
+        logger.warning("DNS resolution error for %s: %s", hostname, e)
         return EndpointValidationResult(
             EndpointValidationStatus.DNS_ERROR, reason=f"DNS resolution error: {e}"
         )
 
     if not addr_infos:
-        logger.warning(f"DNS resolution returned no records for {hostname}")
+        logger.warning("DNS resolution returned no records for %s", hostname)
         return EndpointValidationResult(
             EndpointValidationStatus.DNS_ERROR, reason="DNS resolution returned no records"
         )
@@ -328,12 +328,12 @@ async def _validate_endpoint_and_resolve(endpoint: str) -> EndpointValidationRes
         try:
             ip_obj = ipaddress.ip_address(ip_str)
         except ValueError:
-            logger.warning(f"SSRF: Invalid resolved IP address {ip_str}")
+            logger.warning("SSRF: Invalid resolved IP address %s", ip_str)
             return EndpointValidationResult(
                 EndpointValidationStatus.SSRF_BLOCKED, reason=f"Invalid resolved IP: {ip_str}"
             )
         if not _is_safe_ip(ip_obj):
-            logger.warning(f"SSRF: Resolved IP {ip_str} is private or non-global for {hostname}")
+            logger.warning("SSRF: Resolved IP %s is private or non-global for %s", ip_str, hostname)
             return EndpointValidationResult(
                 EndpointValidationStatus.SSRF_BLOCKED,
                 reason=f"Resolved IP {ip_str} is private or non-global",
@@ -452,16 +452,20 @@ class PushService:
             else:
                 PUSH_DISPATCHES_TOTAL.labels(status="error").inc()
                 logger.warning(
-                    f"Distributor error ({status}) for device={device_id} host={hostname}:{port}"
+                    "Distributor error (%s) for device=%s host=%s:%s",
+                    status,
+                    device_id,
+                    hostname,
+                    port,
                 )
                 return False
         except httpx.TimeoutException:
             PUSH_DISPATCHES_TOTAL.labels(status="timeout").inc()
-            logger.warning(f"Push delivery timed out after {self.timeout}s for device={device_id}")
+            logger.warning("Push delivery timed out after %ss for device=%s", self.timeout, device_id)
             return False
         except Exception as e:
             PUSH_DISPATCHES_TOTAL.labels(status="error").inc()
-            logger.warning(f"Push delivery failed for device={device_id}: {e}")
+            logger.warning("Push delivery failed for device=%s: %s", device_id, e)
             return False
         finally:
             _current_pinned_ips.reset(token)

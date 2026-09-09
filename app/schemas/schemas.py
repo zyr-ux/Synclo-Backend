@@ -1,3 +1,4 @@
+import base64
 from dataclasses import dataclass
 from urllib.parse import urlparse
 from typing import List, Optional
@@ -86,7 +87,6 @@ class ClipboardIn(BaseModel):
     def validate_base64(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return None
-        import base64
 
         try:
             base64.b64decode(v, validate=True)
@@ -233,8 +233,6 @@ class ClipboardSyncResponse(BaseModel):
     entries: List[ClipboardOut]
     next_cursor: Optional[int] = None
     has_more: bool
-    next_offset: Optional[int] = None
-    total_count: Optional[int] = None
 
 
 class UsernameUpdate(BaseModel):

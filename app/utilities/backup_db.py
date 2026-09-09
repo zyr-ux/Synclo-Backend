@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from datetime import datetime, timedelta, timezone
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -123,10 +124,10 @@ def perform_backup(
                 f"SUCCESS: Encrypted backup created: {final_path} ({final_path.stat().st_size} bytes)"
             )
         else:
-            print(
-                "NOTICE: BACKUP_ENCRYPTION_KEY is unset. Creating unencrypted .db snapshot.\n"
-                "        Zero-Knowledge Note: Clipboard content is already encrypted client-side.\n"
-                "        Set BACKUP_ENCRYPTION_KEY to protect metadata (emails, device names)."
+            logging.warning(
+                "BACKUP_ENCRYPTION_KEY is unset. Creating unencrypted .db snapshot. "
+                "Zero-Knowledge Note: Clipboard content is already encrypted client-side. "
+                "Set BACKUP_ENCRYPTION_KEY to protect metadata (emails, device names)."
             )
             final_filename = f"synclo_backup_{timestamp_str}.db"
             final_path = backup_dir / final_filename

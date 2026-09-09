@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"CRITICAL STARTUP ERROR: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
-        logger.error(f"Failed to apply migrations: {e}")
+        logger.error("Failed to apply migrations: %s", e)
         raise RuntimeError(f"Database migration failed: {e}") from e
 
     redis = Redis.from_url(Settings.REDIS_URL, encoding="utf-8", decode_responses=True)
@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI):
         try:
             await redis_instance.close()
         except Exception as e:
-            logger.warning(f"Redis close failed: {e}")
+            logger.warning("Redis close failed: %s", e)
     if cleanup_task:
         cleanup_task.cancel()
         try:
@@ -163,7 +163,7 @@ async def periodic_cleanup():
 
 @app.exception_handler(Exception)
 async def internal_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception at {request.method} {request.url.path}")
+    logger.error("Unhandled exception at %s %s", request.method, request.url.path)
     logger.error("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
     return JSONResponse(
         status_code=500,
