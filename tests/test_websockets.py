@@ -367,7 +367,7 @@ def test_device_deletion_closes_websocket_with_4003(client, user_factory):
 
 def test_websocket_duplicate_write_noop_suppresses_push(client, auth_user, monkeypatch):
     from unittest.mock import MagicMock
-    import app.endpoints.websocket_endpoints as ws_endpoints
+    import app.websockets.websocket_endpoints as ws_endpoints
 
     mock_push = MagicMock()
     monkeypatch.setattr(ws_endpoints, "launch_background_push", mock_push)

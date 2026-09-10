@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi_limiter import FastAPILimiter
 from redis.asyncio import Redis
 
-from app.core.database import SessionLocal
+from app.database.engine import SessionLocal
 from app.core.logging_config import logger
 from app.core.config import Settings
 from app.core.constants import LOOPBACK_HOSTS
@@ -20,7 +20,7 @@ from app.services.push_service import launch_background_push, push_service
 from app.endpoints.auth_endpoints import router as auth_router
 from app.endpoints.device_endpoints import router as device_router
 from app.endpoints.clipboard_endpoints import router as clipboard_router
-from app.endpoints.websocket_endpoints import router as websocket_router
+from app.websockets.websocket_endpoints import router as websocket_router
 
 
 @asynccontextmanager

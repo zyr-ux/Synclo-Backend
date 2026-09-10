@@ -7,15 +7,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.models.models import Clipboard, User
-from app.schemas.schemas import (
+from app.database.models import Clipboard, User
+from app.database.schemas import (
     ClipboardIn,
     ClipboardOut,
     ClipboardPinUpdate,
     ClipboardSyncResponse,
     AuthContext,
 )
-from app.core.database import async_run_in_write_transaction
+from app.database.engine import async_run_in_write_transaction
 from app.services.auth import get_db, get_auth_context
 from app.services.clipboard_service import (
     allocate_batch_sync_sequence,

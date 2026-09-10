@@ -1,8 +1,8 @@
 import base64
 from datetime import datetime, timezone
 from typing import Any, Optional
-from app.models.models import User, Clipboard, Device
-from app.schemas.schemas import UserWithE2EE, ClipboardOut, DeviceOut
+from app.database.models import User, Clipboard, Device
+from app.database.schemas import UserWithE2EE, ClipboardOut, DeviceOut
 from app.utilities.helpers import to_iso_utc
 from app.websockets.connection_manager import manager
 
@@ -39,7 +39,7 @@ def device_to_response(device: Device, user_id: Optional[str] = None) -> DeviceO
     uid = user_id or device.user_id
     return DeviceOut(
         device_id=device.device_id,
-        device_name=device.device_name,
+        device_name=device.device_name or "Unnamed Device",
         os=device.os,
         last_seen=device.last_seen,
         is_online=manager.is_device_online(uid, device.device_id) if uid else False,

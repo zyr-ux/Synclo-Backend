@@ -372,8 +372,8 @@ def test_concurrent_refresh_token_race(client, tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from app.core.database import Base
-    from app.models.models import User, Device
+    from app.database.engine import Base
+    from app.database.models import User, Device
     from app.services.auth import create_refresh_token, get_db
     from app.main import app
 
@@ -452,7 +452,7 @@ def test_logout_with_another_users_refresh_token_does_not_affect_victim(client, 
 
 def test_get_auth_context_structure_and_no_monkey_patching(client, auth_user, db_session):
     from app.services.auth import get_auth_context
-    from app.schemas.schemas import AuthContext
+    from app.database.schemas import AuthContext
 
     token = auth_user["access_token"]
     expected_device_id = auth_user["device_id"]
@@ -471,7 +471,7 @@ def test_get_auth_context_structure_and_no_monkey_patching(client, auth_user, db
 
 
 def test_logout_revokes_token_and_detects_reuse(client, user_factory, db_session):
-    from app.models.models import RefreshToken
+    from app.database.models import RefreshToken
     from app.services.auth import hash_refresh_token
 
     user = user_factory()

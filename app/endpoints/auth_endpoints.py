@@ -29,9 +29,9 @@ from app.core.constants import (
     ALLOWED_KDF_VERSIONS,
 )
 from app.core.logging_config import logger
-from app.core.database import run_in_write_transaction
-from app.models.models import User, Device, RefreshToken, BlacklistedToken, Clipboard
-from app.schemas.schemas import (
+from app.database.engine import run_in_write_transaction
+from app.database.models import User, Device, RefreshToken, BlacklistedToken, Clipboard
+from app.database.schemas import (
     Token,
     TokenWithE2EE,
     UserRegisterWithDevice,

@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from app.core.database import (
+from app.database.engine import (
     async_run_in_write_transaction,
     configure_sqlite_engine,
     run_in_write_transaction,
@@ -67,7 +67,7 @@ def test_busy_retry_rolls_back_failed_mutation_before_retry(monkeypatch):
             if attempts == 1:
                 raise sqlite3.OperationalError("database is locked")
 
-        monkeypatch.setattr("app.core.database.time.sleep", lambda _: None)
+        monkeypatch.setattr("app.database.engine.time.sleep", lambda _: None)
         run_in_write_transaction(session, mutate, max_retries=2)
 
         assert attempts == 2
@@ -76,8 +76,8 @@ def test_busy_retry_rolls_back_failed_mutation_before_retry(monkeypatch):
 
 def test_auth_write_transaction_retries_on_contention(monkeypatch):
     from uuid import uuid4
-    from app.core.database import Base
-    from app.models.models import User
+    from app.database.engine import Base
+    from app.database.models import User
 
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     configure_sqlite_engine(engine)
@@ -104,7 +104,7 @@ def test_auth_write_transaction_retries_on_contention(monkeypatch):
                 raise sqlite3.OperationalError("database is locked")
             return user
 
-        monkeypatch.setattr("app.core.database.time.sleep", lambda _: None)
+        monkeypatch.setattr("app.database.engine.time.sleep", lambda _: None)
         user = run_in_write_transaction(session, mutate, max_retries=3)
         assert attempts == 2
         assert len(list(session.scalars(select(User).where(User.email == "retry_test@synclo.app")).all())) == 1

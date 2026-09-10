@@ -108,13 +108,13 @@ To maintain code quality, security, and architectural simplicity, please adhere 
 
 ### Core Architectural Rules
 1. **Preserve Zero-Knowledge Invariants:** Plaintext passwords, Master Keys, derived keys, or decrypted clipboard content must never touch the server, be accepted in API schemas, or be logged.
-2. **SQLite Concurrency Rule:** **Never call bare `db.commit()`**. All database mutations must use `run_in_write_transaction` or `async_run_in_write_transaction` from [app/core/database.py](app/core/database.py) to acquire immediate write locks (`BEGIN IMMEDIATE`) and prevent SQLite lock escalation deadlocks.
+2. **SQLite Concurrency Rule:** **Never call bare `db.commit()`**. All database mutations must use `run_in_write_transaction` or `async_run_in_write_transaction` from [app/database/engine.py](app/database/engine.py) to acquire immediate write locks (`BEGIN IMMEDIATE`) and prevent SQLite lock escalation deadlocks.
 3. **Soft Deletes for Clipboard Entries:** 
    - Never execute raw `DELETE` SQL on active clipboard entries.
    - Use `soft_delete_clipboard` in [app/services/clipboard_service.py](app/services/clipboard_service.py) to toggle `is_deleted = True`, clear ciphertext/nonce payloads, unpin the item, and record `deleted_at`.
    - Broadcast tombstone frames over WebSockets and trigger background push notifications.
 4. **Code Simplicity & Human Comprehension:** Write explicit, readable logic over clever abstractions. Avoid dense one-liners, speculative generalizations, or deep wrapper hierarchies. Code should be immediately understandable by any engineer without friction.
-5. **Database Model Changes:** Any modification to models in [app/models/models.py](app/models/models.py) requires an Alembic migration:
+5. **Database Model Changes:** Any modification to models in [app/database/models.py](app/database/models.py) requires an Alembic migration:
    ```bash
    alembic revision --autogenerate -m "describe your changes"
    ```

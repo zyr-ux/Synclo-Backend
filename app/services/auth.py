@@ -8,10 +8,10 @@ import jwt
 from jwt import InvalidTokenError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from app.core.database import SessionLocal
-from app.models.models import User, BlacklistedToken, Device, RefreshToken
+from app.database.engine import SessionLocal
+from app.database.models import User, BlacklistedToken, Device, RefreshToken
 from app.core.config import Settings
-from app.schemas.schemas import AuthContext
+from app.database.schemas import AuthContext
 from app.utilities.helpers import hash_refresh_token
 
 _raw_secret_key = Settings.SECRET_KEY

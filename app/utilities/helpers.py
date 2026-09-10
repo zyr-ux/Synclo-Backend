@@ -9,9 +9,9 @@ from typing import Any, List, Optional, Tuple, overload
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from app.core.config import Settings
-from app.core.database import run_in_write_transaction
+from app.database.engine import run_in_write_transaction
 from app.core.metrics import CLEANUP_FAILURES_TOTAL
-from app.models.models import BlacklistedToken, RefreshToken, Clipboard, User
+from app.database.models import BlacklistedToken, RefreshToken, Clipboard, User
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ def cleanup_expired_refresh_tokens(db: Session) -> bool:
 def prune_user_clipboard(
     user_id: str, db: Session, retention_days: Optional[int] = None
 ) -> List[dict]:
-    from app.core.database import run_in_write_transaction
+    from app.database.engine import run_in_write_transaction
     from app.services.clipboard_service import allocate_batch_sync_sequence
     from app.services.serializers import make_tombstone_payload
 

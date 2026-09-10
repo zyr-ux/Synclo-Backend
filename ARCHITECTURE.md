@@ -143,7 +143,7 @@ Synclo implements a deterministic, multi-master synchronization model combining 
 1. **Zero-Knowledge Blind Relay:** The server acts strictly as an encrypted storage mediator. Clipboard entries contain client-encrypted ciphertext blobs (`AES-256-GCM`). The server has no knowledge of master keys or plaintext data and synchronizes payloads purely as opaque records.
 2. **Deterministic Monotonic Total Ordering:** Each user account maintains a single, strictly monotonic sequence counter. Every state mutation (creation, edit, pin, unpin, soft-deletion) advances this sequence. Mutations for a user are totally ordered without ambiguity or clock-skew vulnerabilities.
 3. **Keyset Cursor Efficiency ($O(1)$ Indexed Seeks):** Synchronization utilizes keyset pagination (`change_number > cursor`) over a compound index (`ix_clipboard_user_change_number`). This eliminates the $O(N)$ query degradation and phantom-row drift inherent in offset-based pagination.
-4. **Single-Node SQLite Concurrency:** All mutations and sequence increments execute inside serialized write transactions (`async_run_in_write_transaction` from [`app/core/database.py`](app/core/database.py)) on SQLite in WAL mode, ensuring atomic sequence allocation without deadlocks or gaps.
+4. **Single-Node SQLite Concurrency:** All mutations and sequence increments execute inside serialized write transactions (`async_run_in_write_transaction` from [`app/database/engine.py`](app/database/engine.py)) on SQLite in WAL mode, ensuring atomic sequence allocation without deadlocks or gaps.
 
 ---
 
@@ -1440,9 +1440,6 @@ Loads environment configurations from `.env` files into a static `Settings` clas
 #### [constants.py](app/core/constants.py)
 Defines project-wide size constraints (e.g. max ciphertext length of 64KB, salt lengths) and lists valid protocol and KDF versions.
 
-#### [database.py](app/core/database.py)
-Configures the SQLAlchemy engine and SQLite session pool, defining database connection options.
-
 #### [logging_config.py](app/core/logging_config.py)
 Initializes stdout stream loggers and rotating file log handlers writing logs to the `/app/logs/` folder.
 
@@ -1451,12 +1448,15 @@ Initializes Prometheus instrumentation middleware and exposes the `/metrics` end
 
 ---
 
-### Database Models & Schemas
+### Database Layer (`app/database/`)
 
-#### [models.py](app/models/models.py)
+#### [engine.py](app/database/engine.py)
+Configures the SQLAlchemy engine, SQLite WAL mode, foreign keys, busy timeouts, `SessionLocal`, `Base`, and immediate write transaction runners (`run_in_write_transaction`, `async_run_in_write_transaction`).
+
+#### [models.py](app/database/models.py)
 Declares database entities mapping users, devices, refresh tokens, blacklisted tokens, and clipboard tables.
 
-#### [schemas.py](app/schemas/schemas.py)
+#### [schemas.py](app/database/schemas.py)
 Defines Pydantic v2 schemas used to filter and validate request JSON bodies, push URLs, and serialize responses.
 
 ---
@@ -1504,12 +1504,12 @@ Manages device list registries, device renaming, push subscription management, a
 #### [clipboard_endpoints.py](app/endpoints/clipboard_endpoints.py)
 Manages manual HTTP clipboard operations, delta updates, item pinning, history clears, and deletes.
 
-#### [websocket_endpoints.py](app/endpoints/websocket_endpoints.py)
-Handles client WebSocket upgrades (including TLS/WSS enforcement), heartbeat protocols, writes/deletes, asynchronous database saves via `asyncio.to_thread` pools, and broadcasts.
-
 ---
 
-### WebSocket Connection Management
+### WebSocket Subsystem (`app/websockets/`)
+
+#### [websocket_endpoints.py](app/websockets/websocket_endpoints.py)
+Handles client WebSocket upgrades (including TLS/WSS enforcement), heartbeat protocols, writes/deletes, asynchronous database saves via `asyncio.to_thread` pools, and broadcasts.
 
 #### [connection_manager.py](app/websockets/connection_manager.py)
 Monitors connection sockets in a thread-safe nested dictionary. Integrates authenticated Redis Pub/Sub channels to distribute broadcasts between backend worker processes. Pub/Sub events are transient; clients recover missed changes through SQLite-backed delta sync.
@@ -1710,17 +1710,15 @@ Synclo-Backend/
 │   ├── core/                  # Core primitives (config, DB connection, constants, logging, metrics)
 │   │   ├── config.py          # Pydantic BaseSettings and runtime configuration
 │   │   ├── constants.py       # Global constants, close codes, and rate limits
-│   │   ├── database.py        # SQLAlchemy engine, session maker, and scoped sessions
 │   │   ├── logging_config.py  # Structured rotating file & console logging
 │   │   └── metrics.py         # Prometheus metrics instruments and registry
-│   ├── endpoints/             # FastAPI domain route controllers
+│   ├── endpoints/             # FastAPI HTTP REST route controllers
 │   │   ├── auth_endpoints.py  # User authentication, registration, recovery, and token refresh
 │   │   ├── clipboard_endpoints.py # Clipboard sync, delta pagination, and pin toggles
-│   │   ├── device_endpoints.py # Device presence, renaming, revocation, and push tokens
-│   │   └── websocket_endpoints.py # Real-time WebSocket connection handling
-│   ├── models/                # SQLAlchemy database models
-│   │   └── models.py          # User, Device, Clipboard, RefreshToken, BlacklistedToken entities
-│   ├── schemas/               # Pydantic v2 request/response validation schemas
+│   │   └── device_endpoints.py # Device presence, renaming, revocation, and push tokens
+│   ├── database/              # Database engine, ORM entities, and Pydantic schemas
+│   │   ├── engine.py          # SQLAlchemy engine, session maker, WAL pragmas, and write transactions
+│   │   ├── models.py          # User, Device, Clipboard, RefreshToken, BlacklistedToken entities
 │   │   └── schemas.py         # Data transfer objects and API schemas
 │   ├── services/              # Domain logic and background tasks
 │   │   ├── auth.py            # Password hashing, JWT creation, token rotation helpers
@@ -1733,7 +1731,8 @@ Synclo-Backend/
 │   │   ├── helpers.py         # Cryptographic helpers, token hashing, UTC normalization, cleanup
 │   │   └── push_providers.json # Allowlist for validated UnifiedPush distributors
 │   ├── websockets/            # Real-time WebSocket engine
-│   │   └── connection_manager.py # In-memory connection tracker & Redis Pub/Sub cluster bus
+│   │   ├── connection_manager.py # In-memory connection tracker & Redis Pub/Sub cluster bus
+│   │   └── websocket_endpoints.py # Real-time WebSocket connection handling
 │   └── main.py                # Application initialization, middleware, and startup lifecycles
 ├── data/                      # Persistent SQLite database storage (host bind mount)
 ├── logs/                      # Persistent rotating log files (host bind mount)

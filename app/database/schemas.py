@@ -12,7 +12,7 @@ from app.core.constants import (
     MAX_NONCE_LEN,
     ALLOWED_BLOB_VERSIONS,
 )
-from app.models.models import User
+from app.database.models import User
 
 
 @dataclass(frozen=True)

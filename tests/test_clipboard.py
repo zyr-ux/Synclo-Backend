@@ -14,7 +14,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from app.schemas.schemas import ClipboardIn
+from app.database.schemas import ClipboardIn
 from tests.conftest import make_clipboard_payload
 
 
@@ -505,7 +505,7 @@ def test_duplicate_write_noop_suppresses_broadcast_and_push(
     from unittest.mock import MagicMock, AsyncMock
     from tests.conftest import make_clipboard_payload
     from app.websockets.connection_manager import manager
-    from app.models.models import Clipboard
+    from app.database.models import Clipboard
     import app.endpoints.clipboard_endpoints as clip_endpoints
 
     user = user_factory()

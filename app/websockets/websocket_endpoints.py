@@ -7,13 +7,13 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 import jwt
 from jwt import ExpiredSignatureError, InvalidTokenError
 
-from app.core.database import SessionLocal, run_in_write_transaction
+from app.database.engine import SessionLocal, run_in_write_transaction
 from app.core.config import Settings
 from app.core.constants import LOOPBACK_HOSTS
 from app.core.logging_config import logger
 from sqlalchemy import select
-from app.models.models import User, Device, BlacklistedToken
-from app.schemas.schemas import ClipboardIn
+from app.database.models import User, Device, BlacklistedToken
+from app.database.schemas import ClipboardIn
 from app.services.auth import SECRET_KEY, ALGORITHM
 from app.services.clipboard_service import upsert_clipboard, soft_delete_clipboard
 from app.services.push_service import launch_background_push

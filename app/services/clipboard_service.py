@@ -5,10 +5,10 @@ from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.core.database import async_run_in_write_transaction
+from app.database.engine import async_run_in_write_transaction
 
-from app.models.models import Clipboard, User
-from app.schemas.schemas import ClipboardIn, ClipboardPinUpdate
+from app.database.models import Clipboard, User
+from app.database.schemas import ClipboardIn, ClipboardPinUpdate
 from app.services.serializers import make_tombstone_payload
 from app.utilities.helpers import ensure_utc, prune_user_clipboard, strict_b64decode, to_iso_utc
 from app.websockets.connection_manager import manager

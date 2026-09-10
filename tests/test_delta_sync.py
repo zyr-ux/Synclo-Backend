@@ -162,7 +162,7 @@ def test_pin_increments_sync_sequence(client, auth_headers, clip_payload):
 def test_delta_sync_keyset_sequence_410_retention_cutoff(
     client, auth_headers, clip_payload, db_session
 ):
-    from app.models.models import Clipboard
+    from app.database.models import Clipboard
 
     # 1. Create 3 items
     for i in range(1, 4):
@@ -170,7 +170,7 @@ def test_delta_sync_keyset_sequence_410_retention_cutoff(
             "/api/v1/clipboard", json=clip_payload(f"seq_410_item_{i}"), headers=auth_headers
         )
 
-    from app.core.database import run_in_write_transaction
+    from app.database.engine import run_in_write_transaction
 
     # 2. Hard-purge item 1 and item 2 to simulate expired tombstones cleaned up after 30 days
     def purge():
@@ -202,7 +202,7 @@ def test_delta_sync_keyset_sequence_410_retention_cutoff(
 def test_delta_sync_keyset_sequence_410_when_entries_older_than_retention(
     client, auth_headers, clip_payload, db_session
 ):
-    from app.models.models import Clipboard
+    from app.database.models import Clipboard
 
     # Create 2 items
     client.post("/api/v1/clipboard", json=clip_payload("seq_old_1"), headers=auth_headers)

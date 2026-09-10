@@ -16,7 +16,7 @@ from unittest.mock import patch, AsyncMock
 from sqlalchemy import select
 
 from app.core.config import Settings
-from app.models.models import Clipboard, User
+from app.database.models import Clipboard, User
 from app.utilities.helpers import prune_user_clipboard, prune_all_users_clipboard
 from tests.conftest import generate_random_base64
 
@@ -410,7 +410,7 @@ def test_cleanup_old_tombstones(auth_user, db_session):
 
 
 def test_cleanup_expired_tokens(auth_user, db_session):
-    from app.models.models import BlacklistedToken, RefreshToken
+    from app.database.models import BlacklistedToken, RefreshToken
     from app.utilities.helpers import (
         cleanup_expired_blacklisted_tokens,
         cleanup_expired_refresh_tokens,

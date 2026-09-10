@@ -3,7 +3,7 @@ import pytest
 from sqlalchemy import select
 from starlette.websockets import WebSocketDisconnect
 
-from app.models.models import User
+from app.database.models import User
 from tests.conftest import generate_random_base64, make_clipboard_payload
 
 

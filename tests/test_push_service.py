@@ -24,7 +24,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from app.models.models import Device, User
+from app.database.models import Device, User
 from app.services.push_service import (
     EndpointValidationResult,
     EndpointValidationStatus,
@@ -50,7 +50,7 @@ def test_register_push_subscription_success(client, auth_user, db_session):
     assert data["push_enabled"] is True
 
     # The database stores an encrypted subscription, not the bearer URL.
-    from app.models.models import Device
+    from app.database.models import Device
     from app.services.push_service import decrypt_push_subscription
 
     device = db_session.scalars(select(Device).where(Device.device_id == device_id)).first()
@@ -496,7 +496,7 @@ def test_clipboard_write_triggers_push_dispatch(client, auth_user, db_session, m
 
 
 def test_websocket_sync_triggers_push_dispatch(client, auth_user, db_session, mocker):
-    mock_launch = mocker.patch("app.endpoints.websocket_endpoints.launch_background_push")
+    mock_launch = mocker.patch("app.websockets.websocket_endpoints.launch_background_push")
 
     user = db_session.scalars(select(User).where(User.email == auth_user["email"])).first()
     user_id = user.user_id
@@ -538,7 +538,7 @@ async def test_push_service_lifecycle_and_background_retention(mocker):
 async def test_push_service_transient_dns_failure_does_not_prune(mocker, db_session, auth_user):
     import socket
     from app.services.push_service import encrypt_push_subscription, send_push_notification
-    from app.models.models import Device
+    from app.database.models import Device
 
     device_id = auth_user["device_id"]
     user_id = auth_user["email"]

@@ -21,9 +21,9 @@ from sqlalchemy import select
 
 from app.core.config import Settings
 from app.core.constants import LOOPBACK_HOSTS
-from app.core.database import SessionLocal, run_in_write_transaction
+from app.database.engine import SessionLocal, run_in_write_transaction
 from app.core.metrics import PUSH_DISPATCHES_TOTAL, PUSH_DURATION_SECONDS
-from app.models.models import Device
+from app.database.models import Device
 
 logger = logging.getLogger("clipboard_sync")
 

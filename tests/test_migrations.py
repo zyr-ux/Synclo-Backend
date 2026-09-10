@@ -67,7 +67,7 @@ def test_baseline_migration_applies_cleanly():
         from datetime import datetime, timezone
         from sqlalchemy import create_engine, select
         from sqlalchemy.orm import sessionmaker
-        from app.models.models import User, Device, Clipboard, RefreshToken, BlacklistedToken
+        from app.database.models import User, Device, Clipboard, RefreshToken, BlacklistedToken
 
         engine = create_engine(f"sqlite:///{test_db_path}")
         TestSession = sessionmaker(bind=engine)
@@ -230,7 +230,7 @@ def test_schema_parity_between_alembic_and_orm():
     - Column names, nullability, and primary keys
     """
     from sqlalchemy import inspect, create_engine
-    from app.core.database import Base
+    from app.database.engine import Base
 
     temp_dir = tempfile.mkdtemp(prefix="synclo_test_parity_")
     test_db_path = Path(temp_dir) / "test_parity.db"

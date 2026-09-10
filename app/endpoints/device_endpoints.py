@@ -10,9 +10,9 @@ from app.core.constants import (
     MIN_DEVICE_NAME_LEN,
     MAX_DEVICE_NAME_LEN,
 )
-from app.core.database import run_in_write_transaction
-from app.models.models import Device, RefreshToken
-from app.schemas.schemas import (
+from app.database.engine import run_in_write_transaction
+from app.database.models import Device, RefreshToken
+from app.database.schemas import (
     DeviceRegister,
     DeviceRename,
     DeviceOut,
