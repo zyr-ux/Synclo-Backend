@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi_limiter.depends import RateLimiter
 import jwt
 from jwt import InvalidTokenError
+from sqlalchemy import CursorResult, delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -93,7 +94,7 @@ def decode_and_validate_blob(value: str, min_len: int, max_len: int, field_name:
     dependencies=[Depends(RateLimiter(times=10, seconds=60))],
 )
 def get_salt_for_email(email: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == email).first()
+    user = db.scalars(select(User).where(User.email == email)).first()
     if not user:
         raise HTTPException(status_code=404, detail="Email not found")
 
@@ -109,7 +110,7 @@ def get_salt_for_email(email: str, db: Session = Depends(get_db)):
     dependencies=[Depends(RateLimiter(times=5, seconds=60))],
 )
 def get_recovery_material(request: RecoveryMaterialRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == request.email).first()
+    user = db.scalars(select(User).where(User.email == request.email)).first()
     if not user or not user.recovery_wrapped_master_key:
         raise HTTPException(status_code=401, detail="Could not recover account")
 
@@ -161,7 +162,7 @@ async def recover_account(data: AccountRecoveryRequest, db: Session = Depends(ge
         "new_recovery_key_verifier",
     )
 
-    user = db.query(User).filter(User.email == data.email).first()
+    user = db.scalars(select(User).where(User.email == data.email)).first()
     if not user or not user.recovery_key_verifier:
         bcrypt.checkpw(recovery_verifier_bytes, DUMMY_BCRYPT_HASH.encode("utf-8"))
         raise HTTPException(status_code=401, detail="Could not recover account")
@@ -181,11 +182,15 @@ async def recover_account(data: AccountRecoveryRequest, db: Session = Depends(ge
         user.kdf_version = data.new_kdf_version
         user.recovery_wrapped_master_key = new_recovery_wrapped_mk_bytes
         user.recovery_key_verifier = new_recovery_verifier_hash
-        db.query(RefreshToken).filter(RefreshToken.user_id == user.user_id).update(
-            {"is_revoked": True}
+        db.execute(
+            update(RefreshToken)
+            .where(RefreshToken.user_id == user.user_id)
+            .values(is_revoked=True)
         )
 
-        device = db.query(Device).filter_by(device_id=data.device_id, user_id=user.user_id).first()
+        device = db.scalars(
+            select(Device).where(Device.device_id == data.device_id, Device.user_id == user.user_id)
+        ).first()
         if device:
             if data.device_name:
                 device.device_name = data.device_name
@@ -232,7 +237,7 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     if user.kdf_version not in ALLOWED_KDF_VERSIONS:
         raise HTTPException(status_code=400, detail="Unsupported kdf_version")
 
-    if db.query(User).filter(User.email == user.email).first():
+    if db.scalars(select(User).where(User.email == user.email)).first():
         raise HTTPException(status_code=409, detail="Email already registered")
 
     encrypted_mk_bytes = decode_and_validate_blob(
@@ -287,7 +292,7 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     try:
         new_user, new_device, plain_refresh_token = run_in_write_transaction(db, mutate)
     except IntegrityError:
-        if db.query(User).filter(User.email == user.email).first():
+        if db.scalars(select(User).where(User.email == user.email)).first():
             raise HTTPException(status_code=409, detail="Email already registered")
         raise HTTPException(status_code=400, detail="Registration failed")
 
@@ -321,7 +326,7 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     "/login", response_model=TokenWithE2EE, dependencies=[Depends(RateLimiter(times=5, seconds=60))]
 )
 async def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.email == user.email).first()
+    db_user = db.scalars(select(User).where(User.email == user.email)).first()
     if not db_user:
         bcrypt.checkpw(b"dummy", DUMMY_BCRYPT_HASH.encode("utf-8"))
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -343,7 +348,9 @@ async def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
     db_user_id: str = db_user.user_id
 
     def mutate() -> tuple[Device, bool, bool, str]:
-        device = db.query(Device).filter_by(device_id=user.device_id, user_id=db_user_id).first()
+        device = db.scalars(
+            select(Device).where(Device.device_id == user.device_id, Device.user_id == db_user_id)
+        ).first()
         is_new = False
         os_updated = False
         if not device:
@@ -363,7 +370,11 @@ async def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
                 os_updated = True
             device.last_seen = datetime.now(timezone.utc)
 
-        db.query(RefreshToken).filter_by(user_id=db_user_id, device_id=user.device_id).delete()
+        db.execute(
+            delete(RefreshToken).where(
+                RefreshToken.user_id == db_user_id, RefreshToken.device_id == user.device_id
+            )
+        )
 
         plain_refresh = create_refresh_token(db, user_id=db_user_id, device_id=device.device_id)
         return device, is_new, os_updated, plain_refresh
@@ -438,21 +449,23 @@ def logout(
         raise HTTPException(status_code=400, detail="Invalid refresh token")
 
     def mutate() -> None:
-        if not db.query(BlacklistedToken).filter(BlacklistedToken.token == access_token).first():
+        if not db.scalars(
+            select(BlacklistedToken).where(BlacklistedToken.token == access_token)
+        ).first():
             db.add(
                 BlacklistedToken(
                     token=access_token, expiry=datetime.fromtimestamp(exp, tz=timezone.utc)
                 )
             )
 
-        user = db.query(User).filter(User.email == sub).first()
+        user = db.scalars(select(User).where(User.email == sub)).first()
         if user:
-            token_query = db.query(RefreshToken).filter(
+            stmt = update(RefreshToken).where(
                 RefreshToken.token == hashed_refresh, RefreshToken.user_id == user.user_id
             )
             if device_id:
-                token_query = token_query.filter(RefreshToken.device_id == device_id)
-            token_query.update({"is_revoked": True}, synchronize_session=False)
+                stmt = stmt.where(RefreshToken.device_id == device_id)
+            db.execute(stmt.values(is_revoked=True))
 
     run_in_write_transaction(db, mutate)
 
@@ -470,22 +483,29 @@ def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
 
     def mutate() -> tuple[str, Optional[str], Optional[User], Optional[str]]:
         # Atomic conditional update: only one request can rotate an active token
-        rows_updated = (
-            db.query(RefreshToken)
-            .filter(RefreshToken.token == hashed_input, RefreshToken.is_revoked.is_(False))
-            .update({"is_revoked": True}, synchronize_session=False)
+        res = db.execute(
+            update(RefreshToken)
+            .where(RefreshToken.token == hashed_input, RefreshToken.is_revoked.is_(False))
+            .values(is_revoked=True)
         )
+        rows_updated = res.rowcount if isinstance(res, CursorResult) else 0
 
         if rows_updated == 0:
-            existing = db.query(RefreshToken).filter(RefreshToken.token == hashed_input).first()
+            existing = db.scalars(
+                select(RefreshToken).where(RefreshToken.token == hashed_input)
+            ).first()
             if existing:
-                db.query(RefreshToken).filter(RefreshToken.token_id == existing.token_id).update(
-                    {"is_revoked": True}, synchronize_session=False
+                db.execute(
+                    update(RefreshToken)
+                    .where(RefreshToken.token_id == existing.token_id)
+                    .values(is_revoked=True)
                 )
                 return "reused", None, None, None
             return "invalid", None, None, None
 
-        token_entry = db.query(RefreshToken).filter(RefreshToken.token == hashed_input).first()
+        token_entry = db.scalars(
+            select(RefreshToken).where(RefreshToken.token == hashed_input)
+        ).first()
         if not token_entry:
             return "invalid", None, None, None
 
@@ -497,7 +517,7 @@ def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
         if expiry_utc < datetime.now(timezone.utc):
             return "expired", None, None, None
 
-        user = db.query(User).filter(User.user_id == token_entry.user_id).first()
+        user = db.scalars(select(User).where(User.user_id == token_entry.user_id)).first()
         if not user:
             return "user_not_found", None, None, None
 
@@ -549,10 +569,10 @@ async def delete_account(
     user_id: str = current_user.user_id
 
     def mutate() -> None:
-        db.query(Clipboard).filter_by(user_id=user_id).delete()
-        db.query(Device).filter_by(user_id=user_id).delete()
-        db.query(RefreshToken).filter_by(user_id=user_id).delete()
-        db.query(User).filter_by(user_id=user_id).delete()
+        db.execute(delete(Clipboard).where(Clipboard.user_id == user_id))
+        db.execute(delete(Device).where(Device.user_id == user_id))
+        db.execute(delete(RefreshToken).where(RefreshToken.user_id == user_id))
+        db.execute(delete(User).where(User.user_id == user_id))
 
     run_in_write_transaction(db, mutate)
 
@@ -628,13 +648,15 @@ async def change_password(
         current_user.encrypted_master_key = new_encrypted_mk_bytes
         current_user.salt = new_salt_bytes
         current_user.kdf_version = data.new_kdf_version
-        if new_recovery_wrapped_bytes is not None:
+        if new_recovery_wrapped_bytes is not None and new_recovery_verifier_hash is not None:
             current_user.recovery_wrapped_master_key = new_recovery_wrapped_bytes
             current_user.recovery_key_verifier = new_recovery_verifier_hash
 
         current_user.session_epoch += 1
-        db.query(RefreshToken).filter(RefreshToken.user_id == current_user.user_id).update(
-            {"is_revoked": True}, synchronize_session=False
+        db.execute(
+            update(RefreshToken)
+            .where(RefreshToken.user_id == current_user.user_id)
+            .values(is_revoked=True)
         )
 
     run_in_write_transaction(db, mutate)
@@ -717,15 +739,17 @@ async def update_email(
     if current_user.email == data.email:
         raise HTTPException(status_code=400, detail="New email cannot be the same as current email")
 
-    existing_user = db.query(User).filter(User.email == data.email).first()
+    existing_user = db.scalars(select(User).where(User.email == data.email)).first()
     if existing_user:
         raise HTTPException(status_code=409, detail="Email already registered")
 
     def mutate() -> str:
         current_user.email = data.email
         current_user.session_epoch += 1
-        db.query(RefreshToken).filter_by(user_id=current_user.user_id).update(
-            {"is_revoked": True}, synchronize_session=False
+        db.execute(
+            update(RefreshToken)
+            .where(RefreshToken.user_id == current_user.user_id)
+            .values(is_revoked=True)
         )
         refresh = create_refresh_token(db, user_id=current_user.user_id, device_id=device_id)
         return refresh

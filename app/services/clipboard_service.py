@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 from fastapi import HTTPException
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.database import async_run_in_write_transaction
@@ -15,7 +15,7 @@ from app.websockets.connection_manager import manager
 
 
 def allocate_batch_sync_sequence(db: Session, user_id: str, count: int = 1) -> int:
-    user = db.query(User).filter_by(user_id=user_id).first()
+    user = db.scalars(select(User).where(User.user_id == user_id)).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if count <= 0:
@@ -93,7 +93,9 @@ async def upsert_clipboard(
     incoming_ts = ensure_utc(data.timestamp)
 
     def mutate() -> Tuple[Clipboard, str, bool, bool, bool]:
-        existing = db.query(Clipboard).filter_by(user_id=user_id, clipboard_id=data.id).first()
+        existing = db.scalars(
+            select(Clipboard).where(Clipboard.user_id == user_id, Clipboard.clipboard_id == data.id)
+        ).first()
         is_new = existing is None
         was_deleted = bool(existing and existing.is_deleted)
 
@@ -198,10 +200,14 @@ async def soft_delete_clipboard(
     client_timestamp: Optional[datetime] = None,
 ) -> Tuple[dict, bool]:
     now = datetime.now(timezone.utc)
-    del_ts = ensure_utc(client_timestamp) if client_timestamp else now
+    del_ts = ensure_utc(client_timestamp) if client_timestamp is not None else now
 
     def mutate() -> Optional[Clipboard]:
-        entry = db.query(Clipboard).filter_by(user_id=user_id, clipboard_id=clipboard_id).first()
+        entry = db.scalars(
+            select(Clipboard).where(
+                Clipboard.user_id == user_id, Clipboard.clipboard_id == clipboard_id
+            )
+        ).first()
         if entry is not None:
             decision, reason = _evaluate_lww_conflict(
                 entry,
@@ -263,7 +269,11 @@ async def update_pin_status(
     caller_device_id: Optional[str] = None,
 ) -> Clipboard:
     def mutate() -> Clipboard:
-        item = db.query(Clipboard).filter_by(clipboard_id=clipboard_id, user_id=user_id).first()
+        item = db.scalars(
+            select(Clipboard).where(
+                Clipboard.clipboard_id == clipboard_id, Clipboard.user_id == user_id
+            )
+        ).first()
         if not item:
             raise HTTPException(status_code=404, detail="Clipboard entry not found")
         if item.is_deleted:

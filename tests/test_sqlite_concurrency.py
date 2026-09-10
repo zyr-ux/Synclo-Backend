@@ -2,7 +2,7 @@ import asyncio
 import sqlite3
 import pytest
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -107,7 +107,7 @@ def test_auth_write_transaction_retries_on_contention(monkeypatch):
         monkeypatch.setattr("app.core.database.time.sleep", lambda _: None)
         user = run_in_write_transaction(session, mutate, max_retries=3)
         assert attempts == 2
-        assert session.query(User).filter_by(email="retry_test@synclo.app").count() == 1
+        assert len(list(session.scalars(select(User).where(User.email == "retry_test@synclo.app")).all())) == 1
         assert user.email == "retry_test@synclo.app"
 
 

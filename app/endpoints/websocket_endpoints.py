@@ -11,6 +11,7 @@ from app.core.database import SessionLocal, run_in_write_transaction
 from app.core.config import Settings
 from app.core.constants import LOOPBACK_HOSTS
 from app.core.logging_config import logger
+from sqlalchemy import select
 from app.models.models import User, Device, BlacklistedToken
 from app.schemas.schemas import ClipboardIn
 from app.services.auth import SECRET_KEY, ALGORITHM
@@ -90,13 +91,13 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
 
     db = SessionLocal()
     try:
-        if db.query(BlacklistedToken).filter_by(token=token).first():
+        if db.scalars(select(BlacklistedToken).where(BlacklistedToken.token == token)).first():
             logger.warning("WebSocket connection attempted with blacklisted token")
             await websocket.send_json({"type": "error", "message": "Token has been revoked"})
             await websocket.close(code=1008)
             return None
 
-        user = db.query(User).filter(User.email == email).first()
+        user = db.scalars(select(User).where(User.email == email)).first()
         if not user:
             logger.warning("WebSocket connection attempted for non-existent user")
             await websocket.send_json({"type": "error", "message": "User not found"})
@@ -113,7 +114,9 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
             await websocket.close(code=4004)
             return None
 
-        device = db.query(Device).filter_by(user_id=user.user_id, device_id=device_id).first()
+        device = db.scalars(
+            select(Device).where(Device.user_id == user.user_id, Device.device_id == device_id)
+        ).first()
         if not device:
             logger.warning(
                 f"WebSocket connection attempted with unauthorized device {device_id} for user {user.user_id}"
@@ -137,7 +140,9 @@ def _update_device_last_seen(user_id: str, device_id: str):
     try:
 
         def mutate():
-            dev = session.query(Device).filter_by(user_id=user_id, device_id=device_id).first()
+            dev = session.scalars(
+                select(Device).where(Device.user_id == user_id, Device.device_id == device_id)
+            ).first()
             if dev:
                 dev.last_seen = datetime.now(timezone.utc)
 
@@ -168,7 +173,9 @@ async def _process_clipboard_message(
 
     session = SessionLocal()
     try:
-        device = session.query(Device).filter_by(user_id=user_id, device_id=device_id).first()
+        device = session.scalars(
+            select(Device).where(Device.user_id == user_id, Device.device_id == device_id)
+        ).first()
         if not device:
             await websocket.send_json(
                 {

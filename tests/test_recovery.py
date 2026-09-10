@@ -1,5 +1,6 @@
 import base64
 import pytest
+from sqlalchemy import select
 from starlette.websockets import WebSocketDisconnect
 
 from app.models.models import User
@@ -34,7 +35,7 @@ def test_register_with_mandatory_recovery_key_and_verifier(client, db_session):
     assert "access_token" in data
     assert "refresh_token" in data
 
-    db_user = db_session.query(User).filter(User.email == email).first()
+    db_user = db_session.scalars(select(User).where(User.email == email)).first()
     assert db_user is not None
     assert db_user.recovery_wrapped_master_key == base64.b64decode(wrapped_mk)
     assert db_user.recovery_key_verifier != verifier

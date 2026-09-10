@@ -65,7 +65,7 @@ def test_baseline_migration_applies_cleanly():
 
         # Verify ORM models map 1:1 against the migrated database
         from datetime import datetime, timezone
-        from sqlalchemy import create_engine
+        from sqlalchemy import create_engine, select
         from sqlalchemy.orm import sessionmaker
         from app.models.models import User, Device, Clipboard, RefreshToken, BlacklistedToken
 
@@ -130,11 +130,11 @@ def test_baseline_migration_applies_cleanly():
             session.add(bt)
             session.commit()
 
-            assert session.query(User).count() == 1
-            assert session.query(Device).count() == 1
-            assert session.query(Clipboard).count() == 1
-            assert session.query(RefreshToken).count() == 1
-            assert session.query(BlacklistedToken).count() == 1
+            assert len(list(session.scalars(select(User)).all())) == 1
+            assert len(list(session.scalars(select(Device)).all())) == 1
+            assert len(list(session.scalars(select(Clipboard)).all())) == 1
+            assert len(list(session.scalars(select(RefreshToken)).all())) == 1
+            assert len(list(session.scalars(select(BlacklistedToken)).all())) == 1
         finally:
             session.close()
             engine.dispose()
@@ -261,7 +261,7 @@ def test_schema_parity_between_alembic_and_orm():
                     f"Nullability mismatch on {table_name}.{col.name}: ORM={col.nullable}, Migrated={mig_col['nullable']}"
                 )
                 # Compare primary key
-                assert bool(col.primary_key) == bool(mig_col["primary_key"]), (
+                assert bool(col.primary_key) == bool(dict(mig_col).get("primary_key", False)), (
                     f"Primary key mismatch on {table_name}.{col.name}"
                 )
 

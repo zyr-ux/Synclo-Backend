@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from sqlalchemy import select
 
 from app.models.models import Device, User
 from app.services.push_service import (
@@ -52,7 +53,7 @@ def test_register_push_subscription_success(client, auth_user, db_session):
     from app.models.models import Device
     from app.services.push_service import decrypt_push_subscription
 
-    device = db_session.query(Device).filter_by(device_id=device_id).first()
+    device = db_session.scalars(select(Device).where(Device.device_id == device_id)).first()
     assert device.push_subscription != push_url
     assert decrypt_push_subscription(device.push_subscription) == push_url
 
@@ -215,7 +216,7 @@ async def test_send_push_notification_stale_self_healing(
         headers=auth_user["headers"],
     )
 
-    user = db_session.query(User).filter_by(email=email).first()
+    user = db_session.scalars(select(User).where(User.email == email)).first()
     user_id = user.user_id
 
     # Mock distributor returning stale rejection status
@@ -236,7 +237,7 @@ async def test_send_push_notification_stale_self_healing(
 
     # Check that the device's push_subscription was pruned (self-healed) in DB
     db_session.expire_all()
-    device = db_session.query(Device).filter_by(device_id=device_id).first()
+    device = db_session.scalars(select(Device).where(Device.device_id == device_id)).first()
     assert device.push_subscription is None
 
     # Also verify via public API GET /api/v1/devices
@@ -439,7 +440,7 @@ async def test_send_push_notification_context_lifecycle(mocker):
 @pytest.mark.asyncio
 async def test_dispatch_push_to_user_devices(client, user_factory, db_session, mocker):
     user = user_factory()
-    user_record = db_session.query(User).filter_by(email=user["email"]).first()
+    user_record = db_session.scalars(select(User).where(User.email == user["email"])).first()
     user_id = user_record.user_id
 
     # Register Device 2 and Device 3
@@ -482,7 +483,7 @@ async def test_dispatch_push_to_user_devices(client, user_factory, db_session, m
 def test_clipboard_write_triggers_push_dispatch(client, auth_user, db_session, mocker):
     mock_launch = mocker.patch("app.endpoints.clipboard_endpoints.launch_background_push")
 
-    user = db_session.query(User).filter_by(email=auth_user["email"]).first()
+    user = db_session.scalars(select(User).where(User.email == auth_user["email"])).first()
     user_id = user.user_id
 
     clip_id = "test_clip_push_trigger"
@@ -497,7 +498,7 @@ def test_clipboard_write_triggers_push_dispatch(client, auth_user, db_session, m
 def test_websocket_sync_triggers_push_dispatch(client, auth_user, db_session, mocker):
     mock_launch = mocker.patch("app.endpoints.websocket_endpoints.launch_background_push")
 
-    user = db_session.query(User).filter_by(email=auth_user["email"]).first()
+    user = db_session.scalars(select(User).where(User.email == auth_user["email"])).first()
     user_id = user.user_id
 
     token = auth_user["access_token"]
@@ -542,7 +543,7 @@ async def test_push_service_transient_dns_failure_does_not_prune(mocker, db_sess
     device_id = auth_user["device_id"]
     user_id = auth_user["email"]
 
-    device = db_session.query(Device).filter_by(device_id=device_id).first()
+    device = db_session.scalars(select(Device).where(Device.device_id == device_id)).first()
     assert device is not None
     device.push_subscription = encrypt_push_subscription("https://ntfy.sh/up_dns_test")
     db_session.commit()

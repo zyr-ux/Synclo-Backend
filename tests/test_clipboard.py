@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import select
 
 from app.schemas.schemas import ClipboardIn
 from tests.conftest import make_clipboard_payload
@@ -522,7 +523,9 @@ def test_duplicate_write_noop_suppresses_broadcast_and_push(
     assert mock_push.call_count == 1
     assert mock_broadcast.call_count == 1
 
-    entry_before = db_session.query(Clipboard).filter_by(clipboard_id="duplicate_clip_1").first()
+    entry_before = db_session.scalars(
+        select(Clipboard).where(Clipboard.clipboard_id == "duplicate_clip_1")
+    ).first()
     assert entry_before is not None
     rev_before = entry_before.entry_revision
     change_before = entry_before.change_number
@@ -537,7 +540,9 @@ def test_duplicate_write_noop_suppresses_broadcast_and_push(
 
     # Deep NO-OP check: database record must not be mutated
     db_session.expire_all()
-    entry_after = db_session.query(Clipboard).filter_by(clipboard_id="duplicate_clip_1").first()
+    entry_after = db_session.scalars(
+        select(Clipboard).where(Clipboard.clipboard_id == "duplicate_clip_1")
+    ).first()
     assert entry_after.entry_revision == rev_before
     assert entry_after.change_number == change_before
     assert entry_after.updated_at == updated_at_before

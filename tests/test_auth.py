@@ -12,6 +12,7 @@ Scenarios Targeted:
 8. Hard account deletion via 'DELETE /api/v1/delete' and immediate token invalidation (401).
 """
 
+from sqlalchemy import select
 from tests.conftest import generate_random_base64
 
 
@@ -478,7 +479,9 @@ def test_logout_revokes_token_and_detects_reuse(client, user_factory, db_session
     hashed_token = hash_refresh_token(refresh_token)
 
     # 1. Verify token exists and is active
-    token_record = db_session.query(RefreshToken).filter_by(token=hashed_token).first()
+    token_record = db_session.scalars(
+        select(RefreshToken).where(RefreshToken.token == hashed_token)
+    ).first()
     assert token_record is not None
     assert token_record.is_revoked is False
 
@@ -491,7 +494,9 @@ def test_logout_revokes_token_and_detects_reuse(client, user_factory, db_session
 
     # 3. Verify record was marked is_revoked=True instead of being deleted
     db_session.expire_all()
-    token_record_after = db_session.query(RefreshToken).filter_by(token=hashed_token).first()
+    token_record_after = db_session.scalars(
+        select(RefreshToken).where(RefreshToken.token == hashed_token)
+    ).first()
     assert token_record_after is not None
     assert token_record_after.is_revoked is True
 

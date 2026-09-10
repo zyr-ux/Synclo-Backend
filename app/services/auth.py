@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 import jwt
 from jwt import InvalidTokenError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.models import User, BlacklistedToken, Device, RefreshToken
@@ -85,17 +86,19 @@ def get_auth_context(
         if email is None or exp is None or epoch is None:
             raise credentials_exception
 
-        if db.query(BlacklistedToken).filter_by(token=token).first():
+        if db.scalars(select(BlacklistedToken).where(BlacklistedToken.token == token)).first():
             raise HTTPException(status_code=401, detail="Token has been revoked")
 
-        user = db.query(User).filter(User.email == email).first()
+        user = db.scalars(select(User).where(User.email == email)).first()
         if user is None:
             raise credentials_exception
 
         if epoch != user.session_epoch:
             raise HTTPException(status_code=401, detail="Session revoked, please re-authenticate")
 
-        if not db.query(Device).filter_by(user_id=user.user_id, device_id=device_id).first():
+        if not db.scalars(
+            select(Device).where(Device.user_id == user.user_id, Device.device_id == device_id)
+        ).first():
             raise HTTPException(status_code=403, detail="Unauthorized device")
 
         return AuthContext(user=user, device_id=device_id)

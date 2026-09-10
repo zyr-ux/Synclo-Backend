@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi_limiter.depends import RateLimiter
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from app.core.constants import (
     MIN_DEVICE_ID_LEN,
@@ -41,9 +42,11 @@ async def register_device(
     current_user_id: str = auth.user.user_id
 
     def mutate() -> tuple[Device, bool]:
-        existing = (
-            db.query(Device).filter_by(device_id=device.device_id, user_id=current_user_id).first()
-        )
+        existing = db.scalars(
+            select(Device).where(
+                Device.device_id == device.device_id, Device.user_id == current_user_id
+            )
+        ).first()
         if existing:
             existing.last_seen = datetime.now(timezone.utc)
             return existing, False
@@ -85,7 +88,7 @@ def get_devices(
     auth: AuthContext = Depends(get_auth_context),
 ):
     user_id = auth.user.user_id
-    devices = db.query(Device).filter(Device.user_id == user_id).all()
+    devices = list(db.scalars(select(Device).where(Device.user_id == user_id)).all())
     return [device_to_response(d, user_id) for d in devices]
 
 
@@ -96,14 +99,20 @@ async def delete_device(
     auth: AuthContext = Depends(get_auth_context),
 ):
     user_id: str = auth.user.user_id
-    device = db.query(Device).filter_by(device_id=device_id, user_id=user_id).first()
+    device = db.scalars(
+        select(Device).where(Device.device_id == device_id, Device.user_id == user_id)
+    ).first()
 
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
     def mutate() -> None:
         db.delete(device)
-        db.query(RefreshToken).filter_by(user_id=user_id, device_id=device_id).delete()
+        db.execute(
+            delete(RefreshToken).where(
+                RefreshToken.user_id == user_id, RefreshToken.device_id == device_id
+            )
+        )
 
     run_in_write_transaction(db, mutate)
 
@@ -129,7 +138,9 @@ async def rename_device(
 
     user_id: str = auth.user.user_id
 
-    device = db.query(Device).filter_by(device_id=device_id, user_id=user_id).first()
+    device = db.scalars(
+        select(Device).where(Device.device_id == device_id, Device.user_id == user_id)
+    ).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
@@ -166,7 +177,9 @@ async def update_device_push(
     auth: AuthContext = Depends(get_auth_context),
 ):
     user_id: str = auth.user.user_id
-    device = db.query(Device).filter_by(device_id=device_id, user_id=user_id).first()
+    device = db.scalars(
+        select(Device).where(Device.device_id == device_id, Device.user_id == user_id)
+    ).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
@@ -193,7 +206,9 @@ async def remove_device_push(
     auth: AuthContext = Depends(get_auth_context),
 ):
     user_id: str = auth.user.user_id
-    device = db.query(Device).filter_by(device_id=device_id, user_id=user_id).first()
+    device = db.scalars(
+        select(Device).where(Device.device_id == device_id, Device.user_id == user_id)
+    ).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 

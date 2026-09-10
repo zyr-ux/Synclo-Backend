@@ -14,8 +14,10 @@ from typing import Any, AsyncIterable, List, Optional, Set, Tuple, cast
 from urllib.parse import urlparse
 
 import httpcore
+from httpcore._backends.anyio import AnyIOBackend
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
+from sqlalchemy import select
 
 from app.core.config import Settings
 from app.core.constants import LOOPBACK_HOSTS
@@ -78,7 +80,7 @@ def decrypt_push_subscription(value: str) -> Optional[str]:
         return None
 
 
-class PinnedNetworkBackend(httpcore.AnyIOBackend):
+class PinnedNetworkBackend(AnyIOBackend):
     def __init__(self, pinned_ips: dict[str, str]):
         super().__init__()
         self.pinned_ips = pinned_ips
@@ -107,7 +109,7 @@ class PinnedNetworkBackend(httpcore.AnyIOBackend):
 
 class _HttpcoreResponseStream(httpx.AsyncByteStream):
     def __init__(self, stream: AsyncIterable[bytes]) -> None:
-        self._stream = cast(AsyncIterable[bytes], stream)
+        self._stream = stream
 
     async def __aiter__(self):
         async for chunk in self._stream:
@@ -187,7 +189,9 @@ def _prune_stale_endpoint(user_id: str, device_id: str) -> None:
     try:
 
         def mutate():
-            device = session.query(Device).filter_by(user_id=user_id, device_id=device_id).first()
+            device = session.scalars(
+                select(Device).where(Device.user_id == user_id, Device.device_id == device_id)
+            ).first()
             if device:
                 device.push_subscription = None
                 device.push_subscription_updated_at = datetime.now(timezone.utc)
@@ -205,12 +209,12 @@ def _get_target_push_endpoints(
 ) -> List[Tuple[str, str]]:
     session = SessionLocal()
     try:
-        query = session.query(Device).filter(
+        stmt = select(Device).where(
             Device.user_id == user_id, Device.push_subscription.isnot(None)
         )
         if exclude_device:
-            query = query.filter(Device.device_id != exclude_device)
-        devices = query.all()
+            stmt = stmt.where(Device.device_id != exclude_device)
+        devices = list(session.scalars(stmt).all())
         endpoints = []
         for device in devices:
             if not device.push_subscription:
@@ -339,7 +343,7 @@ async def _validate_endpoint_and_resolve(endpoint: str) -> EndpointValidationRes
                 reason=f"Resolved IP {ip_str} is private or non-global",
             )
 
-    pinned_ip = addr_infos[0][4][0]
+    pinned_ip = str(addr_infos[0][4][0])
     return EndpointValidationResult(
         EndpointValidationStatus.VALID, details=(hostname, pinned_ip, port)
     )

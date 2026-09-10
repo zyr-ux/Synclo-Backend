@@ -8,6 +8,7 @@ Scenarios Targeted:
 """
 
 import datetime
+from sqlalchemy import delete, select
 
 
 def test_sync_without_since_change_number_returns_422(client, auth_headers):
@@ -173,9 +174,11 @@ def test_delta_sync_keyset_sequence_410_retention_cutoff(
 
     # 2. Hard-purge item 1 and item 2 to simulate expired tombstones cleaned up after 30 days
     def purge():
-        db_session.query(Clipboard).filter(
-            Clipboard.clipboard_id.in_(["seq_410_item_1", "seq_410_item_2"])
-        ).delete(synchronize_session="fetch")
+        db_session.execute(
+            delete(Clipboard).where(
+                Clipboard.clipboard_id.in_(["seq_410_item_1", "seq_410_item_2"])
+            )
+        )
 
     run_in_write_transaction(db_session, purge)
     db_session.expire_all()
@@ -207,7 +210,9 @@ def test_delta_sync_keyset_sequence_410_when_entries_older_than_retention(
 
     # Backdate seq_old_2 to 35 days ago
     old_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=35)
-    item2 = db_session.query(Clipboard).filter_by(clipboard_id="seq_old_2").first()
+    item2 = db_session.scalars(
+        select(Clipboard).where(Clipboard.clipboard_id == "seq_old_2")
+    ).first()
     item2.updated_at = old_time
     item2.timestamp = old_time
     db_session.commit()

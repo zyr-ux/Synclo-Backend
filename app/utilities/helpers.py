@@ -5,7 +5,8 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple, overload
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.core.database import run_in_write_transaction
@@ -37,6 +38,14 @@ def strict_b64decode(value: str, field_name: str = "field") -> bytes:
 class CleanupResult:
     tombstones: List[Tuple[str, dict]]
     failures: int = 0
+
+
+@overload
+def ensure_utc(dt: None) -> None: ...
+
+
+@overload
+def ensure_utc(dt: datetime) -> datetime: ...
 
 
 def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -72,7 +81,7 @@ def cleanup_expired_blacklisted_tokens(db: Session) -> bool:
         now_utc = datetime.now(timezone.utc)
 
         def mutate():
-            db.query(BlacklistedToken).filter(BlacklistedToken.expiry < now_utc).delete()
+            db.execute(delete(BlacklistedToken).where(BlacklistedToken.expiry < now_utc))
 
         run_in_write_transaction(db, mutate)
         return True
@@ -87,7 +96,7 @@ def cleanup_expired_refresh_tokens(db: Session) -> bool:
         now_utc = datetime.now(timezone.utc)
 
         def mutate():
-            db.query(RefreshToken).filter(RefreshToken.expiry < now_utc).delete()
+            db.execute(delete(RefreshToken).where(RefreshToken.expiry < now_utc))
 
         run_in_write_transaction(db, mutate)
         return True
@@ -111,16 +120,13 @@ def prune_user_clipboard(
     def mutate() -> List[dict]:
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(days=retention_days)
-        entries = (
-            db.query(Clipboard)
-            .filter(
-                Clipboard.user_id == user_id,
-                Clipboard.is_deleted.is_(False),
-                Clipboard.is_pinned.is_(False),
-                Clipboard.updated_at < cutoff,
-            )
-            .all()
+        stmt = select(Clipboard).where(
+            Clipboard.user_id == user_id,
+            Clipboard.is_deleted.is_(False),
+            Clipboard.is_pinned.is_(False),
+            Clipboard.updated_at < cutoff,
         )
+        entries = list(db.scalars(stmt).all())
         if not entries:
             return []
 
@@ -158,7 +164,7 @@ def prune_all_users_clipboard(
     db: Session, retention_days: Optional[int] = None
 ) -> List[Tuple[str, dict]]:
     all_tombstones: List[Tuple[str, dict]] = []
-    user_ids = [uid for (uid,) in db.query(User.user_id).all()]
+    user_ids = list(db.scalars(select(User.user_id)).all())
     for user_id in user_ids:
         tombstones = prune_user_clipboard(user_id, db, retention_days=retention_days)
         all_tombstones.extend((user_id, tombstone) for tombstone in tombstones)
@@ -171,9 +177,11 @@ def cleanup_old_tombstones(db: Session) -> bool:
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
         def mutate():
-            db.query(Clipboard).filter(
-                Clipboard.is_deleted.is_(True), Clipboard.deleted_at < cutoff_date
-            ).delete()
+            db.execute(
+                delete(Clipboard).where(
+                    Clipboard.is_deleted.is_(True), Clipboard.deleted_at < cutoff_date
+                )
+            )
 
         run_in_write_transaction(db, mutate)
         return True
@@ -212,7 +220,7 @@ class RedactingFilter(logging.Filter):
     ]
 
     @classmethod
-    def redact(cls, text: str) -> str:
+    def redact(cls, text: Any) -> Any:
         if not isinstance(text, str):
             return text
         for pattern in cls.PATTERNS:

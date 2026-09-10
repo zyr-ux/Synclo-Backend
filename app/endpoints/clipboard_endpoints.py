@@ -3,6 +3,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi_limiter.depends import RateLimiter
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -73,12 +74,12 @@ def get_clipboard(
 ):
     user_id: str = auth.user.user_id
 
-    entry = (
-        db.query(Clipboard)
-        .filter(Clipboard.user_id == user_id, Clipboard.is_deleted.is_(False))
+    stmt = (
+        select(Clipboard)
+        .where(Clipboard.user_id == user_id, Clipboard.is_deleted.is_(False))
         .order_by(Clipboard.timestamp.desc())
-        .first()
     )
+    entry = db.scalars(stmt).first()
     if not entry:
         raise HTTPException(status_code=404, detail="No clipboard found")
 
@@ -97,13 +98,13 @@ def get_clipboard_all(
     auth: AuthContext = Depends(get_auth_context),
 ):
     user_id: str = auth.user.user_id
-    query = db.query(Clipboard).filter_by(user_id=user_id)
+    stmt = select(Clipboard).where(Clipboard.user_id == user_id)
 
     if not include_deleted:
-        query = query.filter(Clipboard.is_deleted.is_(False))
+        stmt = stmt.where(Clipboard.is_deleted.is_(False))
 
-    query = query.order_by(Clipboard.timestamp.desc()).limit(limit)
-    entries = query.all()
+    stmt = stmt.order_by(Clipboard.timestamp.desc()).limit(limit)
+    entries = list(db.scalars(stmt).all())
 
     return [clipboard_to_response(entry) for entry in entries]
 
@@ -124,12 +125,11 @@ def get_sync_clipboard(
     retention_days = Settings.TOMBSTONE_RETENTION_DAYS
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
-    oldest_entry = (
-        db.query(Clipboard.change_number, Clipboard.updated_at)
-        .filter(Clipboard.user_id == user_id)
+    oldest_entry = db.execute(
+        select(Clipboard.change_number, Clipboard.updated_at)
+        .where(Clipboard.user_id == user_id)
         .order_by(Clipboard.change_number.asc())
-        .first()
-    )
+    ).first()
     if oldest_entry is not None:
         if since_change_number > 0 and since_change_number < oldest_entry.change_number - 1:
             raise HTTPException(
@@ -141,18 +141,19 @@ def get_sync_clipboard(
                 status_code=410, detail="Sync state expired. Please wipe local data and resync."
             )
 
-    entries = (
-        db.query(Clipboard)
-        .filter(
+    stmt = (
+        select(Clipboard)
+        .where(
             Clipboard.user_id == user_id,
             Clipboard.change_number > since_change_number,
         )
         .order_by(Clipboard.change_number.asc())
         .limit(limit + 1)
-        .all()
     )
+    entries = list(db.scalars(stmt).all())
 
-    if since_change_number > 0 and entries and ensure_utc(entries[0].updated_at) < cutoff:
+    entry_updated_at = ensure_utc(entries[0].updated_at) if entries else None
+    if since_change_number > 0 and entry_updated_at is not None and entry_updated_at < cutoff:
         raise HTTPException(
             status_code=410, detail="Sync state expired. Please wipe local data and resync."
         )
@@ -181,7 +182,9 @@ def get_clipboard_by_id(
     auth: AuthContext = Depends(get_auth_context),
 ):
     user_id: str = auth.user.user_id
-    entry = db.query(Clipboard).filter_by(clipboard_id=clipboard_id, user_id=user_id).first()
+    entry = db.scalars(
+        select(Clipboard).where(Clipboard.clipboard_id == clipboard_id, Clipboard.user_id == user_id)
+    ).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Clipboard entry not found")
 
@@ -242,15 +245,15 @@ async def delete_clipboard_history(
     caller_device_id = auth.device_id
 
     def mutate():
-        active_entries = (
-            db.query(Clipboard)
-            .filter(
+        stmt = (
+            select(Clipboard)
+            .where(
                 Clipboard.user_id == user_id,
                 Clipboard.is_deleted.is_(False),
                 Clipboard.is_pinned.is_(False),
             )
-            .all()
         )
+        active_entries = list(db.scalars(stmt).all())
         if not active_entries:
             return [], 0
 
