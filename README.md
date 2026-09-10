@@ -239,7 +239,7 @@ For contributors and developers running Synclo locally from source:
    docker compose up -d --build
    ```
 
-##### Option B: Manual Setup (Python Virtual Environment)
+##### Option B: Manual Setup (uv)
 1. **Clone & Configure:**
    ```bash
    git clone https://github.com/zyr-ux/Synclo-Backend.git
@@ -248,27 +248,20 @@ For contributors and developers running Synclo locally from source:
    ```
    Open `.env` and configure your `SECRET_KEY` and `REFRESH_TOKEN_HASH_KEY`.
 
-2. **Set Up Virtual Environment:**
+2. **Sync Dependencies & Environment:**
+   Initialize the virtual environment and install all dependencies with `uv`:
    ```bash
-   python -m venv .venv
-   ```
-   Activate the environment:
-   * **Windows:** `.venv\Scripts\activate`
-   * **macOS / Linux:** `source .venv/bin/activate`
-
-   Install the project dependencies:
-   ```bash
-   pip install -e ".[dev]"
+   uv sync
    ```
 
 3. **Run Migrations:**
    ```bash
-   alembic upgrade head
+   uv run alembic upgrade head
    ```
 
 4. **Launch the Server:**
    ```bash
-   uvicorn app.main:app --reload --port 8000
+   uv run uvicorn app.main:app --reload --port 8000
    ```
    The interactive API documentation (ReDoc) will be available at `http://localhost:8000/api/docs`.
 
@@ -276,22 +269,12 @@ For contributors and developers running Synclo locally from source:
 
 ## 🧪 Verification & Testing
 
-Verify that your local changes do not break core logic by running the standardized pytest suite within your activated virtual environment:
+Verify that your local changes pass all checks by running the test suite and linter:
 
 ```bash
-pytest
+uv run pytest -v
+uv run ruff check .
 ```
-
-Alternatively, run pytest directly using the virtual environment executable without activating it:
-
-*   **Windows:**
-    ```powershell
-    .venv\Scripts\pytest.exe
-    ```
-*   **macOS / Linux:**
-    ```bash
-    .venv/bin/pytest
-    ```
 
 ---
 

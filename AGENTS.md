@@ -66,20 +66,12 @@ Before presenting any code modification, evaluate the change across these five r
 Before concluding your task, execute these verification commands in order:
 
 ### 1. Code Style & Linting
-```powershell
-# Windows PowerShell
-.venv\Scripts\ruff.exe check .
-
-# Linux / macOS
-.venv/bin/ruff check .
+```bash
+uv run ruff check .
 ```
 
 ### 2. Automated Test Suite Execution
 Run the entire Pytest test suite (all tests must pass, including migration parity tests):
-```powershell
-# Windows PowerShell
-.venv\Scripts\pytest.exe -v
-
-# Linux / macOS
-.venv/bin/pytest -v
+```bash
+uv run pytest -v
 ```

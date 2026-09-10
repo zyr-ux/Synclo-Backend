@@ -38,6 +38,7 @@ Follow these steps to set up your local development environment:
 
 ### Prerequisites
 - Python 3.12 or newer installed.
+- [uv](https://docs.astral.sh/uv/) package manager installed.
 - Redis server running locally or via Docker (`docker run -d -p 6379:6379 redis:7-alpine`).
 - Git installed.
 
@@ -47,28 +48,14 @@ git clone https://github.com/zyr-ux/Synclo-Backend.git
 cd Synclo-Backend
 ```
 
-### Step 2: Set Up Virtual Environment
-Create and activate a Python virtual environment:
-
-**On macOS/Linux:**
+### Step 2: Synchronize Environment & Dependencies
+Synchronize project dependencies and initialize the virtual environment using `uv`:
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+uv sync
 ```
+This automatically provisions the environment and installs development dependencies (`pytest`, `ruff`, etc.).
 
-**On Windows:**
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-```
-
-### Step 3: Install Dependencies
-Install the package in editable mode with development dependencies:
-```bash
-pip install -e ".[dev]"
-```
-
-### Step 4: Configure Environment Variables
+### Step 3: Configure Environment Variables
 Copy the template configuration from [.env.example](.env.example):
 ```bash
 # macOS/Linux
@@ -84,16 +71,16 @@ Review `.env` and set appropriate development keys:
 - `DATABASE_URL`: Defaults to `sqlite:///./data/synclo.db`.
 - `REDIS_URL`: Defaults to `redis://localhost:6379`.
 
-### Step 5: Run Database Migrations
+### Step 4: Run Database Migrations
 Migrations apply automatically on application startup, but you can also run them manually:
 ```bash
-alembic upgrade head
+uv run alembic upgrade head
 ```
 
-### Step 6: Start the Development Server
+### Step 5: Start the Development Server
 Run the FastAPI development server:
 ```bash
-uvicorn app.main:app --reload --port 8000
+uv run uvicorn app.main:app --reload --port 8000
 ```
 - API root: `http://localhost:8000`
 - Interactive API docs (ReDoc): `http://localhost:8000/api/docs`
@@ -116,7 +103,7 @@ To maintain code quality, security, and architectural simplicity, please adhere 
 4. **Code Simplicity & Human Comprehension:** Write explicit, readable logic over clever abstractions. Avoid dense one-liners, speculative generalizations, or deep wrapper hierarchies. Code should be immediately understandable by any engineer without friction.
 5. **Database Model Changes:** Any modification to models in [app/database/models.py](app/database/models.py) requires an Alembic migration:
    ```bash
-   alembic revision --autogenerate -m "describe your changes"
+   uv run alembic revision --autogenerate -m "describe your changes"
    ```
    Always inspect the generated script in `alembic/versions/` to verify constraints, indexes, and nullability.
 6. **Documentation Updates:** When adding a new endpoint, schema change, or system behavior, document the technical specification directly in **[ARCHITECTURE.md](ARCHITECTURE.md)**. If [README.md](README.md) needs updates, discuss it in your PR or ask repository maintainers first.
@@ -130,21 +117,13 @@ Before submitting a Pull Request, execute the full 2-step verification suite loc
 ### 1. Code Style & Linting
 Run Ruff to check formatting and code conventions:
 ```bash
-# macOS/Linux
-.venv/bin/ruff check .
-
-# Windows PowerShell
-.venv\Scripts\ruff.exe check .
+uv run ruff check .
 ```
 
 ### 2. Automated Test Suite
 Run the complete Pytest suite (all tests must pass, including migration application and schema parity verification via `tests/test_migrations.py`):
 ```bash
-# macOS/Linux
-.venv/bin/pytest -v
-
-# Windows PowerShell
-.venv\Scripts\pytest.exe -v
+uv run pytest -v
 ```
 
 ---
