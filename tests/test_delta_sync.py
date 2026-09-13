@@ -166,9 +166,10 @@ def test_delta_sync_keyset_sequence_410_retention_cutoff(
 
     # 1. Create 3 items
     for i in range(1, 4):
-        client.post(
+        res = client.post(
             "/api/v1/clipboard", json=clip_payload(f"seq_410_item_{i}"), headers=auth_headers
         )
+        assert res.status_code == 200
 
     from app.database.engine import run_in_write_transaction
 

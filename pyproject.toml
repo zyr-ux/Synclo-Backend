@@ -32,34 +32,36 @@ classifiers = [
 
 
 dependencies = [
-    "alembic==1.18.4",
-    "bcrypt==4.0.1",
-    "cryptography==45.0.5",
-    "email-validator==2.3.0",
-    "fastapi==0.136.3",
-    "fastapi-limiter==0.1.6",
-    "httpx==0.28.1",
-    "prometheus-client==0.26.0",
-    "prometheus-fastapi-instrumentator==8.1.0",
-    "pydantic==2.13.4",
-    "PyJWT==2.10.1",
-    "python-dotenv==1.2.2",
-    "redis==5.0.8",
-    "SQLAlchemy==2.0.50",
-    "uvicorn==0.48.0",
-    "uvloop==0.22.1; platform_system != 'Windows'",
-    "watchfiles==1.2.0",
-    "websockets==15.0.1",
+    "alembic>=1.20.0",
+    "bcrypt>=5.0.0",
+    "cryptography>=50.0.1",
+    "email-validator>=2.3.0",
+    "fastapi>=0.141.1",
+    # fastapi-limiter 0.2.0 is a breaking rewrite which needs a massive refactor of all the endpoints
+    "fastapi-limiter>=0.1.6,<0.2.0",
+    "httpx>=0.28.1",
+    "prometheus-client>=0.26.0",
+    "prometheus-fastapi-instrumentator>=8.1.0",
+    "pydantic>=2.13.5",
+    "PyJWT>=2.14.0",
+    "python-dotenv>=1.2.3",
+    "redis>=8.1.0",
+    "SQLAlchemy>=2.0.52",
+    "uvicorn>=0.52.4",
+    "uvloop>=0.22.1; platform_system != 'Windows'",
+    "watchfiles>=1.2.0",
+    "websockets>=17.1",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "pytest-cov>=5.0.0",
-    "pytest-mock>=3.14.0",
-    "httpx==0.28.1",
-    "ruff>=0.4.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
+    "httpx>=0.28.1",
+    "ruff>=0.16.7",
+    "ty>=0.0.80",
 ]
 
 [tool.ruff]
@@ -74,7 +76,7 @@ select = [
     "W", # pycodestyle warnings
 ]
 ignore = [
-    "E501", # line too long (handled gracefully, don't break CI for occasional long strings/comments)
+    "E501", # line too long
 ]
 
 
