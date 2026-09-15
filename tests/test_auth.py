@@ -12,7 +12,26 @@ Scenarios Targeted:
 8. Hard account deletion via 'DELETE /api/v1/delete' and immediate token invalidation (401).
 """
 
+import base64
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
+
+import jwt
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
+
+from app.database.engine import run_in_write_transaction
+from app.database.models import BlacklistedToken, Device, RefreshToken, User
+from app.endpoints.auth_endpoints import decode_and_validate_blob
+from app.services.auth import (
+    ALGORITHM,
+    SECRET_KEY,
+    create_access_token,
+    create_refresh_token,
+    get_auth_context,
+)
+from app.utilities.helpers import hash_refresh_token
 from tests.conftest import generate_random_base64
 
 
@@ -611,8 +630,10 @@ def test_all_mutating_endpoints_enforce_rate_limiting():
         if not isinstance(route, APIRoute):
             continue
         # Check all sensitive write endpoints under /api/v1
-        if route.path.startswith("/api/v1") and route.methods.intersection(
-            {"POST", "PUT", "PATCH", "DELETE"}
+        if (
+            route.path.startswith("/api/v1")
+            and route.methods
+            and route.methods.intersection({"POST", "PUT", "PATCH", "DELETE"})
         ):
             has_limiter = any(
                 "RateLimiter" in getattr(dep.dependency, "__name__", "")
@@ -626,3 +647,219 @@ def test_all_mutating_endpoints_enforce_rate_limiting():
     assert not unprotected_routes, (
         f"Sensitive endpoints missing RateLimiter dependency: {unprotected_routes}"
     )
+
+
+# =====================================================================
+# Auth Primitives & Edge Cases
+# =====================================================================
+
+
+def test_create_access_token_default_expiry_and_epoch():
+    data = {"sub": "user@synclo.app", "device_id": "dev-1"}
+    token = create_access_token(data)
+
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    assert payload["sub"] == "user@synclo.app"
+    assert payload["device_id"] == "dev-1"
+    assert payload["epoch"] == 1
+
+    exp = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+    now = datetime.now(timezone.utc)
+    delta = exp - now
+    # Default is 15 minutes; allow slight clock leeway
+    assert 13 * 60 <= delta.total_seconds() <= 16 * 60
+
+
+def test_create_access_token_custom_expiry_and_explicit_epoch():
+    custom_delta = timedelta(hours=2)
+    data = {"sub": "user@synclo.app", "device_id": "dev-2", "epoch": 7}
+    token = create_access_token(data, expires_delta=custom_delta)
+
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    assert payload["epoch"] == 7
+    exp = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+    now = datetime.now(timezone.utc)
+    delta = exp - now
+    assert 118 * 60 <= delta.total_seconds() <= 122 * 60
+
+
+def test_create_refresh_token_stores_hash_and_auto_uuid(db_session):
+    user_id = "test-user-id"
+    device_id = "test-dev-id"
+
+    plain_token = create_refresh_token(db_session, user_id=user_id, device_id=device_id)
+
+    assert isinstance(plain_token, str)
+    assert len(plain_token) > 32
+
+    # Find the inserted token in the session
+    rt_records = [
+        item for item in db_session.new if isinstance(item, RefreshToken)
+    ]
+    assert len(rt_records) == 1
+    rt = rt_records[0]
+
+    # Invariant: Plaintext token must NEVER be stored in the DB (Zero-Knowledge rule)
+    assert rt.token != plain_token
+    assert rt.token == hash_refresh_token(plain_token)
+    assert rt.user_id == user_id
+    assert rt.device_id == device_id
+    assert rt.is_revoked is False
+
+    # Auto-generated token_id should be a valid UUID
+    UUID(rt.token_id, version=4)
+
+
+def test_create_refresh_token_with_explicit_token_id(db_session):
+    explicit_id = "family-rotation-id-123"
+    create_refresh_token(
+        db_session,
+        user_id="user-xyz",
+        device_id="dev-xyz",
+        token_id=explicit_id,
+    )
+
+    rt_records = [
+        item for item in db_session.new if isinstance(item, RefreshToken)
+    ]
+    assert any(rt.token_id == explicit_id for rt in rt_records)
+
+
+def _setup_user_and_device(db_session, email="alice@synclo.app", epoch=1):
+    def mutate():
+        user = User(
+            user_id="user-auth-ctx-" + email,
+            email=email,
+            username="alice",
+            session_epoch=epoch,
+            auth_key_hash="dummy_auth_key_hash",
+            salt=b"salt_16_bytes_00",
+            encrypted_master_key=b"emk_32_bytes_0000000000000000000",
+            kdf_version=1,
+            recovery_wrapped_master_key=b"rec_32_bytes_0000000000000000000",
+            recovery_key_verifier="verifier_hex_string_32_bytes",
+        )
+        db_session.add(user)
+        device = Device(
+            device_id="dev-auth-ctx",
+            user_id="user-auth-ctx-" + email,
+            device_name="Laptop",
+            os="Linux",
+        )
+        db_session.add(device)
+
+    run_in_write_transaction(db_session, mutate)
+
+
+def test_get_auth_context_valid(db_session):
+    _setup_user_and_device(db_session, email="valid_auth@synclo.app", epoch=1)
+    token = create_access_token({"sub": "valid_auth@synclo.app", "device_id": "dev-auth-ctx", "epoch": 1})
+
+    ctx = get_auth_context(token=token, db=db_session)
+    assert ctx.user.email == "valid_auth@synclo.app"
+    assert ctx.device_id == "dev-auth-ctx"
+
+
+def test_get_auth_context_missing_claims(db_session):
+    # Missing sub
+    tok_no_sub = jwt.encode({"device_id": "dev-1", "epoch": 1, "exp": 9999999999}, SECRET_KEY, algorithm=ALGORITHM)
+    with pytest.raises(HTTPException) as exc1:
+        get_auth_context(token=tok_no_sub, db=db_session)
+    assert exc1.value.status_code == 401
+
+    # Missing exp
+    tok_no_exp = jwt.encode({"sub": "user@synclo.app", "device_id": "dev-1", "epoch": 1}, SECRET_KEY, algorithm=ALGORITHM)
+    with pytest.raises(HTTPException) as exc2:
+        get_auth_context(token=tok_no_exp, db=db_session)
+    assert exc2.value.status_code == 401
+
+    # Missing epoch
+    tok_no_epoch = jwt.encode({"sub": "user@synclo.app", "device_id": "dev-1", "exp": 9999999999}, SECRET_KEY, algorithm=ALGORITHM)
+    with pytest.raises(HTTPException) as exc3:
+        get_auth_context(token=tok_no_epoch, db=db_session)
+    assert exc3.value.status_code == 401
+
+
+def test_get_auth_context_blacklisted_token(db_session):
+    token = create_access_token({"sub": "user@synclo.app", "device_id": "dev-1", "epoch": 1})
+
+    def mutate():
+        db_session.add(
+            BlacklistedToken(
+                token=token,
+                expiry=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
+
+    run_in_write_transaction(db_session, mutate)
+
+    with pytest.raises(HTTPException) as exc:
+        get_auth_context(token=token, db=db_session)
+    assert exc.value.status_code == 401
+    assert "Token has been revoked" in exc.value.detail
+
+
+def test_get_auth_context_user_not_found(db_session):
+    token = create_access_token({"sub": "nonexistent@synclo.app", "device_id": "dev-1", "epoch": 1})
+    with pytest.raises(HTTPException) as exc:
+        get_auth_context(token=token, db=db_session)
+    assert exc.value.status_code == 401
+
+
+def test_get_auth_context_epoch_mismatch(db_session):
+    _setup_user_and_device(db_session, email="epoch_test@synclo.app", epoch=2)
+    # Token issued under epoch 1, but user is currently on epoch 2
+    stale_token = create_access_token({"sub": "epoch_test@synclo.app", "device_id": "dev-auth-ctx", "epoch": 1})
+
+    with pytest.raises(HTTPException) as exc:
+        get_auth_context(token=stale_token, db=db_session)
+    assert exc.value.status_code == 401
+    assert "Session revoked, please re-authenticate" in exc.value.detail
+
+
+def test_get_auth_context_unauthorized_device(db_session):
+    _setup_user_and_device(db_session, email="device_test@synclo.app", epoch=1)
+    # Token issued for a device that does not belong to the user
+    foreign_dev_token = create_access_token(
+        {"sub": "device_test@synclo.app", "device_id": "non_existent_device", "epoch": 1}
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        get_auth_context(token=foreign_dev_token, db=db_session)
+    assert exc.value.status_code == 403
+    assert "Unauthorized device" in exc.value.detail
+
+
+def test_decode_and_validate_blob_boundaries():
+    # Exactly 16 bytes
+    b16 = base64.b64encode(b"0" * 16).decode("utf-8")
+    res16 = decode_and_validate_blob(b16, min_len=16, max_len=32, field_name="boundary_field")
+    assert len(res16) == 16
+
+    # Exactly 32 bytes
+    b32 = base64.b64encode(b"0" * 32).decode("utf-8")
+    res32 = decode_and_validate_blob(b32, min_len=16, max_len=32, field_name="boundary_field")
+    assert len(res32) == 32
+
+
+def test_decode_and_validate_blob_out_of_bounds():
+    # Below min (15 bytes when min is 16)
+    b15 = base64.b64encode(b"0" * 15).decode("utf-8")
+    with pytest.raises(HTTPException) as exc_low:
+        decode_and_validate_blob(b15, min_len=16, max_len=32, field_name="low_field")
+    assert exc_low.value.status_code == 400
+    assert "low_field length out of bounds" in exc_low.value.detail
+
+    # Above max (33 bytes when max is 32)
+    b33 = base64.b64encode(b"0" * 33).decode("utf-8")
+    with pytest.raises(HTTPException) as exc_high:
+        decode_and_validate_blob(b33, min_len=16, max_len=32, field_name="high_field")
+    assert exc_high.value.status_code == 400
+    assert "high_field length out of bounds" in exc_high.value.detail
+
+
+def test_decode_and_validate_blob_invalid_base64():
+    with pytest.raises(HTTPException) as exc:
+        decode_and_validate_blob("not-valid-base64!@@#", min_len=1, max_len=64, field_name="salt_field")
+    assert exc.value.status_code == 400
+    assert "Invalid base64 encoding for salt_field" in exc.value.detail

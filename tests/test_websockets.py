@@ -10,8 +10,16 @@ Scenarios Targeted:
 6. Connection rejection (error frame / close 1008) when authentication credentials are missing.
 """
 
+import time
+from datetime import timedelta
+import jwt
 import pytest
+from sqlalchemy import delete, select
 from starlette.websockets import WebSocketDisconnect
+
+from app.database.engine import run_in_write_transaction
+from app.database.models import Device
+from app.services.auth import ALGORITHM, SECRET_KEY, create_access_token
 from tests.conftest import make_clipboard_payload
 
 
@@ -450,3 +458,115 @@ def test_websocket_conflict_stale_write_rejected(client, auth_user):
         assert resp.get("code") == "conflict"
         assert resp.get("id") == clip_id
         assert "conflict" in resp.get("message", "").lower()
+
+
+def test_ws_auth_missing_required_token_claims(client):
+    token = jwt.encode(
+        {"sub": "test@synclo.app", "device_id": "dev-1", "exp": int(time.time()) + 300},
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
+        msg = ws.receive_json()
+        assert msg.get("type") == "error"
+        assert "missing required fields" in msg.get("message", "")
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 1008
+
+
+def test_ws_invalid_clipboard_payload_missing_fields(client, auth_user):
+    token = auth_user["access_token"]
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
+        ws.send_json({"type": "clipboard_sync"})
+        msg = ws.receive_json()
+        assert msg.get("type") == "error"
+        assert "Missing required fields" in msg.get("message", "")
+
+
+def test_ws_invalid_clipboard_payload_schema_malformed(client, auth_user):
+    token = auth_user["access_token"]
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
+        ws.send_json(
+            {
+                "type": "clipboard_sync",
+                "id": "clip-invalid-schema",
+                "timestamp": "not-a-datetime",
+                "ciphertext": "invalid base64 !!@#$",
+            }
+        )
+        msg = ws.receive_json()
+        assert msg.get("type") == "error"
+        assert "Invalid payload:" in msg.get("message", "")
+
+
+def test_ws_device_deleted_mid_session(client, auth_user, db_session):
+    token = auth_user["access_token"]
+    device_id = auth_user["device_id"]
+
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
+        ws.send_json({"type": "ping"})
+        pong = ws.receive_json()
+        assert pong.get("type") == "pong"
+
+        def mutate():
+            dev = db_session.scalars(
+                select(Device).where(Device.device_id == device_id)
+            ).first()
+            if dev:
+                db_session.execute(
+                    delete(Device).where(Device.device_id == device_id)
+                )
+
+        run_in_write_transaction(db_session, mutate)
+
+        ws.send_json(make_clipboard_payload("clip_after_device_delete"))
+
+        del_msg = ws.receive_json()
+        assert del_msg.get("type") == "device_deleted"
+        assert "removed from your account" in del_msg.get("message", "")
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4003
+
+
+def test_ws_token_expired_mid_session(client, auth_user):
+    short_token = create_access_token(
+        {
+            "sub": auth_user["email"],
+            "device_id": auth_user["device_id"],
+            "epoch": 1,
+        },
+        expires_delta=timedelta(seconds=1),
+    )
+
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {short_token}"}
+    ) as ws:
+        time.sleep(1.5)
+
+        ws.send_json({"type": "ping"})
+
+        first_msg = ws.receive_json()
+        if first_msg.get("type") == "pong":
+            second_msg = ws.receive_json()
+            assert second_msg.get("type") == "error"
+            assert "Token expired" in second_msg.get("message", "")
+        else:
+            assert first_msg.get("type") == "error"
+            assert "Token expired" in first_msg.get("message", "")
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4001
