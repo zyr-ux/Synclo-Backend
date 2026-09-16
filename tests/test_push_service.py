@@ -593,3 +593,84 @@ def test_load_allowed_push_domains_success_and_fail_fast(tmp_path):
     with pytest.raises(RuntimeError, match="Failed to load push providers"):
         _load_allowed_push_domains(corrupt_file)
 
+
+def test_get_target_push_endpoints_decrypts_and_filters_correctly(db_session, user_factory):
+    from app.services.push_service import (
+        _get_target_push_endpoints,
+        encrypt_push_subscription,
+    )
+
+    user_info = user_factory()
+    user = db_session.scalars(select(User).where(User.email == user_info["email"])).first()
+    assert user is not None
+    user_id = user.user_id
+
+    # Device 1: valid push subscription
+    dev1 = Device(
+        user_id=user_id,
+        device_id="push_target_dev_1",
+        device_name="Device 1",
+        push_subscription=encrypt_push_subscription("https://ntfy.sh/valid_target_1"),
+    )
+    # Device 2: null push subscription
+    dev2 = Device(
+        user_id=user_id,
+        device_id="push_target_dev_2",
+        device_name="Device 2",
+        push_subscription=None,
+    )
+    # Device 3: corrupted push subscription
+    dev3 = Device(
+        user_id=user_id,
+        device_id="push_target_dev_3",
+        device_name="Device 3",
+        push_subscription="v1:corrupt_base64!@@#",
+    )
+    # Device 4: valid push subscription, but will be excluded
+    dev4 = Device(
+        user_id=user_id,
+        device_id="push_target_dev_4",
+        device_name="Device 4",
+        push_subscription=encrypt_push_subscription("https://ntfy.sh/valid_target_4"),
+    )
+    db_session.add_all([dev1, dev2, dev3, dev4])
+    db_session.commit()
+
+    targets = _get_target_push_endpoints(user_id, exclude_device="push_target_dev_4")
+    # Should only return device 1
+    assert len(targets) == 1
+    assert targets[0] == ("push_target_dev_1", "https://ntfy.sh/valid_target_1")
+
+
+def test_prune_stale_endpoint_nullifies_push_subscription(db_session, user_factory):
+    from app.services.push_service import (
+        _prune_stale_endpoint,
+        encrypt_push_subscription,
+    )
+
+    user_info = user_factory()
+    user = db_session.scalars(select(User).where(User.email == user_info["email"])).first()
+    assert user is not None
+    user_id = user.user_id
+
+    dev = Device(
+        user_id=user_id,
+        device_id="prune_test_dev",
+        device_name="Prune Device",
+        push_subscription=encrypt_push_subscription("https://ntfy.sh/to_be_pruned"),
+        push_subscription_updated_at=None,
+    )
+    db_session.add(dev)
+    db_session.commit()
+
+    _prune_stale_endpoint(user_id, "prune_test_dev")
+
+    db_session.expire_all()
+    updated_dev = db_session.scalars(
+        select(Device).where(Device.user_id == user_id, Device.device_id == "prune_test_dev")
+    ).first()
+    assert updated_dev is not None
+    assert updated_dev.push_subscription is None
+    assert updated_dev.push_subscription_updated_at is not None
+
+

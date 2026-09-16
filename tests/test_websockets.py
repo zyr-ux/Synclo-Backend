@@ -541,6 +541,30 @@ def test_ws_device_deleted_mid_session(client, auth_user, db_session):
         assert exc.value.code == 4003
 
 
+def test_ws_device_deleted_between_auth_and_first_clipboard_write(client, auth_user, db_session):
+    """Verify device deletion immediately after WebSocket handshake aborts first clipboard write."""
+    token = auth_user["access_token"]
+    device_id = auth_user["device_id"]
+
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
+        def mutate():
+            db_session.execute(delete(Device).where(Device.device_id == device_id))
+
+        run_in_write_transaction(db_session, mutate)
+
+        ws.send_json(make_clipboard_payload("clip_initial_write_deleted_device"))
+
+        del_msg = ws.receive_json()
+        assert del_msg.get("type") == "device_deleted"
+        assert "removed from your account" in del_msg.get("message", "")
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4003
+
+
 def test_ws_token_expired_mid_session(client, auth_user):
     short_token = create_access_token(
         {

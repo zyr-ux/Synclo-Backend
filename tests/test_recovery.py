@@ -482,3 +482,57 @@ def test_recovery_disconnects_active_websockets(client, user_factory):
         with pytest.raises(WebSocketDisconnect) as exc_info:
             ws.receive_json()
         assert exc_info.value.code == 4004
+
+
+@pytest.mark.slow
+def test_recovery_nonexistent_email_timing_parity(client, user_factory):
+    import time
+
+    user = user_factory()
+    invalid_verifier = generate_random_base64(32)
+
+    # 1. Existing user with wrong verifier (computes real bcrypt.checkpw against user's stored hash)
+    payload_existing = {
+        "email": user["email"],
+        "recovery_key_verifier": invalid_verifier,
+        "new_auth_key": generate_random_base64(32),
+        "new_encrypted_master_key": generate_random_base64(32),
+        "new_salt": generate_random_base64(32),
+        "new_kdf_version": 1,
+        "new_recovery_wrapped_master_key": generate_random_base64(32),
+        "new_recovery_key_verifier": generate_random_base64(32),
+        "device_id": "timing_dev_1",
+    }
+    t0 = time.perf_counter()
+    res1 = client.post("/api/v1/auth/recover", json=payload_existing)
+    t_existing = time.perf_counter() - t0
+    assert res1.status_code == 401
+    assert res1.json()["detail"] == "Could not recover account"
+
+    # 2. Nonexistent user (must run dummy bcrypt.checkpw to preserve timing parity)
+    payload_nonexistent = {
+        "email": "nonexistent_recovery_target@synclo.app",
+        "recovery_key_verifier": invalid_verifier,
+        "new_auth_key": generate_random_base64(32),
+        "new_encrypted_master_key": generate_random_base64(32),
+        "new_salt": generate_random_base64(32),
+        "new_kdf_version": 1,
+        "new_recovery_wrapped_master_key": generate_random_base64(32),
+        "new_recovery_key_verifier": generate_random_base64(32),
+        "device_id": "timing_dev_2",
+    }
+    t0 = time.perf_counter()
+    res2 = client.post("/api/v1/auth/recover", json=payload_nonexistent)
+    t_nonexistent = time.perf_counter() - t0
+    assert res2.status_code == 401
+    assert res2.json()["detail"] == "Could not recover account"
+
+    # Both paths must execute bcrypt (wall time > 10ms) and finish within 3.0x of each other
+    assert t_existing > 0.01
+    assert t_nonexistent > 0.01
+    ratio = max(t_existing, t_nonexistent) / min(t_existing, t_nonexistent)
+    assert ratio <= 3.0, (
+        f"Timing divergence ratio {ratio:.2f} exceeded 3.0x limit "
+        f"(existing={t_existing:.4f}s, nonexistent={t_nonexistent:.4f}s)"
+    )
+

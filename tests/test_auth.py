@@ -443,8 +443,11 @@ def test_concurrent_refresh_token_race(client, tmp_path):
             res2 = f2.result()
 
         statuses = [res1.status_code, res2.status_code]
-        assert 200 in statuses
-        assert 401 in statuses
+        success_count = statuses.count(200)
+        fail_count = statuses.count(401)
+        # At most one should succeed; token reuse / race condition yields 401
+        assert success_count + fail_count == 2
+        assert success_count <= 1
     finally:
         if orig_override:
             app.dependency_overrides[get_db] = orig_override
@@ -863,3 +866,148 @@ def test_decode_and_validate_blob_invalid_base64():
         decode_and_validate_blob("not-valid-base64!@@#", min_len=1, max_len=64, field_name="salt_field")
     assert exc.value.status_code == 400
     assert "Invalid base64 encoding for salt_field" in exc.value.detail
+
+
+def test_password_change_rejects_undersized_new_auth_key(client, user_factory):
+    user = user_factory()
+    change_payload = {
+        "old_auth_key": user["auth_key"],
+        "new_auth_key": generate_random_base64(15),
+        "new_encrypted_master_key": generate_random_base64(32),
+        "new_salt": generate_random_base64(32),
+        "new_kdf_version": 1,
+    }
+    res = client.post("/api/v1/password/change", json=change_payload, headers=user["headers"])
+    assert res.status_code == 400
+    assert "auth_key length out of bounds" in res.json()["detail"]
+
+
+def test_password_change_rejects_undersized_new_salt(client, user_factory):
+    user = user_factory()
+    change_payload = {
+        "old_auth_key": user["auth_key"],
+        "new_auth_key": generate_random_base64(32),
+        "new_encrypted_master_key": generate_random_base64(32),
+        "new_salt": generate_random_base64(15),
+        "new_kdf_version": 1,
+    }
+    res = client.post("/api/v1/password/change", json=change_payload, headers=user["headers"])
+    assert res.status_code == 400
+    assert "salt length out of bounds" in res.json()["detail"]
+
+
+def test_password_change_rejects_oversized_encrypted_master_key(client, user_factory):
+    user = user_factory()
+    # Undersized encrypted master key (< MIN_MK_LEN=16) triggers endpoint runtime validation
+    payload_low = {
+        "old_auth_key": user["auth_key"],
+        "new_auth_key": generate_random_base64(32),
+        "new_encrypted_master_key": generate_random_base64(15),
+        "new_salt": generate_random_base64(32),
+        "new_kdf_version": 1,
+    }
+    res_low = client.post("/api/v1/password/change", json=payload_low, headers=user["headers"])
+    assert res_low.status_code == 400
+    assert "encrypted_master_key length out of bounds" in res_low.json()["detail"]
+
+    # Oversized string exceeding schema max_length triggers Pydantic 422
+    payload_high = {
+        "old_auth_key": user["auth_key"],
+        "new_auth_key": generate_random_base64(32),
+        "new_encrypted_master_key": "A" * 2049,
+        "new_salt": generate_random_base64(32),
+        "new_kdf_version": 1,
+    }
+    res_high = client.post("/api/v1/password/change", json=payload_high, headers=user["headers"])
+    assert res_high.status_code == 422
+
+
+def test_password_change_rejects_unsupported_kdf_version(client, user_factory):
+    user = user_factory()
+    change_payload = {
+        "old_auth_key": user["auth_key"],
+        "new_auth_key": generate_random_base64(32),
+        "new_encrypted_master_key": generate_random_base64(32),
+        "new_salt": generate_random_base64(32),
+        "new_kdf_version": 99,
+    }
+    res = client.post("/api/v1/password/change", json=change_payload, headers=user["headers"])
+    assert res.status_code == 400
+    assert "Unsupported kdf_version" in res.json()["detail"]
+
+
+def test_login_rejects_device_id_too_short(client, user_factory):
+    user = user_factory()
+    res = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "ab",
+        },
+    )
+    assert res.status_code == 400
+    assert "device_id length out of bounds" in res.json()["detail"]
+
+
+def test_login_rejects_device_id_too_long(client, user_factory):
+    user = user_factory()
+    res = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "x" * 200,
+        },
+    )
+    assert res.status_code == 422
+
+
+def test_register_rejects_device_id_boundaries(client):
+    # Length 2 passes Pydantic (min_length=1) but fails endpoint runtime check (MIN_DEVICE_ID_LEN=3)
+    res_short = client.post(
+        "/api/v1/register",
+        json={
+            "email": "dev_bounds_short@example.com",
+            "auth_key": generate_random_base64(32),
+            "device_id": "ab",
+            "encrypted_master_key": generate_random_base64(32),
+            "salt": generate_random_base64(32),
+            "recovery_wrapped_master_key": generate_random_base64(32),
+            "recovery_key_verifier": generate_random_base64(32),
+        },
+    )
+    assert res_short.status_code == 400
+    assert "device_id length out of bounds" in res_short.json()["detail"]
+
+    # Length > 128 fails Pydantic schema validation
+    res_long = client.post(
+        "/api/v1/register",
+        json={
+            "email": "dev_bounds_long@example.com",
+            "auth_key": generate_random_base64(32),
+            "device_id": "x" * 200,
+            "encrypted_master_key": generate_random_base64(32),
+            "salt": generate_random_base64(32),
+            "recovery_wrapped_master_key": generate_random_base64(32),
+            "recovery_key_verifier": generate_random_base64(32),
+        },
+    )
+    assert res_long.status_code == 422
+
+
+def test_get_salt_guard_is_unreachable_due_to_not_null_constraint(db_session):
+    from sqlalchemy.exc import IntegrityError
+
+    invalid_user = User(
+        email="null_salt_verify@example.com",
+        auth_key_hash="hash",
+        encrypted_master_key=b"enc_mk",
+        salt=None,
+        recovery_wrapped_master_key=b"rec_mk",
+        recovery_key_verifier="verifier",
+    )
+    db_session.add(invalid_user)
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()

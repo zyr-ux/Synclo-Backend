@@ -1025,3 +1025,98 @@ def test_lww_handles_naive_and_offset_timezones_accurately():
 
     assert decision == "noop"
     assert reason == "identical payload and timestamp"
+
+
+def test_bulk_delete_history_broadcasts_tombstones_via_websocket(client, user_factory):
+    user = user_factory()
+    # Login a second device for this user
+    dev2_res = client.post(
+        "/api/v1/login",
+        json={
+            "email": user["email"],
+            "auth_key": user["auth_key"],
+            "device_id": "dev_bulk_ws_2",
+        },
+    )
+    assert dev2_res.status_code == 200
+    token_dev2 = dev2_res.json()["access_token"]
+
+    # Post 2 unpinned clips and 1 pinned clip from dev 1
+    client.post(
+        "/api/v1/clipboard",
+        json=make_clipboard_payload("unpinned_bulk_1"),
+        headers=user["headers"],
+    )
+    client.post(
+        "/api/v1/clipboard",
+        json=make_clipboard_payload("unpinned_bulk_2"),
+        headers=user["headers"],
+    )
+    client.post(
+        "/api/v1/clipboard",
+        json=make_clipboard_payload("pinned_bulk_1", is_pinned=True),
+        headers=user["headers"],
+    )
+
+    with client.websocket_connect(
+        "/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}
+    ) as ws2:
+        # Dev 1 triggers bulk delete
+        res = client.delete("/api/v1/clipboard", headers=user["headers"])
+        assert res.status_code == 200
+        assert res.json() == {"message": "2 clipboard entries deleted."}
+
+        # Dev 2 should receive tombstone broadcasts for both unpinned items
+        received = []
+        for _ in range(20):
+            msg = ws2.receive_json()
+            if msg.get("type") == "ping":
+                ws2.send_json({"type": "pong"})
+                continue
+            received.append(msg)
+            if len(received) == 2:
+                break
+
+        assert len(received) == 2
+        received_ids = {m["id"] for m in received}
+        assert received_ids == {"unpinned_bulk_1", "unpinned_bulk_2"}
+        for m in received:
+            assert m["type"] == "clipboard_sync"
+            assert m["is_deleted"] is True
+            assert m["is_pinned"] is False
+            assert m["ciphertext"] is None
+
+
+def test_bulk_delete_history_triggers_push_dispatch(client, user_factory, mocker):
+    mock_push = mocker.patch("app.endpoints.clipboard_endpoints.launch_background_push")
+    user = user_factory()
+    client.post(
+        "/api/v1/clipboard",
+        json=make_clipboard_payload("push_bulk_1"),
+        headers=user["headers"],
+    )
+    mock_push.reset_mock()
+
+    res = client.delete("/api/v1/clipboard", headers=user["headers"])
+    assert res.status_code == 200
+
+    profile = client.get("/api/v1/user", headers=user["headers"]).json()
+    user_id = profile["user_id"]
+    mock_push.assert_called_once_with(user_id=user_id, exclude_device=user["device_id"])
+
+
+def test_bulk_delete_history_empty_returns_no_entries_message(client, user_factory):
+    user = user_factory()
+    res = client.delete("/api/v1/clipboard", headers=user["headers"])
+    assert res.status_code == 200
+    assert res.json() == {"message": "No clipboard entries to delete."}
+
+    client.post(
+        "/api/v1/clipboard",
+        json=make_clipboard_payload("pinned_only_item", is_pinned=True),
+        headers=user["headers"],
+    )
+    res_pinned = client.delete("/api/v1/clipboard", headers=user["headers"])
+    assert res_pinned.status_code == 200
+    assert res_pinned.json() == {"message": "No clipboard entries to delete."}
+

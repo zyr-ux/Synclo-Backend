@@ -1746,13 +1746,17 @@ Synclo-Backend/
 │   ├── test_auth.py           # User authentication and token family rotation tests
 │   ├── test_backup_and_decrypt.py # Online SQLite backup and Fernet snapshot decryption tests
 │   ├── test_clipboard.py      # Clipboard CRUD and pin persistence tests
+│   ├── test_clipboard_constraints.py # Database-level CheckConstraint integrity tests
 │   ├── test_clipboard_retention.py # Age-based auto-pruning lifecycle tests
+│   ├── test_config_validation.py # Environment variable startup guards and push provider validation tests
+│   ├── test_connection_manager_pubsub.py # Distributed Redis Pub/Sub relay, self-exclusion, and disconnect tests
 │   ├── test_connection_manager_unit.py # Real-time ConnectionManager tracking, cleanup, and Redis pub/sub tests
 │   ├── test_delta_sync.py     # Offline delta synchronization and pagination tests
 │   ├── test_devices.py        # Device management and session termination tests
 │   ├── test_health.py         # Health checks and OpenAPI documentation tests
 │   ├── test_helpers_unit.py   # Cryptographic helpers, strict base64 decoding, and token hashing tests
 │   ├── test_https_mode.py     # HTTPS/WSS security and transport enforcement tests
+│   ├── test_main_lifecycle.py # Application lifespan, exception handlers, health check, and periodic cleanup tests
 │   ├── test_metrics.py        # Prometheus telemetry metric tests
 │   ├── test_migrations.py     # Alembic baseline migration, backup/restore, and ORM schema parity tests
 │   ├── test_periodic_cleanup.py # Scheduled maintenance background tasks and expired token pruning tests
@@ -1778,5 +1782,39 @@ Synclo-Backend/
 ├── README.md                  # Project overview, quick start, and self-hosting guide
 └── ROADMAP.md                 # Strategic development roadmap and milestone tracking
 ```
+
+---
+
+## 11. Automated Test Suite Architecture & Verification Protocols
+
+The Synclo backend maintains an exhaustive automated test suite (290+ tests) designed to validate security invariants, data integrity, concurrency safety, and zero-knowledge guarantees without leaking sensitive material or relying on heavyweight external services.
+
+### Test Suite Architecture & Infrastructure
+
+*   **In-Memory SQLite with WAL Concurrency Hooks:** Tests execute against an in-memory SQLite engine backed by `StaticPool`. Schema tables are reset per test (`setup_test_db`), while connection hooks replicate immediate write transaction concurrency semantics (`BEGIN IMMEDIATE`) and deadlock recovery mechanisms.
+*   **Dual Redis Testing Strategy:**
+    *   *Unit & Endpoint Mocking:* `conftest.py` installs a default mock Redis client and rate limiter bypass so that standard REST and WebSocket tests run fast and deterministically.
+    *   *Real Distributed Pub/Sub with `fakeredis`:* Cross-process WebSocket broadcasting, sender self-exclusion (`_node_id`), and distributed disconnect relays are verified using `fakeredis.FakeAsyncRedis` with real Redis pub/sub protocol semantics, eliminating the requirement for a running Redis daemon or Docker during local testing.
+*   **Isolated Subprocess Configuration Tests:** Module-level `Settings` validations (e.g. `SECRET_KEY` length, `ALGORITHM` allowlist, HMAC key length) are exercised using isolated subprocesses to test startup fail-fast behavior without polluting the runtime test process environment.
+*   **Zero-Knowledge & Timing Parity Guards:** Account recovery flows verify constant-time mitigation (`@pytest.mark.slow`) ensuring nonexistent account queries execute dummy bcrypt hashes with wall-time parity (< 3.0x ratio) compared to authentic user verification paths.
+*   **Database CheckConstraint Verification:** Database-level check constraints (`chk_clipboard_deleted_state`, `chk_clipboard_payload_pair`, `chk_clipboard_deleted_not_pinned`, `chk_clipboard_pinned_has_timestamp`) are validated via direct ORM mutation to ensure invalid state representations are rejected at the storage layer.
+
+### Verification Checklist Commands
+
+All modifications must pass the three-stage verification pipeline before deployment or review:
+
+1. **Linting & Code Style:**
+   ```bash
+   uv run ruff check .
+   ```
+2. **Static Type Checking:**
+   ```bash
+   uv run ty check .
+   ```
+3. **Pytest Test Suite:**
+   ```bash
+   uv run pytest -v
+   ```
+
 
 
