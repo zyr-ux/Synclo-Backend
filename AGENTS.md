@@ -70,7 +70,12 @@ Before concluding your task, execute these verification commands in order:
 uv run ruff check .
 ```
 
-### 2. Automated Test Suite Execution
+### 2. Type Checking
+```bash
+uv run ty check .
+```
+
+### 3. Automated Test Suite Execution
 Run the entire Pytest test suite (all tests must pass, including migration parity tests):
 ```bash
 uv run pytest -v

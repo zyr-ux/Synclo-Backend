@@ -19,7 +19,7 @@ For exhaustive specifications on system architecture, cryptographic key derivati
 
 ## 2. Technology Stack
 
-- **Language:** Python 3.12+
+- **Language:** Python 3.12+ (Docker runtime uses Python 3.14)
 - **Web Framework:** FastAPI & Uvicorn
 - **ORM & Database:** SQLAlchemy & SQLite (WAL mode with `BEGIN IMMEDIATE` write concurrency)
 - **Database Migrations:** Alembic
@@ -27,6 +27,7 @@ For exhaustive specifications on system architecture, cryptographic key derivati
 - **Push Notifications:** UnifiedPush (with SSRF protection, IP pinning, and auto-pruning)
 - **Observability & Telemetry:** Prometheus metrics (`/metrics`)
 - **Code Style & Linting:** Ruff
+- **Type Checking:** ty
 - **Testing:** Pytest & pytest-asyncio
 - **Containerization:** Docker (multi-stage build) & Docker Compose
 
@@ -112,7 +113,7 @@ To maintain code quality, security, and architectural simplicity, please adhere 
 
 ## 5. Verification Checklist (Before Submitting)
 
-Before submitting a Pull Request, execute the full 2-step verification suite locally:
+Before submitting a Pull Request, execute the full 3-step verification suite locally:
 
 ### 1. Code Style & Linting
 Run Ruff to check formatting and code conventions:
@@ -120,7 +121,13 @@ Run Ruff to check formatting and code conventions:
 uv run ruff check .
 ```
 
-### 2. Automated Test Suite
+### 2. Type Checking
+Run `ty` to verify type annotations across the codebase:
+```bash
+uv run ty check .
+```
+
+### 3. Automated Test Suite
 Run the complete Pytest suite (all tests must pass, including migration application and schema parity verification via `tests/test_migrations.py`):
 ```bash
 uv run pytest -v

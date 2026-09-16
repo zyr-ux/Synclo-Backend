@@ -131,6 +131,7 @@ In conventional multi-tenant web applications, user enumeration is typically mas
    - `POST /login`: Uniformly returns `401 Unauthorized ("Invalid credentials")` across missing users, incorrect passwords, and malformed auth keys.
    - `POST /auth/recovery-material` & `POST /auth/recover`: Both uniformly return `401 Unauthorized ("Could not recover account")`.
    - `POST /password/change`: Returns `401 Unauthorized ("Incorrect current password")`.
+5. **Timing Attack Mitigation (Constant-Time Dummy Bcrypt Checks):** To prevent timing side-channel attacks where an adversary infers whether an account exists by measuring response latency, endpoints that verify bcrypt hashes (`POST /login` and `POST /auth/recover`) perform a constant-time dummy verification against a pre-computed hash (`DUMMY_BCRYPT_HASH`) whenever the user or recovery verifier does not exist. This ensures uniform processing time regardless of account presence.
 
 ---
 
@@ -306,7 +307,11 @@ To prevent silent data corruption or "zombie" entries on disconnected clients, t
 1. **Sequence Gap Detection:**
    The server queries the minimum existing `change_number` for the user:
    ```python
-   oldest_entry = db.query(Clipboard.change_number).filter_by(user_id=user_id).order_by(Clipboard.change_number.asc()).first()
+   oldest_entry = db.execute(
+       select(Clipboard.change_number, Clipboard.updated_at)
+       .where(Clipboard.user_id == user_id)
+       .order_by(Clipboard.change_number.asc())
+   ).first()
    if oldest_entry and since_change_number > 0 and since_change_number < (oldest_entry.change_number - 1):
        raise HTTPException(status_code=410, detail="Sync state expired. Please wipe local data and resync.")
    ```
@@ -1489,7 +1494,7 @@ Implements zero-downtime database backups using SQLite's Online Backup API (`sql
 Standalone CLI decryption utility enabling self-hosters to safely decrypt and restore encrypted SQLite database snapshots on the local host using the configured encryption passphrase.
 
 #### [push_providers.json](app/utilities/push_providers.json)
-Curated registry and domain allowlist for validated UnifiedPush providers and distributors.
+Curated registry and domain allowlist for validated UnifiedPush providers and distributors (e.g. `ntfy.sh`, `push.nextcloud.com`, `unifiedpush.kde.org`, `unifiedpush.org`). Loaded with fail-fast validation on startup.
 
 ---
 
@@ -1668,9 +1673,9 @@ To prevent data corruption and race conditions at the database level, the follow
 - **[alembic/versions/0001_v1_baseline.py](alembic/versions/0001_v1_baseline.py):** Consolidated baseline migration revision establishing the full production schema, table constraints, foreign keys, and indexes in a single clean migration step.
 - **[alembic.ini](alembic.ini):** Configures Alembic migration routes and logging.
 - **SQLite Concurrency & WAL Mode:** SQLite is configured with Write-Ahead Logging (`PRAGMA journal_mode=WAL;`), synchronous NORMAL (`PRAGMA synchronous=NORMAL;`), and a busy timeout of 5,000ms (`PRAGMA busy_timeout=5000;`). To eliminate lock escalation deadlocks (`sqlite3.OperationalError: database is locked`), all database write operations strictly utilize `run_in_write_transaction` / `async_run_in_write_transaction`, which acquire an immediate write lock (`BEGIN IMMEDIATE`) with exponential backoff retries.
-- **[Dockerfile](Dockerfile):** Hardened multi-stage build (builder stage with compiler toolchain and `uv` &rarr; minimal runtime stage without build tools) based on `python:3.12.9-slim-bookworm` with unprivileged non-root execution (`USER appuser`, UID/GID 10001) and integrated `HEALTHCHECK` probing `/api/health`.
-- **[compose.yaml](compose.yaml):** Production-hardened orchestration for single-node FastAPI + Redis deployment. Synclo backend runs as non-root (`user: "10001:10001"`), with `init: true` (tini process reaper), `security_opt: [no-new-privileges:true]`, log rotation caps, and a universal Python `urllib.request` healthcheck against `/api/health`. Redis is isolated in the `synclo-network` bridge, resource-capped (`--maxmemory 256mb --maxmemory-policy noeviction`), and health-checked (`redis-cli ping`), ensuring Synclo backend only starts after Redis is ready (`condition: service_healthy`).
-- **[tests/](tests/):** Standardized pytest integration test suite targeting delta sync limits, device creation/revocation, pagination, pin toggles, push services, SQLite write contention, and automated Alembic schema parity (executed via `uv run pytest`).
+- **[Dockerfile](Dockerfile):** Hardened multi-stage build (builder stage with compiler toolchain and `uv` &rarr; minimal runtime stage without build tools) based on `python:3.14-slim-bookworm` with unprivileged non-root execution (`USER appuser`, UID/GID 10001) and integrated `HEALTHCHECK` probing `/api/health`.
+- **[compose.yaml](compose.yaml):** Production-hardened orchestration for single-node FastAPI + Redis deployment. Synclo backend runs as non-root (`user: "10001:10001"`), with `init: true` (tini process reaper), `security_opt: [no-new-privileges:true]`, read-only root filesystem (`read_only: true`), ephemeral `/tmp` `tmpfs` mount, log rotation caps, and a universal Python `urllib.request` healthcheck against `/api/health`. Redis is isolated in the `synclo-network` bridge, resource-capped (`--maxmemory 256mb --maxmemory-policy noeviction`), and health-checked (`redis-cli ping`), ensuring Synclo backend only starts after Redis is ready (`condition: service_healthy`).
+- **[tests/](tests/):** Standardized pytest test suite (19 test modules, 260+ tests) targeting unit and integration scenarios across auth, backup/restore decryption, connection tracking, delta sync, device lifecycle, token rotation families, periodic cleanup, push delivery, SQLite WAL contention, and automated Alembic schema parity (executed via `uv run pytest`).
 
 ---
 
@@ -1707,7 +1712,7 @@ Synclo-Backend/
 │   ├── versions/              # Individual migration revisions
 │   └── env.py                 # Alembic migration runner configuration
 ├── app/
-│   ├── core/                  # Core primitives (config, DB connection, constants, logging, metrics)
+│   ├── core/                  # Core primitives (config, constants, logging, metrics)
 │   │   ├── config.py          # Pydantic BaseSettings and runtime configuration
 │   │   ├── constants.py       # Global constants, close codes, and rate limits
 │   │   ├── logging_config.py  # Structured rotating file & console logging
@@ -1739,31 +1744,39 @@ Synclo-Backend/
 ├── tests/                     # Automated pytest test suite
 │   ├── conftest.py            # Test fixtures, in-memory DB, Redis mocks, and TestClient
 │   ├── test_auth.py           # User authentication and token family rotation tests
+│   ├── test_backup_and_decrypt.py # Online SQLite backup and Fernet snapshot decryption tests
 │   ├── test_clipboard.py      # Clipboard CRUD and pin persistence tests
 │   ├── test_clipboard_retention.py # Age-based auto-pruning lifecycle tests
+│   ├── test_connection_manager_unit.py # Real-time ConnectionManager tracking, cleanup, and Redis pub/sub tests
 │   ├── test_delta_sync.py     # Offline delta synchronization and pagination tests
 │   ├── test_devices.py        # Device management and session termination tests
 │   ├── test_health.py         # Health checks and OpenAPI documentation tests
+│   ├── test_helpers_unit.py   # Cryptographic helpers, strict base64 decoding, and token hashing tests
 │   ├── test_https_mode.py     # HTTPS/WSS security and transport enforcement tests
 │   ├── test_metrics.py        # Prometheus telemetry metric tests
 │   ├── test_migrations.py     # Alembic baseline migration, backup/restore, and ORM schema parity tests
+│   ├── test_periodic_cleanup.py # Scheduled maintenance background tasks and expired token pruning tests
 │   ├── test_push_service.py   # UnifiedPush dispatch and stale endpoint recovery tests
 │   ├── test_recovery.py       # Zero-Knowledge account recovery tests
+│   ├── test_serializers_unit.py # Base64 serialization, binary blob handling, and tombstone payload tests
 │   ├── test_sqlite_concurrency.py # SQLite WAL concurrency, write lock contention, and retry tests
 │   └── test_websockets.py     # Real-time WebSocket communication and broadcast tests
 ├── .dockerignore              # Exclusions for Docker image builds
 ├── .env.example               # Template for local environment configuration
 ├── .gitignore                 # Git ignore rules
+├── .python-version            # Pinned Python language version (3.14)
 ├── alembic.ini                # Alembic database migration configuration
 ├── compose.yaml               # Docker Compose orchestration definition for local development
 ├── Dockerfile                 # Multi-platform container build definition
 ├── pyproject.toml             # Project metadata, dependencies, and build configuration
 ├── pytest.ini                 # Pytest configuration and CLI flags
+├── uv.lock                    # Deterministic dependency lockfile generated by uv
 ├── AGENTS.md                  # Development guidelines and constraints for AI coding agents
 ├── ARCHITECTURE.md            # Comprehensive architectural, protocol, and codebase guide
 ├── CONTRIBUTING.md            # Contributor onboarding and local environment setup guide
 ├── LICENSE                    # AGPL-3.0 open source license
-└── README.md                  # Project overview, quick start, and self-hosting guide
+├── README.md                  # Project overview, quick start, and self-hosting guide
+└── ROADMAP.md                 # Strategic development roadmap and milestone tracking
 ```
 
 
