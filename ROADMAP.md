@@ -23,6 +23,14 @@ These capabilities are planned for upcoming minor and major milestones following
 
 ### 2. Zero-Knowledge Security & Onboarding
 
+#### ⏳ 2.1 OPAQUE Protocol Handshake (Asymmetric PAKE) — **[Planned]**
+* **Status**: Planned
+* **Why**: The current login flow requires an unauthenticated `GET /auth/salt` round-trip, exposing plaintext KDF salts and creating an email enumeration surface. Stolen server databases also remain subject to offline dictionary attacks against client auth keys.
+* **Architecture**:
+  * Implement the IETF OPAQUE protocol (RFC 9807), an Augmented Password-Authenticated Key Exchange (aPAKE).
+  * Client blinds the password using an Oblivious Pseudorandom Function (OPRF); the server evaluates it with a server-side private key without ever learning the password or exposing cleartext salts.
+  * Eliminates the `GET /api/v1/auth/salt` endpoint completely, cutting a full network round-trip from login flows and closing the salt-based user enumeration surface.
+  * Encapsulates the user's Master Key within an encrypted credential envelope that cannot be brute-forced offline even if the database is leaked.
 
 #### ⏳ 2.2 QR Code Device Pairing (Zero-Knowledge Key Handshake) — **[Planned]**
 * **Status**: Planned
