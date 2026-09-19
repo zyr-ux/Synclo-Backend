@@ -75,7 +75,12 @@ uv run ruff check .
 uv run ty check .
 ```
 
-### 3. Automated Test Suite Execution
+### 3. Migration & Schema Parity Check
+```bash
+uv run alembic check
+```
+
+### 4. Automated Test Suite Execution
 Run the entire Pytest test suite (all tests must pass, including migration parity tests):
 ```bash
 uv run pytest -v

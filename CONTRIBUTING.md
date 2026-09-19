@@ -106,14 +106,14 @@ To maintain code quality, security, and architectural simplicity, please adhere 
    ```bash
    uv run alembic revision --autogenerate -m "describe your changes"
    ```
-   Always inspect the generated script in `alembic/versions/` to verify constraints, indexes, and nullability.
+   Always inspect the generated script in `alembic/versions/` to verify constraints, indexes, and nullability, and run `uv run alembic check` to verify schema parity.
 6. **Documentation Updates:** When adding a new endpoint, schema change, or system behavior, document the technical specification directly in **[ARCHITECTURE.md](ARCHITECTURE.md)**. If [README.md](README.md) needs updates, discuss it in your PR or ask repository maintainers first.
 
 ---
 
 ## 5. Verification Checklist (Before Submitting)
 
-Before submitting a Pull Request, execute the full 3-step verification suite locally:
+Before submitting a Pull Request, execute the full verification suite locally:
 
 ### 1. Code Style & Linting
 Run Ruff to check formatting and code conventions:
@@ -127,7 +127,13 @@ Run `ty` to verify type annotations across the codebase:
 uv run ty check .
 ```
 
-### 3. Automated Test Suite
+### 3. Migration & Schema Parity Check
+Verify that all model definitions match migration scripts and no unapplied schema changes exist:
+```bash
+uv run alembic check
+```
+
+### 4. Automated Test Suite
 Run the complete Pytest suite (all tests must pass, including migration application and schema parity verification via `tests/test_migrations.py`):
 ```bash
 uv run pytest -v

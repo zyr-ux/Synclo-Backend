@@ -37,70 +37,30 @@ Thanks to Synclo's **Zero-Knowledge Architecture**, all clipboard payloads are e
 ### Using a Custom Self-Hosted Server
 
 If you prefer complete data sovereignty by self-hosting this backend, you can easily switch servers in the Synclo client apps:
-1. Deploy your server instance using the [Quick Start](#quick-start) instructions below.
+1. Deploy your server instance using the [Deployment](#deployment) instructions below.
 2. In the Synclo client app, navigate to **Settings** → **Server URL**
 3. Switch from the default server and enter your custom self-hosted domain (e.g., `https://synclo.yourdomain.com`).
 
 ---
 
-<a id="quick-start" name="quick-start"></a>
+<a id="deployment" name="deployment"></a>
 
-## ⚙️ Quick Start
+## 🚀 Deployment (Docker Compose)
 
-### 🔧 Configuration & Secrets
+The recommended way to self-host Synclo is using **Docker Compose** behind a reverse proxy (such as **Caddy** or **Nginx**) that handles HTTPS and TLS termination. This runs the pre-built Synclo backend container alongside Redis without requiring manual source compilation or cloning the repository.
 
-Before deploying Synclo, generate your secret keys and review the available configuration parameters.
+### 1. Create Project Directory
 
-#### Generate Secret Keys
-Generate two random 32-byte hexadecimal keys for `SECRET_KEY` and `REFRESH_TOKEN_HASH_KEY`:
-```bash
-openssl rand -hex 32
-```
-Run it twice (once for each key) and insert the generated values into your configuration.
+Create the directory for Synclo along with subdirectories for persistent SQLite data and application logs:
 
-#### Environment Variables Reference
-
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `SECRET_KEY` | *(Required)* | Secret key used for signing JWT access tokens (minimum 32 characters). |
-| `REFRESH_TOKEN_HASH_KEY` | *(Required)* | Secret key used for HMAC hashing of refresh tokens (minimum 16 characters). |
-| `ALGORITHM` | `HS256` | JWT signing algorithm (`HS256`, `HS384`, or `HS512`). |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | JWT access token expiration time in minutes (allowed range: `1`–`60`). |
-| `REFRESH_TOKEN_EXPIRE_DAYS` | `30` | Refresh token lifespan in days before re-authentication is required (allowed range: `1`–`365`). |
-| `DATABASE_URL` | `sqlite:///./data/synclo.db` | SQLAlchemy database connection string (`sqlite:////app/data/synclo.db` in container setups). |
-| `REDIS_URL` | `redis://redis:6379` | Redis connection string for WebSocket pub/sub broadcasting and rate limiting. |
-| `HTTPS_ONLY` | `false` | Enforces strict HTTPS redirection (`307`), HSTS headers, and secure WebSockets (`WSS`). Defaults to `false` if omitted. |
-| `ENVIRONMENT` | `development` | Deployment environment (`development` or `production`). Production enforces strict push endpoint security constraints. |
-| `CLIPBOARD_RETENTION_DAYS` | `30` | Auto-pruning retention lifecycle in days for unpinned clipboard items (`0` to disable). Pinned items are immune. |
-| `TOMBSTONE_RETENTION_DAYS` | `30` | Retention duration in days for deletion records (tombstones) enabling offline client synchronization. |
-| `BACKUP_ENCRYPTION_KEY` | `None` | Optional Fernet key used by operational backup utilities (`app/utilities/backup_db.py`) to encrypt SQLite database snapshots (`.db.enc`). |
-| `BACKUP_RETENTION_DAYS` | `30` | Retention duration in days for database backup snapshots before automatic pruning. |
-| `BACKUP_DIR` | `data/backups` | Directory path where SQLite database backups are stored. |
-
----
-
-### 🚀 Deployment & Setup Options
-
-Choose the setup that matches your use case:
-
-*   **[Option 1: Production Deployment (Docker Compose)](#option-1-production-deployment-docker-compose):** Recommended for end-users and self-hosters deploying Synclo with Docker Compose and a host reverse proxy (e.g. Caddy).
-*   **[Option 2: Local Development (from Source)](#option-2-local-development-from-source):** For contributors developing, testing, and running Synclo locally from source.
-
----
-
-#### Option 1: Production Deployment (Docker Compose)
-
-For self-hosters and end users running the pre-built Synclo backend. No need to clone the repository.
-
-##### 1. Create Project Directory
-Create the project folder and the persistent `data` and `logs` subdirectories:
 ```bash
 mkdir -p Synclo-Backend/data Synclo-Backend/logs
 cd Synclo-Backend
 ```
 
-##### 2. Create `compose.yaml`
-Save the following configuration as `compose.yaml` inside your `Synclo-Backend/` directory:
+### 2. Create `compose.yaml`
+
+Save the following configuration as `compose.yaml` in your `Synclo-Backend/` directory:
 
 ```yaml
 services:
@@ -111,12 +71,13 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      SECRET_KEY: "change_this_to_a_random_hex_key" # change this
-      REFRESH_TOKEN_HASH_KEY: "change_this_to_a_random_hex_key" # change this
+      SECRET_KEY: "change_this_to_a_random_hex_key" # minimum 32 characters
+      REFRESH_TOKEN_HASH_KEY: "change_this_to_a_random_hex_key" # minimum 16 characters
       ENVIRONMENT: "production"
       HTTPS_ONLY: "true"
       CLIPBOARD_RETENTION_DAYS: "30"
       TOMBSTONE_RETENTION_DAYS: "30"
+      REDIS_URL: "redis://redis:6379"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -150,39 +111,48 @@ services:
       start_period: 5s
 ```
 
-##### 3. Generate Secret Keys & Configure
-Generate two random 32-byte hexadecimal secrets:
+### 3. Generate Secret Keys & Configure
+
+Generate two random 32-byte hexadecimal secret keys:
+
 ```bash
 openssl rand -hex 32
 ```
-Run it twice (once for `SECRET_KEY` and once for `REFRESH_TOKEN_HASH_KEY`) and insert these values directly into your `compose.yaml` file.
 
-##### 4. Start the Stack
+Run this twice—once for `SECRET_KEY` and once for `REFRESH_TOKEN_HASH_KEY`—and insert these generated keys into your `compose.yaml`.
+
+### 4. Start the Stack
+
 Launch the containers in detached mode:
+
 ```bash
 docker compose up -d
 ```
 
-###### 📁 Persistent Host Data & Logs
+#### 📁 Persistent Host Data & Logs
+
 Docker mounts your host directories (`./data` and `./logs`) into the container. All database files and logs are directly accessible on your host machine inside `Synclo-Backend/`:
+
 ```text
 Synclo-Backend/
 ├── compose.yaml
 ├── data/
-│   ├── synclo.db               # SQLite database file
+│   ├── synclo.db               # SQLite database file (WAL mode)
 │   └── backups/                # Database backup snapshots
 └── logs/
     └── server.log              # Live application logs
 ```
-You can view the logs directly on your host:
+
+Inspect live application logs:
 ```bash
-tail -f logs/server.log
-# Or through Docker Compose:
 docker compose logs -f
+# Or directly on your host machine:
+tail -f logs/server.log
 ```
 
-##### 5. Configure Reverse Proxy (Caddy Example)
-Expose Synclo to your domain with automatic HTTPS using a system-wide Caddy installation:
+### 5. Configure Reverse Proxy (Caddy Example)
+
+Synclo binds locally to `127.0.0.1:8000` to prevent direct unencrypted exposure. Expose Synclo to your domain with automatic HTTPS certificates using a host-level Caddy reverse proxy:
 
 1. Open your host's Caddy configuration:
    ```bash
@@ -218,68 +188,132 @@ Expose Synclo to your domain with automatic HTTPS using a system-wide Caddy inst
    sudo systemctl reload caddy
    ```
 
-Once running, verify your deployment is healthy by checking `https://<your-domain>/api/health`.
+4. Verify your deployment is healthy:
+   ```bash
+   curl -I https://synclo.yourdomain.com/api/health
+   ```
 
 ---
 
-#### Option 2: Local Development (from Source)
+<a id="development" name="development"></a>
 
-For contributors and developers running Synclo locally from source:
+## 💻 Local Development
 
-##### Option A: Docker Compose (Local Build)
-1. **Clone & Configure:**
-   ```bash
-   git clone https://github.com/zyr-ux/Synclo-Backend.git
-   cd Synclo-Backend
-   cp .env.example .env
-   ```
-2. **Build and Run:**
-   ```bash
-   docker compose up -d --build
-   ```
+For developers and contributors running, modifying, and testing Synclo locally from source.
 
-##### Option B: Manual Setup (uv)
-1. **Clone & Configure:**
-   ```bash
-   git clone https://github.com/zyr-ux/Synclo-Backend.git
-   cd Synclo-Backend
-   cp .env.example .env
-   ```
-   Open `.env` and configure your `SECRET_KEY` and `REFRESH_TOKEN_HASH_KEY`.
+### 1. Clone the Repository
 
-2. **Sync Dependencies & Environment:**
-   Initialize the virtual environment and install all dependencies with `uv`:
-   ```bash
-   uv sync
-   ```
+Clone the project from GitHub and switch to the repository root:
 
-3. **Start Redis:**
-   Ensure a local Redis instance is running (required for real-time WebSocket pub/sub and rate limiting):
-   ```bash
-   docker run -d --name synclo-redis -p 6379:6379 redis:7-alpine
-   ```
+```bash
+git clone https://github.com/zyr-ux/Synclo-Backend.git
+cd Synclo-Backend
+```
 
-4. **Run Migrations (Optional):**
-   Database migrations are automatically applied on server startup via FastAPI's lifespan handler, but you can also run them explicitly:
-   ```bash
-   uv run alembic upgrade head
-   ```
+### 2. Install Dependencies & Dev Packages
 
-5. **Launch the Server:**
-   ```bash
-   uv run uvicorn app.main:app --reload --port 8000
-   ```
-   The interactive API documentation (ReDoc) will be available at `http://localhost:8000/api/docs` (Swagger UI at `http://localhost:8000/docs`).
+Synclo uses [uv](https://docs.astral.sh/uv/) for fast, reproducible Python dependency and virtual environment management.
+
+If you don't have `uv` installed, install it via:
+```bash
+# Linux / macOS
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Initialize the virtual environment and download/install all core runtime dependencies alongside all development packages:
+
+```bash
+uv sync
+```
+
+### 3. Configure Environment Variables
+
+Create your local `.env` configuration from the provided template:
+
+```bash
+# Linux / macOS
+cp .env.example .env
+
+# Windows (PowerShell)
+Copy-Item .env.example .env
+```
+
+Generate secret keys using `openssl rand -hex 32` and update `SECRET_KEY` and `REFRESH_TOKEN_HASH_KEY` in `.env`. For local development, keep the defaults:
+```ini
+ENVIRONMENT=development
+HTTPS_ONLY=false
+DATABASE_URL=sqlite:///./data/synclo.db
+REDIS_URL=redis://localhost:6379
+```
+
+### 4. Start Redis
+
+Redis is required for WebSocket pub/sub messaging and rate limiting. Run a local Redis container:
+
+```bash
+docker run -d --name synclo-redis -p 6379:6379 redis:7-alpine
+```
+
+### 5. Run Database Migrations (Optional)
+
+Database migrations run automatically on server startup via FastAPI's lifespan handler, but you can also execute them manually and verify schema parity:
+
+```bash
+uv run alembic upgrade head
+uv run alembic check
+```
+
+### 6. Launch the Server
+
+Start the development server with hot reload:
+
+```bash
+uv run uvicorn app.main:app --reload --port 8000
+```
+
+Once running:
+* 🌐 **API Base URL:** `http://localhost:8000`
+* 📚 **Interactive ReDoc Documentation:** `http://localhost:8000/api/docs`
+* 🔍 **Swagger UI:** `http://localhost:8000/docs`
+* 🩺 **Health Check:** `http://localhost:8000/api/health`
+* 📊 **Prometheus Metrics:** `http://localhost:8000/metrics`
+
+---
+
+## ⚙️ Configuration Reference
+
+The following environment variables can be configured in your `.env` file or container environment:
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `SECRET_KEY` | *(Required)* | Secret key used for signing JWT access tokens (minimum 32 characters). |
+| `REFRESH_TOKEN_HASH_KEY` | *(Required)* | Secret key used for HMAC hashing of refresh tokens (minimum 16 characters). |
+| `ALGORITHM` | `HS256` | JWT signing algorithm (`HS256`, `HS384`, or `HS512`). |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | JWT access token expiration time in minutes (allowed range: `1`–`60`). |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `30` | Refresh token lifespan in days before re-authentication is required (allowed range: `1`–`365`). |
+| `DATABASE_URL` | `sqlite:///./data/synclo.db` | SQLAlchemy database connection string (`sqlite:////app/data/synclo.db` in container setups). |
+| `REDIS_URL` | `redis://redis:6379` | Redis connection string for WebSocket pub/sub broadcasting and rate limiting (`redis://localhost:6379` in local dev). |
+| `HTTPS_ONLY` | `false` | Enforces strict HTTPS redirection (`307`), HSTS headers, and secure WebSockets (`WSS`). Defaults to `false` if omitted. |
+| `ENVIRONMENT` | `development` | Deployment environment (`development` or `production`). Production enforces strict push endpoint security constraints. |
+| `CLIPBOARD_RETENTION_DAYS` | `30` | Auto-pruning retention lifecycle in days for unpinned clipboard items (`0` to disable). Pinned items are immune. |
+| `TOMBSTONE_RETENTION_DAYS` | `30` | Retention duration in days for deletion records (tombstones) enabling offline client synchronization. |
+| `BACKUP_ENCRYPTION_KEY` | `None` | Optional Fernet key used by operational backup utilities (`app/utilities/backup_db.py`) to encrypt SQLite database snapshots (`.db.enc`). |
+| `BACKUP_RETENTION_DAYS` | `30` | Retention duration in days for database backup snapshots before automatic pruning. |
+| `BACKUP_DIR` | `data/backups` | Directory path where SQLite database backups are stored. |
 
 ---
 
 ## 🧪 Verification & Testing
 
-Verify that your local changes pass all checks by running the test suite, linter, and type checker:
+Verify that your local changes pass all code style, typing, schema parity, and testing checks:
 
 ```bash
 uv run ruff check .
 uv run ty check .
+uv run alembic check
 uv run pytest -v
 ```
 
@@ -292,6 +326,7 @@ Contributions are welcome! Before getting started, please review our architectur
 *   📐 **[ARCHITECTURE.md](ARCHITECTURE.md):** Comprehensive overview of system architecture, Zero-Knowledge cryptographic sequences, real-time WebSocket protocol frames, and codebase structure.
 *   🗺️ **[ROADMAP.md](ROADMAP.md):** Strategic milestones and planned future features.
 *   🛠️ **[CONTRIBUTING.md](CONTRIBUTING.md):** Development guidelines, local environment setup, and contribution workflow.
+*   🤖 **[AGENTS.md](AGENTS.md):** Guidelines, architectural constraints, and verification workflows for AI coding assistants and contributors.
 
 ---
 
