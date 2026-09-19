@@ -34,9 +34,14 @@ jobs:
       - name: Run Ruff Linter
         run: uv run ruff check .
 
+      - name: Run Type Checker
+        run: uv run ty check .
+
       - name: Verify Alembic migrations and schema parity
         env:
           DATABASE_URL: sqlite:///./ci_temp.db
+          SECRET_KEY: test_secret_key_minimum_32_characters_for_ci_run_1234
+          REFRESH_TOKEN_HASH_KEY: test_refresh_token_hash_key_for_ci_12345
         run: |
           uv run alembic upgrade head
           uv run alembic check
