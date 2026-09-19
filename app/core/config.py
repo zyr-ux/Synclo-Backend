@@ -96,7 +96,7 @@ class Settings:
     )
     TOMBSTONE_RETENTION_DAYS = _get_int_env("TOMBSTONE_RETENTION_DAYS", 30, min_val=1, unit="days")
 
-    CLIPBOARD_RETENTION_DAYS = _get_int_env("CLIPBOARD_RETENTION_DAYS", 30, min_val=1, unit="days")
+    CLIPBOARD_RETENTION_DAYS = _get_int_env("CLIPBOARD_RETENTION_DAYS", 30, min_val=0, unit="days")
 
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/synclo.db")
     REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")

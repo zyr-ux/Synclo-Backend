@@ -119,3 +119,25 @@ def test_settings_accepts_valid_token_expiry_bounds():
     }
     res = _run_config_import_subprocess(valid_keys)
     assert res.returncode == 0
+
+
+def test_settings_accepts_zero_clipboard_retention_days():
+    valid_keys = {
+        "SECRET_KEY": "a" * 32,
+        "REFRESH_TOKEN_HASH_KEY": "b" * 16,
+        "CLIPBOARD_RETENTION_DAYS": "0",
+    }
+    res = _run_config_import_subprocess(valid_keys)
+    assert res.returncode == 0
+
+
+def test_settings_rejects_negative_clipboard_retention_days():
+    valid_keys = {
+        "SECRET_KEY": "a" * 32,
+        "REFRESH_TOKEN_HASH_KEY": "b" * 16,
+        "CLIPBOARD_RETENTION_DAYS": "-1",
+    }
+    res = _run_config_import_subprocess(valid_keys)
+    assert res.returncode != 0
+    assert "CLIPBOARD_RETENTION_DAYS must be at least 0 days" in res.stderr
+

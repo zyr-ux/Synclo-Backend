@@ -65,15 +65,15 @@ Run it twice (once for each key) and insert the generated values into your confi
 | `SECRET_KEY` | *(Required)* | Secret key used for signing JWT access tokens (minimum 32 characters). |
 | `REFRESH_TOKEN_HASH_KEY` | *(Required)* | Secret key used for HMAC hashing of refresh tokens (minimum 16 characters). |
 | `ALGORITHM` | `HS256` | JWT signing algorithm (`HS256`, `HS384`, or `HS512`). |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | JWT access token expiration time in minutes. |
-| `REFRESH_TOKEN_EXPIRE_DAYS` | `30` | Refresh token lifespan in days before re-authentication is required. |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | JWT access token expiration time in minutes (allowed range: `1`–`60`). |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `30` | Refresh token lifespan in days before re-authentication is required (allowed range: `1`–`365`). |
 | `DATABASE_URL` | `sqlite:///./data/synclo.db` | SQLAlchemy database connection string (`sqlite:////app/data/synclo.db` in container setups). |
 | `REDIS_URL` | `redis://redis:6379` | Redis connection string for WebSocket pub/sub broadcasting and rate limiting. |
 | `HTTPS_ONLY` | `false` | Enforces strict HTTPS redirection (`307`), HSTS headers, and secure WebSockets (`WSS`). Defaults to `false` if omitted. |
 | `ENVIRONMENT` | `development` | Deployment environment (`development` or `production`). Production enforces strict push endpoint security constraints. |
 | `CLIPBOARD_RETENTION_DAYS` | `30` | Auto-pruning retention lifecycle in days for unpinned clipboard items (`0` to disable). Pinned items are immune. |
 | `TOMBSTONE_RETENTION_DAYS` | `30` | Retention duration in days for deletion records (tombstones) enabling offline client synchronization. |
-| `BACKUP_ENCRYPTION_KEY` | `None` | Optional Fernet key used by operational backup utilities (`backup_db.py`) to encrypt SQLite database snapshots (`.db.enc`). |
+| `BACKUP_ENCRYPTION_KEY` | `None` | Optional Fernet key used by operational backup utilities (`app/utilities/backup_db.py`) to encrypt SQLite database snapshots (`.db.enc`). |
 | `BACKUP_RETENTION_DAYS` | `30` | Retention duration in days for database backup snapshots before automatic pruning. |
 | `BACKUP_DIR` | `data/backups` | Directory path where SQLite database backups are stored. |
 
@@ -253,26 +253,34 @@ For contributors and developers running Synclo locally from source:
    uv sync
    ```
 
-3. **Run Migrations:**
+3. **Start Redis:**
+   Ensure a local Redis instance is running (required for real-time WebSocket pub/sub and rate limiting):
+   ```bash
+   docker run -d --name synclo-redis -p 6379:6379 redis:7-alpine
+   ```
+
+4. **Run Migrations (Optional):**
+   Database migrations are automatically applied on server startup via FastAPI's lifespan handler, but you can also run them explicitly:
    ```bash
    uv run alembic upgrade head
    ```
 
-4. **Launch the Server:**
+5. **Launch the Server:**
    ```bash
    uv run uvicorn app.main:app --reload --port 8000
    ```
-   The interactive API documentation (ReDoc) will be available at `http://localhost:8000/api/docs`.
+   The interactive API documentation (ReDoc) will be available at `http://localhost:8000/api/docs` (Swagger UI at `http://localhost:8000/docs`).
 
 ---
 
 ## 🧪 Verification & Testing
 
-Verify that your local changes pass all checks by running the test suite and linter:
+Verify that your local changes pass all checks by running the test suite, linter, and type checker:
 
 ```bash
-uv run pytest -v
 uv run ruff check .
+uv run ty check .
+uv run pytest -v
 ```
 
 ---
