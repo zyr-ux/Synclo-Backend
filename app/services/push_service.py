@@ -382,7 +382,9 @@ class PushService:
             reason = validation.reason or "SSRF violation"
             PUSH_DISPATCHES_TOTAL.labels(status="ssrf_blocked").inc()
             logger.warning(
-                f"Push endpoint failed security validation for device={device_id} ({reason}). Pruning subscription."
+                "Push endpoint failed security validation for device=%s (%s). Pruning subscription.",
+                device_id,
+                reason,
             )
             await asyncio.to_thread(_prune_stale_endpoint, user_id, device_id)
             return False
@@ -390,13 +392,16 @@ class PushService:
             reason = validation.reason or "DNS error"
             PUSH_DISPATCHES_TOTAL.labels(status="dns_error").inc()
             logger.warning(
-                f"Push endpoint DNS resolution failed transiently for device={device_id}: {reason}. Skipping push."
+                "Push endpoint DNS resolution failed transiently for device=%s: %s. Skipping push.",
+                device_id,
+                reason,
             )
             return False
         elif validation.status != EndpointValidationStatus.VALID or not validation.details:
             PUSH_DISPATCHES_TOTAL.labels(status="ssrf_blocked").inc()
             logger.warning(
-                f"Push endpoint failed security validation for device={device_id}. Pruning subscription."
+                "Push endpoint failed security validation for device=%s. Pruning subscription.",
+                device_id,
             )
             await asyncio.to_thread(_prune_stale_endpoint, user_id, device_id)
             return False
@@ -411,8 +416,8 @@ class PushService:
         token = _current_pinned_ips.set(current_pins)
         try:
             await self.start()
-            assert self._client is not None
-            assert self._transport is not None
+            if self._client is None or self._transport is None:
+                raise RuntimeError("PushService failed to initialize client or transport")
             async with self._client.stream(
                 "POST",
                 endpoint,
@@ -426,8 +431,10 @@ class PushService:
                     if len(chunk) > remaining:
                         is_oversized = True
                         logger.warning(
-                            f"Push response exceeded {MAX_PUSH_RESPONSE_BYTES} bytes from "
-                            f"{hostname}:{port}. Aborting stream."
+                            "Push response exceeded %s bytes from %s:%s. Aborting stream.",
+                            MAX_PUSH_RESPONSE_BYTES,
+                            hostname,
+                            port,
                         )
                         await response.aclose()
                         break
@@ -443,13 +450,21 @@ class PushService:
             if status in (200, 201, 202, 204):
                 PUSH_DISPATCHES_TOTAL.labels(status="success").inc()
                 logger.info(
-                    f"Push wake-up delivered to device={device_id} host={hostname}:{port} status={status}"
+                    "Push wake-up delivered to device=%s host=%s:%s status=%s",
+                    device_id,
+                    hostname,
+                    port,
+                    status,
                 )
                 return True
             elif status in (400, 404, 410):
                 PUSH_DISPATCHES_TOTAL.labels(status="stale_pruned").inc()
                 logger.warning(
-                    f"Distributor rejected endpoint ({status}) for device={device_id} host={hostname}:{port}. Pruning stale subscription."
+                    "Distributor rejected endpoint (%s) for device=%s host=%s:%s. Pruning stale subscription.",
+                    status,
+                    device_id,
+                    hostname,
+                    port,
                 )
                 await asyncio.to_thread(_prune_stale_endpoint, user_id, device_id)
                 return False

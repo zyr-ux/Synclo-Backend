@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
+import time
 import traceback
 from typing import Optional
 
@@ -46,6 +47,11 @@ async def _validate_ws_security(websocket: WebSocket) -> bool:
     return True
 
 
+async def _close_token_expired(websocket: WebSocket) -> None:
+    await websocket.send_json({"type": "error", "message": "Token expired"})
+    await websocket.close(code=4001)
+
+
 async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int]]:
     auth_header = websocket.headers.get("authorization", "")
     if not auth_header.startswith("Bearer "):
@@ -80,8 +86,7 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
             return None
     except ExpiredSignatureError as e:
         logger.warning("WebSocket token validation failed: %s", e)
-        await websocket.send_json({"type": "error", "message": "Token expired"})
-        await websocket.close(code=4001)
+        await _close_token_expired(websocket)
         return None
     except InvalidTokenError as e:
         logger.warning("WebSocket token validation failed: %s", e)
@@ -106,7 +111,10 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
 
         if epoch != user.session_epoch:
             logger.warning(
-                f"WebSocket token session_epoch mismatch for user {user.user_id}: {epoch} vs {user.session_epoch}"
+                "WebSocket token session_epoch mismatch for user %s: %s vs %s",
+                user.user_id,
+                epoch,
+                user.session_epoch,
             )
             await websocket.send_json(
                 {"type": "session_invalidated", "reason": "credentials_changed"}
@@ -119,7 +127,9 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
         ).first()
         if not device:
             logger.warning(
-                f"WebSocket connection attempted with unauthorized device {device_id} for user {user.user_id}"
+                "WebSocket connection attempted with unauthorized device %s for user %s",
+                device_id,
+                user.user_id,
             )
             await websocket.send_json({"type": "error", "message": "Unauthorized device"})
             await websocket.close(code=1008)
@@ -135,7 +145,18 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
         db.close()
 
 
-def _update_device_last_seen(user_id: str, device_id: str):
+_last_seen_cache: dict[tuple[str, str], float] = {}
+_LAST_SEEN_THROTTLE_SECONDS = 60.0
+
+
+def _update_device_last_seen(user_id: str, device_id: str, force: bool = False):
+    key = (user_id, device_id)
+    now_mono = time.monotonic()
+    if not force:
+        last_updated = _last_seen_cache.get(key, 0.0)
+        if now_mono - last_updated < _LAST_SEEN_THROTTLE_SECONDS:
+            return
+
     session = SessionLocal()
     try:
 
@@ -147,6 +168,7 @@ def _update_device_last_seen(user_id: str, device_id: str):
                 dev.last_seen = datetime.now(timezone.utc)
 
         run_in_write_transaction(session, mutate)
+        _last_seen_cache[key] = now_mono
     except Exception as err:
         logger.warning("Failed to update device last_seen: %s", err)
     finally:
@@ -259,13 +281,16 @@ async def websocket_sync(websocket: WebSocket):
     try:
         while True:
             if datetime.now(timezone.utc).timestamp() >= exp:
-                await websocket.send_json({"type": "error", "message": "Token expired"})
-                await websocket.close(code=4001)
+                await _close_token_expired(websocket)
                 break
 
             try:
                 data = await asyncio.wait_for(websocket.receive_json(), timeout=45)
             except asyncio.TimeoutError:
+                if datetime.now(timezone.utc).timestamp() >= exp:
+                    await _close_token_expired(websocket)
+                    break
+
                 await websocket.send_json({"type": "ping"})
                 try:
                     pong = await asyncio.wait_for(websocket.receive_json(), timeout=10)
@@ -283,6 +308,10 @@ async def websocket_sync(websocket: WebSocket):
                     except RuntimeError:
                         pass
                     break
+
+            if datetime.now(timezone.utc).timestamp() >= exp:
+                await _close_token_expired(websocket)
+                break
 
             if data.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
@@ -302,4 +331,5 @@ async def websocket_sync(websocket: WebSocket):
             pass
     finally:
         manager.disconnect(user_id, device_id, websocket)
-        await asyncio.to_thread(_update_device_last_seen, user_id, device_id)
+        await asyncio.to_thread(_update_device_last_seen, user_id, device_id, True)
+        _last_seen_cache.pop((user_id, device_id), None)

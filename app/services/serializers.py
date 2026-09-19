@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from app.database.models import User, Clipboard, Device
 from app.database.schemas import UserWithE2EE, ClipboardOut, DeviceOut
-from app.utilities.helpers import to_iso_utc
+from app.utilities.datetime_utils import to_iso_utc
 from app.websockets.connection_manager import manager
 
 

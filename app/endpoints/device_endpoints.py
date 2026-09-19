@@ -10,7 +10,7 @@ from app.core.constants import (
     MIN_DEVICE_NAME_LEN,
     MAX_DEVICE_NAME_LEN,
 )
-from app.database.engine import run_in_write_transaction
+from app.database.engine import get_db, run_in_write_transaction
 from app.database.models import Device, RefreshToken
 from app.database.schemas import (
     DeviceRegister,
@@ -19,7 +19,7 @@ from app.database.schemas import (
     PushSubscription,
     AuthContext,
 )
-from app.services.auth import get_db, get_auth_context
+from app.services.auth import get_auth_context
 from app.services.serializers import device_to_response
 from app.services.push_service import encrypt_push_subscription
 from app.websockets.connection_manager import manager

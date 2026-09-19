@@ -31,7 +31,7 @@ from app.services.auth import (
     create_refresh_token,
     get_auth_context,
 )
-from app.utilities.helpers import hash_refresh_token
+from app.utilities.crypto_utils import hash_refresh_token
 from tests.conftest import generate_random_base64
 
 
@@ -391,9 +391,9 @@ def test_concurrent_refresh_token_race(client, tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from app.database.engine import Base
+    from app.database.engine import Base, get_db
     from app.database.models import User, Device
-    from app.services.auth import create_refresh_token, get_db
+    from app.services.auth import create_refresh_token
     from app.main import app
 
     db_path = tmp_path / "race_test.db"
@@ -563,7 +563,7 @@ def test_logging_redacts_emails():
     assert "[REDACTED]" in record2.msg
 
     # Direct helper test
-    from app.utilities.helpers import RedactingFilter
+    from app.core.logging_config import RedactingFilter
 
     assert (
         RedactingFilter.redact("Contact us at support@synclo.internal for help")

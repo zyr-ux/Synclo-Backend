@@ -18,7 +18,7 @@ from app.core.config import Settings
 from app.database.engine import run_in_write_transaction
 from app.database.models import BlacklistedToken, Clipboard, RefreshToken, User
 from app.main import app, periodic_cleanup
-from app.utilities.helpers import CleanupResult, run_all_cleanup
+from app.services.cleanup_service import CleanupResult, run_all_cleanup
 
 
 def test_run_all_cleanup_end_to_end(db_session):
@@ -136,7 +136,7 @@ def test_run_all_cleanup_handles_subtask_failure(db_session, monkeypatch):
         return False
 
     monkeypatch.setattr(
-        "app.utilities.helpers.cleanup_expired_blacklisted_tokens",
+        "app.services.cleanup_service.cleanup_expired_blacklisted_tokens",
         mock_broken_tokens,
     )
 

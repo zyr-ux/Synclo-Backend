@@ -195,9 +195,28 @@ async def test_listener_skips_malformed_and_non_message_types(fake_redis_pair):
     )
     await asyncio.sleep(0.02)
 
+    # 5. Raw non-JSON string (should be safely discarded without killing listener)
+    await r1.publish(
+        "clipboard:user:user_robust",
+        "not-a-valid-json-payload-{{{",
+    )
+    await asyncio.sleep(0.02)
+
     # Verify listener loop is still running and device is still online and unharmed
     assert manager.is_device_online("user_robust", "dev_robust")
-    assert not ws_dev.send_json.called
+
+    # 6. Subsequent valid payload should still be received and broadcasted
+    await r1.publish(
+        "clipboard:user:user_robust",
+        json.dumps({
+            "sender": "other_node",
+            "user_id": "user_robust",
+            "message": {"type": "test_broadcast"},
+            "exclude_device": None,
+        }),
+    )
+    await asyncio.sleep(0.02)
+    ws_dev.send_json.assert_called_once_with({"type": "test_broadcast"})
 
     await manager.stop_listener()
     await r1.aclose()

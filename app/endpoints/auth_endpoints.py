@@ -28,8 +28,7 @@ from app.core.constants import (
     MAX_RECOVERY_KEY_VERIFIER_LEN,
     ALLOWED_KDF_VERSIONS,
 )
-from app.core.logging_config import logger
-from app.database.engine import run_in_write_transaction
+from app.database.engine import get_db, run_in_write_transaction
 from app.database.models import User, Device, RefreshToken, BlacklistedToken, Clipboard
 from app.database.schemas import (
     Token,
@@ -53,17 +52,13 @@ from app.services.auth import (
     create_access_token,
     create_refresh_token,
     get_auth_context,
-    get_db,
     oauth2_scheme,
     SECRET_KEY,
     ALGORITHM,
 )
 from app.services.serializers import user_to_e2ee_response
-from app.utilities.helpers import (
-    cleanup_expired_refresh_tokens,
-    hash_refresh_token,
-    strict_b64decode,
-)
+from app.services.cleanup_service import cleanup_expired_refresh_tokens
+from app.utilities.crypto_utils import hash_refresh_token, strict_b64decode
 from app.websockets.connection_manager import manager
 
 
@@ -595,24 +590,18 @@ async def change_password(
     except ValueError:
         raise HTTPException(status_code=401, detail="Incorrect current password")
 
-    try:
-        new_auth_key_bytes = strict_b64decode(data.new_auth_key, "new_auth_key")
-        new_encrypted_mk_bytes = strict_b64decode(
-            data.new_encrypted_master_key, "new_encrypted_master_key"
-        )
-        new_salt_bytes = strict_b64decode(data.new_salt, "new_salt")
-    except ValueError as e:
-        logger.error("Base64 decoding failed in password change: %s", e)
-        raise HTTPException(status_code=400, detail="Invalid base64 encoding")
-
     if data.new_kdf_version not in ALLOWED_KDF_VERSIONS:
         raise HTTPException(status_code=400, detail="Unsupported kdf_version")
-    if not (MIN_AUTH_KEY_LEN <= len(new_auth_key_bytes) <= MAX_AUTH_KEY_LEN):
-        raise HTTPException(status_code=400, detail="auth_key length out of bounds")
-    if not (MIN_SALT_LEN <= len(new_salt_bytes) <= MAX_SALT_LEN):
-        raise HTTPException(status_code=400, detail="salt length out of bounds")
-    if not (MIN_MK_LEN <= len(new_encrypted_mk_bytes) <= MAX_MK_LEN):
-        raise HTTPException(status_code=400, detail="encrypted_master_key length out of bounds")
+
+    new_auth_key_bytes = decode_and_validate_blob(
+        data.new_auth_key, MIN_AUTH_KEY_LEN, MAX_AUTH_KEY_LEN, "auth_key"
+    )
+    new_encrypted_mk_bytes = decode_and_validate_blob(
+        data.new_encrypted_master_key, MIN_MK_LEN, MAX_MK_LEN, "encrypted_master_key"
+    )
+    new_salt_bytes = decode_and_validate_blob(
+        data.new_salt, MIN_SALT_LEN, MAX_SALT_LEN, "salt"
+    )
 
     has_wrapped = data.new_recovery_wrapped_master_key is not None
     has_verifier = data.new_recovery_key_verifier is not None

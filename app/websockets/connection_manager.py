@@ -181,30 +181,38 @@ class ConnectionManager:
                 async for message in pubsub.listen():
                     if message.get("type") not in {"pmessage", "message"}:
                         continue
-                    data = json.loads(message.get("data"))
-                    if data.get("sender") == self._node_id:
-                        continue
-                    if data.get("action") == "disconnect_user":
+                    try:
+                        raw_data = message.get("data")
+                        if not raw_data or not isinstance(raw_data, (str, bytes, bytearray)):
+                            continue
+                        data = json.loads(raw_data)
+                        if not isinstance(data, dict):
+                            continue
+                        if data.get("sender") == self._node_id:
+                            continue
+                        if data.get("action") == "disconnect_user":
+                            user_id = data.get("user_id")
+                            if user_id:
+                                await self._disconnect_user_local(
+                                    user_id,
+                                    code=data.get("code", 4000),
+                                    message=data.get("message"),
+                                )
+                            continue
+                        if data.get("action") == "disconnect_device":
+                            user_id = data.get("user_id")
+                            device_id = data.get("device_id")
+                            if user_id and device_id:
+                                await self._disconnect_device_local(user_id, device_id)
+                            continue
                         user_id = data.get("user_id")
-                        if user_id:
-                            await self._disconnect_user_local(
-                                user_id,
-                                code=data.get("code", 4000),
-                                message=data.get("message"),
-                            )
-                        continue
-                    if data.get("action") == "disconnect_device":
-                        user_id = data.get("user_id")
-                        device_id = data.get("device_id")
-                        if user_id and device_id:
-                            await self._disconnect_device_local(user_id, device_id)
-                        continue
-                    user_id = data.get("user_id")
-                    payload = data.get("message")
-                    exclude = data.get("exclude_device")
-                    if user_id is None or payload is None:
-                        continue
-                    await self._broadcast_local(user_id, payload, exclude)
+                        payload = data.get("message")
+                        exclude = data.get("exclude_device")
+                        if user_id is None or payload is None:
+                            continue
+                        await self._broadcast_local(user_id, payload, exclude)
+                    except Exception as exc:
+                        logger.warning("Failed to process Redis pubsub message: %s", exc)
             finally:
                 await pubsub.close()
 

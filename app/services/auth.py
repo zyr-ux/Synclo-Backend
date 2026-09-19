@@ -8,11 +8,11 @@ import jwt
 from jwt import InvalidTokenError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from app.database.engine import SessionLocal
+from app.database.engine import get_db
 from app.database.models import User, BlacklistedToken, Device, RefreshToken
 from app.core.config import Settings
 from app.database.schemas import AuthContext
-from app.utilities.helpers import hash_refresh_token
+from app.utilities.crypto_utils import hash_refresh_token
 
 _raw_secret_key = Settings.SECRET_KEY
 assert _raw_secret_key is not None, "SECRET_KEY must be set"
@@ -23,21 +23,13 @@ ACCESS_TOKEN_EXPIRE_MINUTES = Settings.ACCESS_TOKEN_EXPIRE_MINUTES
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
     to_encode.setdefault("epoch", 1)
     expire = (
         datetime.now(timezone.utc) + expires_delta
         if expires_delta
-        else datetime.now(timezone.utc) + timedelta(minutes=15)
+        else datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)

@@ -13,7 +13,7 @@ from app.core.logging_config import logger
 from app.core.config import Settings
 from app.core.constants import LOOPBACK_HOSTS
 from app.core.metrics import setup_metrics
-from app.utilities.helpers import CleanupResult, run_all_cleanup
+from app.services.cleanup_service import CleanupResult, run_all_cleanup
 from app.websockets.connection_manager import manager
 from app.services.push_service import launch_background_push, push_service
 

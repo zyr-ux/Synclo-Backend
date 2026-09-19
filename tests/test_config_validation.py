@@ -70,3 +70,52 @@ def test_settings_rejects_short_refresh_token_hash_key():
 def test_load_allowed_push_domains_missing_file_raises():
     with pytest.raises(RuntimeError, match="Push providers configuration file not found"):
         _load_allowed_push_domains(Path("non_existent_push_providers_path.json"))
+
+
+def test_settings_rejects_invalid_access_token_expire_minutes():
+    valid_keys = {"SECRET_KEY": "a" * 32, "REFRESH_TOKEN_HASH_KEY": "b" * 16}
+
+    # Non-integer
+    res = _run_config_import_subprocess({**valid_keys, "ACCESS_TOKEN_EXPIRE_MINUTES": "not_an_int"})
+    assert res.returncode != 0
+    assert "ACCESS_TOKEN_EXPIRE_MINUTES must be an integer" in res.stderr
+
+    # Lower bound (< 1)
+    res = _run_config_import_subprocess({**valid_keys, "ACCESS_TOKEN_EXPIRE_MINUTES": "0"})
+    assert res.returncode != 0
+    assert "ACCESS_TOKEN_EXPIRE_MINUTES must be between 1 and 60 minutes" in res.stderr
+
+    # Upper bound (> 60)
+    res = _run_config_import_subprocess({**valid_keys, "ACCESS_TOKEN_EXPIRE_MINUTES": "61"})
+    assert res.returncode != 0
+    assert "ACCESS_TOKEN_EXPIRE_MINUTES must be between 1 and 60 minutes" in res.stderr
+
+
+def test_settings_rejects_invalid_refresh_token_expire_days():
+    valid_keys = {"SECRET_KEY": "a" * 32, "REFRESH_TOKEN_HASH_KEY": "b" * 16}
+
+    # Non-integer
+    res = _run_config_import_subprocess({**valid_keys, "REFRESH_TOKEN_EXPIRE_DAYS": "invalid"})
+    assert res.returncode != 0
+    assert "REFRESH_TOKEN_EXPIRE_DAYS must be an integer" in res.stderr
+
+    # Lower bound (< 1)
+    res = _run_config_import_subprocess({**valid_keys, "REFRESH_TOKEN_EXPIRE_DAYS": "0"})
+    assert res.returncode != 0
+    assert "REFRESH_TOKEN_EXPIRE_DAYS must be between 1 and 365 days" in res.stderr
+
+    # Upper bound (> 365)
+    res = _run_config_import_subprocess({**valid_keys, "REFRESH_TOKEN_EXPIRE_DAYS": "366"})
+    assert res.returncode != 0
+    assert "REFRESH_TOKEN_EXPIRE_DAYS must be between 1 and 365 days" in res.stderr
+
+
+def test_settings_accepts_valid_token_expiry_bounds():
+    valid_keys = {
+        "SECRET_KEY": "a" * 32,
+        "REFRESH_TOKEN_HASH_KEY": "b" * 16,
+        "ACCESS_TOKEN_EXPIRE_MINUTES": "60",
+        "REFRESH_TOKEN_EXPIRE_DAYS": "365",
+    }
+    res = _run_config_import_subprocess(valid_keys)
+    assert res.returncode == 0

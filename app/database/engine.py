@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 import sqlite3
 import time
 from typing import Callable, TypeVar
@@ -14,8 +15,6 @@ DATABASE_URL = Settings.DATABASE_URL
 if DATABASE_URL.startswith("sqlite"):
     db_file_str = DATABASE_URL.replace("sqlite:///", "").split("?")[0]
     if db_file_str and db_file_str != ":memory:":
-        from pathlib import Path
-
         Path(db_file_str).parent.mkdir(parents=True, exist_ok=True)
 
 connect_args = (

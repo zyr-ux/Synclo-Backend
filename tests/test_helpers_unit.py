@@ -1,5 +1,5 @@
 """
-Unit tests for app/utilities/helpers.py.
+Unit tests for app/utilities/datetime_utils.py, app/utilities/crypto_utils.py, and RedactingFilter.
 
 Covers pure helper functions and RedactingFilter to ensure strict zero-knowledge
 and data integrity guarantees without test bias:
@@ -16,14 +16,9 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 import pytest
 
-from app.utilities.helpers import (
-    RedactingFilter,
-    ensure_utc,
-    hash_refresh_token,
-    parse_iso_utc,
-    strict_b64decode,
-    to_iso_utc,
-)
+from app.core.logging_config import RedactingFilter
+from app.utilities.crypto_utils import hash_refresh_token, strict_b64decode
+from app.utilities.datetime_utils import ensure_utc, parse_iso_utc, to_iso_utc
 
 
 # =====================================================================

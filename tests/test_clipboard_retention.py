@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from app.core.config import Settings
 from app.database.models import Clipboard, User
-from app.utilities.helpers import prune_user_clipboard, prune_all_users_clipboard
+from app.services.clipboard_service import prune_user_clipboard, prune_all_users_clipboard
 from tests.conftest import generate_random_base64
 
 
@@ -337,7 +337,7 @@ def test_prune_all_users_clipboard_maintenance(client, auth_user, db_session):
 
 
 def test_cleanup_old_tombstones(auth_user, db_session):
-    from app.utilities.helpers import cleanup_old_tombstones
+    from app.services.cleanup_service import cleanup_old_tombstones
 
     user = db_session.scalars(select(User).where(User.email == auth_user["email"])).first()
     user_id = user.user_id
@@ -411,7 +411,7 @@ def test_cleanup_old_tombstones(auth_user, db_session):
 
 def test_cleanup_expired_tokens(auth_user, db_session):
     from app.database.models import BlacklistedToken, RefreshToken
-    from app.utilities.helpers import (
+    from app.services.cleanup_service import (
         cleanup_expired_blacklisted_tokens,
         cleanup_expired_refresh_tokens,
     )
@@ -460,7 +460,7 @@ def test_cleanup_expired_tokens(auth_user, db_session):
 
 
 def test_run_all_cleanup_orchestration(auth_user, db_session):
-    from app.utilities.helpers import run_all_cleanup
+    from app.services.cleanup_service import run_all_cleanup
 
     result = run_all_cleanup(db_session)
     assert result.failures == 0

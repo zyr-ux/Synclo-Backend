@@ -1,16 +1,17 @@
-from datetime import datetime, timezone
-from typing import Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.database.engine import async_run_in_write_transaction
-
+from app.core.config import Settings
+from app.database.engine import async_run_in_write_transaction, run_in_write_transaction
 from app.database.models import Clipboard, User
 from app.database.schemas import ClipboardIn, ClipboardPinUpdate
 from app.services.serializers import make_tombstone_payload
-from app.utilities.helpers import ensure_utc, prune_user_clipboard, strict_b64decode, to_iso_utc
+from app.utilities.crypto_utils import strict_b64decode
+from app.utilities.datetime_utils import ensure_utc, to_iso_utc
 from app.websockets.connection_manager import manager
 
 
@@ -32,7 +33,84 @@ def allocate_sync_sequence(db: Session, user_id: str) -> int:
     return allocate_batch_sync_sequence(db, user_id, count=1)
 
 
-# Evaluates Last-Write-Wins conflict rules and returns (decision, reason)
+def prune_user_clipboard(
+    user_id: str, db: Session, retention_days: Optional[int] = None
+) -> List[dict]:
+    retention_days = Settings.CLIPBOARD_RETENTION_DAYS if retention_days is None else retention_days
+    if retention_days <= 0:
+        return []
+
+    def mutate() -> List[dict]:
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=retention_days)
+        stmt = select(Clipboard).where(
+            Clipboard.user_id == user_id,
+            Clipboard.is_deleted.is_(False),
+            Clipboard.is_pinned.is_(False),
+            Clipboard.updated_at < cutoff,
+        )
+        entries = list(db.scalars(stmt).all())
+        if not entries:
+            return []
+
+        final_seq = allocate_batch_sync_sequence(db, user_id, count=len(entries))
+        start_seq = final_seq - len(entries) + 1
+        tombstones = []
+        for index, item in enumerate(entries):
+            item.is_deleted = True
+            item.deleted_at = now
+            item.updated_at = now
+            item.timestamp = now
+            item.ciphertext = None
+            item.nonce = None
+            item.is_pinned = False
+            item.pinned_at = None
+            item.change_number = start_seq + index
+            item.entry_revision = (item.entry_revision or 0) + 1
+            item.last_device_id = None
+            tombstones.append(
+                make_tombstone_payload(
+                    clipboard_id=item.clipboard_id,
+                    blob_version=item.blob_version,
+                    timestamp=now,
+                    change_number=item.change_number,
+                    entry_revision=item.entry_revision,
+                    last_device_id=None,
+                )
+            )
+        return tombstones
+
+    return run_in_write_transaction(db, mutate)
+
+
+def prune_all_users_clipboard(
+    db: Session, retention_days: Optional[int] = None
+) -> List[Tuple[str, dict]]:
+    retention_days = Settings.CLIPBOARD_RETENTION_DAYS if retention_days is None else retention_days
+    if retention_days <= 0:
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    candidate_stmt = (
+        select(Clipboard.user_id)
+        .where(
+            Clipboard.is_deleted.is_(False),
+            Clipboard.is_pinned.is_(False),
+            Clipboard.updated_at < cutoff,
+        )
+        .distinct()
+    )
+    candidate_user_ids = list(db.scalars(candidate_stmt).all())
+    if not candidate_user_ids:
+        return []
+
+    all_tombstones: List[Tuple[str, dict]] = []
+    for user_id in candidate_user_ids:
+        tombstones = prune_user_clipboard(user_id, db, retention_days=retention_days)
+        all_tombstones.extend((user_id, tombstone) for tombstone in tombstones)
+    return all_tombstones
+
+
 def _evaluate_lww_conflict(
     existing: Clipboard,
     incoming_ts: datetime,
@@ -283,11 +361,11 @@ async def update_pin_status(
 
         item.is_pinned = pin_data.is_pinned
         now = datetime.now(timezone.utc)
+        item.updated_at = now
         if pin_data.is_pinned:
             item.pinned_at = ensure_utc(pin_data.pinned_at) if pin_data.pinned_at else now
         else:
             item.pinned_at = None
-            item.updated_at = now
         item.change_number = allocate_sync_sequence(db, user_id)
         item.entry_revision = (item.entry_revision or 0) + 1
         item.last_device_id = caller_device_id

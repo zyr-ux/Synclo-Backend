@@ -9,7 +9,7 @@ ACTIVE_WEBSOCKETS = Gauge(
 
 WEBSOCKET_EVENTS_TOTAL = Counter(
     "synclo_websocket_events_total",
-    "Total WebSocket events broadcasted across the cluster, labeled only by event type.",
+    "Total WebSocket events broadcasted, labeled only by event type.",
     ["event_type"],
 )
 

@@ -288,7 +288,7 @@ When a client receives an entry with `is_deleted: true` (either via sync or WebS
 - **Unpin Grace Period:** Unpinning an item (`PATCH /api/v1/clipboard/{id}/pin`) resets its `updated_at` timestamp to the current time, granting a new 30-day retention grace period.
 
 #### Tombstone Hard Purge
-A daily background worker (`cleanup_old_tombstones` in [`app/utilities/helpers.py`](app/utilities/helpers.py)) permanently deletes tombstones whose `deleted_at` timestamp exceeds `TOMBSTONE_RETENTION_DAYS` (default: 30 days):
+A daily background worker (`cleanup_old_tombstones` in [`app/services/cleanup_service.py`](app/services/cleanup_service.py)) permanently deletes tombstones whose `deleted_at` timestamp exceeds `TOMBSTONE_RETENTION_DAYS` (default: 30 days):
 ```sql
 DELETE FROM clipboard
 WHERE is_deleted = 1
@@ -529,7 +529,6 @@ All protected API endpoints require an Authorization Header: `Authorization: Bea
 > **Interactive API Documentation (ReDoc & Swagger):**
 > * **Development Mode (`ENVIRONMENT=development`):** Full interactive OpenAPI documentation is available via ReDoc at `/api/docs`, Swagger UI at `/docs`, and raw schema at `/api/openapi.json`.
 > * **Production Mode (`ENVIRONMENT=production`):** Documentation routes (`/docs`, `/api/docs`, `/api/openapi.json`) are completely disabled for attack-surface reduction.
-> * Live hosted documentation is accessible at [synclo.zyrux.dev/api/docs](https://synclo.zyrux.dev/api/docs).
 
 ### Common Authentication & Authorization Errors
 
@@ -1400,8 +1399,8 @@ All server configuration parameters are centralized in `Settings` in [app/core/c
 | `SECRET_KEY` | String | *None* | **Yes** | Primary cryptographic secret (min 32 chars). Used to sign and verify JWT access tokens and encrypt UnifiedPush subscription URLs stored in the database. |
 | `REFRESH_TOKEN_HASH_KEY` | String | *None* | **Yes** | Cryptographic HMAC secret (min 16 chars). Used to compute HMAC-SHA256 digests of client refresh tokens before database persistence. |
 | `ALGORITHM` | String | `"HS256"` | No | JWT signing algorithm. Supported values: `HS256`, `HS384`, `HS512`. |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | Integer | `15` | No | Lifespan of short-lived JWT access tokens in minutes. |
-| `REFRESH_TOKEN_EXPIRE_DAYS` | Integer | `30` | No | Lifespan of rotating refresh tokens in days. |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Integer | `15` | No | Lifespan of short-lived JWT access tokens in minutes (allowed range: 1–60). |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | Integer | `30` | No | Lifespan of rotating refresh tokens in days (allowed range: 1–365). |
 | `DATABASE_URL` | String | `"sqlite:///./data/synclo.db"` | No | SQLAlchemy database connection URI. Default connects to local SQLite file in `./data/`. |
 | `REDIS_URL` | String | `"redis://redis:6379"` | No | Redis connection URI for real-time WebSocket Pub/Sub broadcasting, distributed rate limiting, and cleanup mutexes. Redis is ephemeral and isolated on the private container network. |
 | `HTTPS_ONLY` | Boolean | `false` | No | When `true`, enforces strict transport security: redirects remote plain HTTP to HTTPS (status 307), injects HSTS headers, requires WSS for remote WebSockets, and validates HTTPS for push subscriptions. |
@@ -1471,8 +1470,11 @@ Defines Pydantic v2 schemas used to filter and validate request JSON bodies, pus
 #### [auth.py](app/services/auth.py)
 Coordinates JWT token encoding/decoding, password validation, and request authentication dependencies (`get_current_user`).
 
+#### [cleanup_service.py](app/services/cleanup_service.py)
+Orchestrates periodic database hygiene and background cleanup tasks (expired blacklisted and refresh tokens, old tombstone purging, and clipboard retention pruning).
+
 #### [clipboard_service.py](app/services/clipboard_service.py)
-Encapsulates clipboard entry persistence, optimistic concurrency checks, sequence allocation, pinning, soft-deletion, and push dispatches.
+Encapsulates clipboard entry persistence, optimistic concurrency checks, sequence allocation, pinning, soft-deletion, age-based clipboard pruning, and push dispatches.
 
 #### [serializers.py](app/services/serializers.py)
 Converts raw database byte fields (e.g., binary ciphertext, salt blobs) into base64-encoded strings for JSON serializations.
@@ -1484,8 +1486,11 @@ Dispatches asynchronous zero-knowledge push notifications (`{"type": "push"}`) t
 
 ### Operational Utilities (`app/utilities/`)
 
-#### [helpers.py](app/utilities/helpers.py)
-Provides cryptographic helpers (`hash_refresh_token`, `strict_b64decode`), ISO 8601 UTC date formatting, and database maintenance routines (expired token revocations, tombstone purges, and clipboard pruning).
+#### [datetime_utils.py](app/utilities/datetime_utils.py)
+Pure UTC datetime utilities: normalization (`ensure_utc`), ISO 8601 formatting with trailing 'Z' (`to_iso_utc`), and strict ISO parsing (`parse_iso_utc`).
+
+#### [crypto_utils.py](app/utilities/crypto_utils.py)
+Low-level cryptographic helpers: HMAC-SHA256 refresh token hashing (`hash_refresh_token`) and strict base64 decoding with validation (`strict_b64decode`).
 
 #### [backup_db.py](app/utilities/backup_db.py)
 Implements zero-downtime database backups using SQLite's Online Backup API (`sqlite3.Connection.backup`), encrypts output snapshots using Fernet symmetric encryption with key derivation from `BACKUP_ENCRYPTION_KEY`, manages timestamped backup directories, retention rotation (`BACKUP_RETENTION_COUNT`), and backup health verification.
@@ -1727,13 +1732,15 @@ Synclo-Backend/
 │   │   └── schemas.py         # Data transfer objects and API schemas
 │   ├── services/              # Domain logic and background tasks
 │   │   ├── auth.py            # Password hashing, JWT creation, token rotation helpers
-│   │   ├── clipboard_service.py # Persistence, LWW conflict checks, sequence allocation, pinning
+│   │   ├── cleanup_service.py # Background token expiration, tombstone purging, maintenance orchestrator
+│   │   ├── clipboard_service.py # Persistence, LWW conflict checks, sequence allocation, retention pruning
 │   │   ├── push_service.py    # UnifiedPush background dispatcher and self-healing cleanup
 │   │   └── serializers.py     # Base64 serialization and tombstone payload builders
-│   ├── utilities/             # Operational scripts and maintenance routines
+│   ├── utilities/             # Operational scripts and leaf utilities
 │   │   ├── backup_db.py       # Online SQLite backup and Fernet encryption manager
+│   │   ├── crypto_utils.py    # HMAC token hashing and strict base64 decoding
+│   │   ├── datetime_utils.py  # UTC normalization and ISO 8601 formatting
 │   │   ├── decrypt_db.py      # Standalone backup decryption CLI tool
-│   │   ├── helpers.py         # Cryptographic helpers, token hashing, UTC normalization, cleanup
 │   │   └── push_providers.json # Allowlist for validated UnifiedPush distributors
 │   ├── websockets/            # Real-time WebSocket engine
 │   │   ├── connection_manager.py # In-memory connection tracker & Redis Pub/Sub cluster bus

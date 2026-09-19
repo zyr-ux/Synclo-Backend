@@ -14,9 +14,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.database.engine import Base, SessionLocal, configure_sqlite_engine
+from app.database.engine import Base, SessionLocal, configure_sqlite_engine, get_db
 from app.main import app
-from app.services.auth import get_db
 
 # Early Mocking of Redis and FastAPILimiter
 mock_redis_client = AsyncMock()

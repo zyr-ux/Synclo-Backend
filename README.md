@@ -30,7 +30,6 @@ Built on a **Zero-Knowledge Architecture**, the backend acts strictly as an encr
 A default, publicly hosted Synclo server instance is maintained for general use and comes **pre-configured out of the box** in the official Synclo client applications:
 
 *   🌐 **Default API Base URL:** `https://synclo.zyrux.dev/api/v1`
-*   📖 **Interactive API Documentation (ReDoc):** `https://synclo.zyrux.dev/api/docs`
 *   ⚡ **WebSocket Sync Endpoint:** `wss://synclo.zyrux.dev/ws/v1/sync`
 
 Thanks to Synclo's **Zero-Knowledge Architecture**, all clipboard payloads are encrypted client-side using your local keys before transmission—the hosted server cannot decrypt or inspect your passwords, keys, or clipboard contents.
@@ -219,7 +218,7 @@ Expose Synclo to your domain with automatic HTTPS using a system-wide Caddy inst
    sudo systemctl reload caddy
    ```
 
-Once running, your server's interactive API documentation (ReDoc) is accessible at `https://<your-domain>/api/docs`.
+Once running, verify your deployment is healthy by checking `https://<your-domain>/api/health`.
 
 ---
 

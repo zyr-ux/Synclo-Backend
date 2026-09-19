@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List
 
@@ -15,8 +16,8 @@ from app.database.schemas import (
     ClipboardSyncResponse,
     AuthContext,
 )
-from app.database.engine import async_run_in_write_transaction
-from app.services.auth import get_db, get_auth_context
+from app.database.engine import async_run_in_write_transaction, get_db
+from app.services.auth import get_auth_context
 from app.services.clipboard_service import (
     allocate_batch_sync_sequence,
     soft_delete_clipboard,
@@ -25,7 +26,7 @@ from app.services.clipboard_service import (
 )
 from app.services.push_service import launch_background_push
 from app.services.serializers import clipboard_to_response, make_tombstone_payload
-from app.utilities.helpers import ensure_utc
+from app.utilities.datetime_utils import ensure_utc
 from app.websockets.connection_manager import manager
 
 router = APIRouter()
@@ -243,57 +244,73 @@ async def delete_clipboard_history(
 ):
     user_id: str = auth.user.user_id
     caller_device_id = auth.device_id
+    chunk_size = 500
 
     def mutate():
-        stmt = (
-            select(Clipboard)
-            .where(
-                Clipboard.user_id == user_id,
-                Clipboard.is_deleted.is_(False),
-                Clipboard.is_pinned.is_(False),
-            )
-        )
-        active_entries = list(db.scalars(stmt).all())
-        if not active_entries:
-            return [], 0
-
-        now = datetime.now(timezone.utc)
-        final_seq = allocate_batch_sync_sequence(db, user_id, count=len(active_entries))
-        start_seq = final_seq - len(active_entries) + 1
         deleted_items = []
-        for index, entry in enumerate(active_entries):
-            entry.is_deleted = True
-            entry.ciphertext = None
-            entry.nonce = None
-            entry.is_pinned = False
-            entry.pinned_at = None
-            entry.deleted_at = now
-            entry.timestamp = now
-            entry.updated_at = now
-            entry.change_number = start_seq + index
-            entry.entry_revision = (entry.entry_revision or 0) + 1
-            entry.last_device_id = caller_device_id
-            deleted_items.append(
-                make_tombstone_payload(
-                    clipboard_id=entry.clipboard_id,
-                    blob_version=entry.blob_version,
-                    timestamp=now,
-                    change_number=entry.change_number,
-                    entry_revision=entry.entry_revision,
-                    last_device_id=caller_device_id,
+        now = datetime.now(timezone.utc)
+
+        while True:
+            stmt = (
+                select(Clipboard)
+                .where(
+                    Clipboard.user_id == user_id,
+                    Clipboard.is_deleted.is_(False),
+                    Clipboard.is_pinned.is_(False),
                 )
+                .order_by(Clipboard.change_number.asc())
+                .limit(chunk_size)
             )
-        return deleted_items, len(active_entries)
+            chunk = list(db.scalars(stmt).all())
+            if not chunk:
+                break
+
+            final_seq = allocate_batch_sync_sequence(db, user_id, count=len(chunk))
+            start_seq = final_seq - len(chunk) + 1
+
+            for index, entry in enumerate(chunk):
+                entry.is_deleted = True
+                entry.ciphertext = None
+                entry.nonce = None
+                entry.is_pinned = False
+                entry.pinned_at = None
+                entry.deleted_at = now
+                entry.timestamp = now
+                entry.updated_at = now
+                entry.change_number = start_seq + index
+                entry.entry_revision = (entry.entry_revision or 0) + 1
+                entry.last_device_id = caller_device_id
+                deleted_items.append(
+                    make_tombstone_payload(
+                        clipboard_id=entry.clipboard_id,
+                        blob_version=entry.blob_version,
+                        timestamp=now,
+                        change_number=entry.change_number,
+                        entry_revision=entry.entry_revision,
+                        last_device_id=caller_device_id,
+                    )
+                )
+
+            db.flush()
+
+        return deleted_items, len(deleted_items)
 
     deleted_items, deleted_count = await async_run_in_write_transaction(db, mutate)
     if not deleted_items:
         return {"message": "No clipboard entries to delete."}
 
-    for tombstone in deleted_items:
-        await manager.broadcast_to_user(
-            user_id=user_id,
-            message=tombstone,
-            exclude_device=caller_device_id,
+    broadcast_batch_size = 100
+    for i in range(0, len(deleted_items), broadcast_batch_size):
+        batch = deleted_items[i : i + broadcast_batch_size]
+        await asyncio.gather(
+            *(
+                manager.broadcast_to_user(
+                    user_id=user_id,
+                    message=tombstone,
+                    exclude_device=caller_device_id,
+                )
+                for tombstone in batch
+            )
         )
 
     launch_background_push(user_id=user_id, exclude_device=caller_device_id)

@@ -1,13 +1,10 @@
 import json
-import logging
 import os
 import tomllib
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
-
-_logger = logging.getLogger(__name__)
 
 _pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
 if not _pyproject_path.exists():
@@ -18,6 +15,30 @@ try:
         _pyproject_data = tomllib.load(_f).get("project", {})
 except Exception as _e:
     raise RuntimeError(f"Failed to parse pyproject.toml: {_e}") from _e
+
+
+def _get_int_env(
+    key: str,
+    default: int,
+    min_val: int = 1,
+    max_val: int | None = None,
+    unit: str = "",
+) -> int:
+    val_str = os.getenv(key, str(default))
+    try:
+        val = int(val_str)
+    except ValueError as exc:
+        raise RuntimeError(f"{key} must be an integer") from exc
+    if max_val is not None:
+        if not (min_val <= val <= max_val):
+            unit_suffix = f" {unit}" if unit else ""
+            raise RuntimeError(
+                f"{key} must be between {min_val} and {max_val}{unit_suffix} (got {val})"
+            )
+    elif val < min_val:
+        unit_suffix = f" {unit}" if unit else ""
+        raise RuntimeError(f"{key} must be at least {min_val}{unit_suffix} (got {val})")
+    return val
 
 
 def _load_allowed_push_domains(file_path: Path | str | None = None) -> set[str]:
@@ -57,7 +78,9 @@ class Settings:
     if ALGORITHM not in {"HS256", "HS384", "HS512"}:
         raise RuntimeError(f"Unsupported JWT signing algorithm: {ALGORITHM}")
 
-    ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 15))
+    ACCESS_TOKEN_EXPIRE_MINUTES = _get_int_env(
+        "ACCESS_TOKEN_EXPIRE_MINUTES", 15, min_val=1, max_val=60, unit="minutes"
+    )
 
     REFRESH_TOKEN_HASH_KEY = os.getenv("REFRESH_TOKEN_HASH_KEY")
     if not REFRESH_TOKEN_HASH_KEY:
@@ -68,10 +91,12 @@ class Settings:
         raise RuntimeError("REFRESH_TOKEN_HASH_KEY must be at least 16 characters long")
     REFRESH_TOKEN_HASH_KEY = REFRESH_TOKEN_HASH_KEY.encode("utf-8")
 
-    REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 30))
-    TOMBSTONE_RETENTION_DAYS = int(os.getenv("TOMBSTONE_RETENTION_DAYS", "30"))
+    REFRESH_TOKEN_EXPIRE_DAYS = _get_int_env(
+        "REFRESH_TOKEN_EXPIRE_DAYS", 30, min_val=1, max_val=365, unit="days"
+    )
+    TOMBSTONE_RETENTION_DAYS = _get_int_env("TOMBSTONE_RETENTION_DAYS", 30, min_val=1, unit="days")
 
-    CLIPBOARD_RETENTION_DAYS = int(os.getenv("CLIPBOARD_RETENTION_DAYS", "30"))
+    CLIPBOARD_RETENTION_DAYS = _get_int_env("CLIPBOARD_RETENTION_DAYS", 30, min_val=1, unit="days")
 
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/synclo.db")
     REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
@@ -83,5 +108,5 @@ class Settings:
     ALLOWED_PUSH_DOMAINS = _load_allowed_push_domains(PUSH_PROVIDERS_FILE)
 
     BACKUP_ENCRYPTION_KEY = os.getenv("BACKUP_ENCRYPTION_KEY", None)
-    BACKUP_RETENTION_DAYS = int(os.getenv("BACKUP_RETENTION_DAYS", "30"))
+    BACKUP_RETENTION_DAYS = _get_int_env("BACKUP_RETENTION_DAYS", 30, min_val=1, unit="days")
     BACKUP_DIR = os.getenv("BACKUP_DIR", "data/backups")

@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException
 from starlette.testclient import TestClient
 
 from app.main import app, periodic_cleanup
-from app.utilities.helpers import CleanupResult
+from app.services.cleanup_service import CleanupResult
 
 
 def test_internal_exception_handler_returns_500_json():
