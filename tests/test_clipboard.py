@@ -655,7 +655,14 @@ def test_delta_sync_410_when_no_entries_and_sync_sequence_ahead(client, user_fac
 
     run_in_write_transaction(db_session, mutate)
 
-    res = client.get("/api/v1/clipboard/sync?since_change_number=0", headers=user["headers"])
+    # Initial/cold-start or wipe-and-resync query (since_change_number=0) must succeed with 200 and empty list
+    # even if sync_sequence > 0, breaking the infinite 410 wipe-resync trap.
+    res_cold = client.get("/api/v1/clipboard/sync?since_change_number=0", headers=user["headers"])
+    assert res_cold.status_code == 200
+    assert res_cold.json()["entries"] == []
+
+    # Incremental sync with since_change_number > 0 where tombstones were purged returns 410 Gone.
+    res = client.get("/api/v1/clipboard/sync?since_change_number=5", headers=user["headers"])
     assert res.status_code == 410
     assert "Sync state expired" in res.json()["detail"]
 
@@ -713,6 +720,7 @@ def _create_mock_clipboard(
     ciphertext: bytes = b"cipher_a",
     nonce: bytes = b"nonce_a",
     device_id: str = "dev_1",
+    is_pinned: bool = False,
 ) -> Clipboard:
     return Clipboard(
         clipboard_id="test-item-id",
@@ -723,6 +731,7 @@ def _create_mock_clipboard(
         nonce=nonce if not is_deleted else None,
         last_device_id=device_id,
         blob_version=1,
+        is_pinned=is_pinned,
     )
 
 
@@ -782,6 +791,30 @@ def test_edit_vs_edit_identical_payload_and_timestamp_noop():
 
     assert decision == "noop"
     assert reason == "identical payload and timestamp"
+
+
+def test_edit_vs_edit_identical_payload_and_timestamp_with_pin_change_accepted():
+    t0 = datetime(2025, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+    existing = _create_mock_clipboard(
+        timestamp=t0,
+        ciphertext=b"identical_cipher",
+        nonce=b"identical_nonce",
+        device_id="dev_1",
+        is_pinned=False,
+    )
+
+    decision, reason = _evaluate_lww_conflict(
+        existing=existing,
+        incoming_ts=t0,
+        incoming_ciphertext=b"identical_cipher",
+        incoming_nonce=b"identical_nonce",
+        incoming_device_id="dev_2",
+        is_incoming_tombstone=False,
+        incoming_is_pinned=True,
+    )
+
+    assert decision == "accept"
+    assert reason == "pin status updated"
 
 
 def test_edit_vs_edit_same_device_equal_timestamp_collision_rejected():
@@ -1119,4 +1152,29 @@ def test_bulk_delete_history_empty_returns_no_entries_message(client, user_facto
     res_pinned = client.delete("/api/v1/clipboard", headers=user["headers"])
     assert res_pinned.status_code == 200
     assert res_pinned.json() == {"message": "No clipboard entries to delete."}
+
+
+def test_upsert_identical_payload_and_timestamp_with_pin_change_updates_entry(
+    client, user_factory
+):
+    user = user_factory()
+    payload = make_clipboard_payload("pin_toggle_test", is_pinned=False)
+
+    # 1. First upload
+    res1 = client.post("/api/v1/clipboard", json=payload, headers=user["headers"])
+    assert res1.status_code == 200
+
+    entry1 = client.get(f"/api/v1/clipboard/{payload['id']}", headers=user["headers"]).json()
+    assert entry1["is_pinned"] is False
+    seq1 = entry1["change_number"]
+
+    # 2. Upload with same timestamp and ciphertext but is_pinned=True
+    payload_pinned = dict(payload)
+    payload_pinned["is_pinned"] = True
+    res2 = client.post("/api/v1/clipboard", json=payload_pinned, headers=user["headers"])
+    assert res2.status_code == 200
+
+    entry2 = client.get(f"/api/v1/clipboard/{payload['id']}", headers=user["headers"]).json()
+    assert entry2["is_pinned"] is True
+    assert entry2["change_number"] > seq1
 

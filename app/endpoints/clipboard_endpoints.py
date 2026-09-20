@@ -137,7 +137,7 @@ def get_sync_clipboard(
                 status_code=410, detail="Sync state expired. Please wipe local data and resync."
             )
     else:
-        if (current_user.sync_sequence or 0) > since_change_number:
+        if since_change_number > 0 and (current_user.sync_sequence or 0) > since_change_number:
             raise HTTPException(
                 status_code=410, detail="Sync state expired. Please wipe local data and resync."
             )
@@ -154,7 +154,12 @@ def get_sync_clipboard(
     entries = list(db.scalars(stmt).all())
 
     entry_updated_at = ensure_utc(entries[0].updated_at) if entries else None
-    if since_change_number > 0 and entry_updated_at is not None and entry_updated_at < cutoff:
+    if (
+        since_change_number > 0
+        and entry_updated_at is not None
+        and not entries[0].is_pinned
+        and entry_updated_at < cutoff
+    ):
         raise HTTPException(
             status_code=410, detail="Sync state expired. Please wipe local data and resync."
         )

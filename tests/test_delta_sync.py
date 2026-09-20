@@ -226,3 +226,39 @@ def test_delta_sync_keyset_sequence_410_when_entries_older_than_retention(
     )
     assert res.status_code == 410
     assert "Sync state expired" in res.json()["detail"]
+
+
+def test_delta_sync_does_not_410_when_next_entry_is_old_pinned_item(
+    client, auth_headers, clip_payload, db_session
+):
+    from app.database.models import Clipboard
+
+    # Create 2 items, second is pinned
+    client.post("/api/v1/clipboard", json=clip_payload("seq_pinned_1"), headers=auth_headers)
+    client.post(
+        "/api/v1/clipboard",
+        json=clip_payload("seq_pinned_2", is_pinned=True),
+        headers=auth_headers,
+    )
+
+    # Backdate seq_pinned_2 to 45 days ago
+    old_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=45)
+    item2 = db_session.scalars(
+        select(Clipboard).where(Clipboard.clipboard_id == "seq_pinned_2")
+    ).first()
+    item2.updated_at = old_time
+    item2.timestamp = old_time
+    db_session.commit()
+
+    # Requesting changes since item 1 when next change is an old pinned item must NOT return 410 Gone;
+    # pinned items never expire!
+    res = client.get(
+        "/api/v1/clipboard/sync",
+        params={"since_change_number": item2.change_number - 1},
+        headers=auth_headers,
+    )
+    assert res.status_code == 200
+    entries = res.json()["entries"]
+    assert len(entries) == 1
+    assert entries[0]["id"] == "seq_pinned_2"
+    assert entries[0]["is_pinned"] is True

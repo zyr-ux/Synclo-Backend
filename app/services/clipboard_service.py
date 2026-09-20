@@ -118,6 +118,7 @@ def _evaluate_lww_conflict(
     incoming_nonce: Optional[bytes],
     incoming_device_id: Optional[str],
     is_incoming_tombstone: bool,
+    incoming_is_pinned: Optional[bool] = None,
 ) -> Tuple[str, str]:
     existing_ts = ensure_utc(existing.timestamp)
     inc_ts = ensure_utc(incoming_ts)
@@ -129,6 +130,8 @@ def _evaluate_lww_conflict(
             return "reject", "stale timestamp"
         else:
             if existing.ciphertext == incoming_ciphertext and existing.nonce == incoming_nonce:
+                if incoming_is_pinned is not None and existing.is_pinned != incoming_is_pinned:
+                    return "accept", "pin status updated"
                 return "noop", "identical payload and timestamp"
 
             existing_dev = existing.last_device_id or ""
@@ -185,6 +188,7 @@ async def upsert_clipboard(
                 raw_nonce,
                 caller_device_id,
                 False,
+                incoming_is_pinned=data.is_pinned,
             )
             if decision == "noop":
                 return existing, "clipboard updated", is_new, was_deleted, True

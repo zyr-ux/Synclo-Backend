@@ -11,6 +11,10 @@ from app.core.constants import (
     MIN_NONCE_LEN,
     MAX_NONCE_LEN,
     ALLOWED_BLOB_VERSIONS,
+    MIN_DEVICE_ID_LEN,
+    MAX_DEVICE_ID_LEN,
+    MIN_DEVICE_NAME_LEN,
+    MAX_DEVICE_NAME_LEN,
 )
 from app.database.models import User
 
@@ -22,13 +26,13 @@ class AuthContext:
 
 
 class DeviceRegister(BaseModel):
-    device_id: str = Field(..., min_length=1, max_length=128)
-    device_name: str = Field(..., min_length=1, max_length=128)
+    device_id: str = Field(..., min_length=MIN_DEVICE_ID_LEN, max_length=MAX_DEVICE_ID_LEN)
+    device_name: str = Field(..., min_length=MIN_DEVICE_NAME_LEN, max_length=MAX_DEVICE_NAME_LEN)
     os: Optional[str] = Field(None, max_length=32)
 
 
 class DeviceRename(BaseModel):
-    device_name: str = Field(..., min_length=1, max_length=128)
+    device_name: str = Field(..., min_length=MIN_DEVICE_NAME_LEN, max_length=MAX_DEVICE_NAME_LEN)
 
 
 class DeviceOut(BaseModel):
