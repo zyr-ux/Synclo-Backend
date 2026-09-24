@@ -171,6 +171,14 @@ def test_delta_sync_keyset_sequence_410_retention_cutoff(
         )
         assert res.status_code == 200
 
+    # Capture the change_number of item 3 via sync
+    sync_res = client.get(
+        "/api/v1/clipboard/sync", params={"since_change_number": 0}, headers=auth_headers
+    )
+    item3_cn = next(
+        e["change_number"] for e in sync_res.json()["entries"] if e["id"] == "seq_410_item_3"
+    )
+
     from app.database.engine import run_in_write_transaction
 
     # 2. Hard-purge item 1 and item 2 to simulate expired tombstones cleaned up after 30 days
@@ -184,16 +192,23 @@ def test_delta_sync_keyset_sequence_410_retention_cutoff(
     run_in_write_transaction(db_session, purge)
     db_session.expire_all()
 
-    # Client requesting since_change_number=1 (behind oldest_entry.change_number - 1) gets 410 Gone
+    # After purge, oldest surviving entry is item 3.
+    # Any since_change_number below (item3.change_number - 1) should get 410 Gone.
+    expired_cursor = item3_cn - 2
     res_expired = client.get(
-        "/api/v1/clipboard/sync", params={"since_change_number": 1}, headers=auth_headers
+        "/api/v1/clipboard/sync",
+        params={"since_change_number": expired_cursor},
+        headers=auth_headers,
     )
     assert res_expired.status_code == 410
     assert "Sync state expired" in res_expired.json()["detail"]
 
-    # Client requesting since_change_number=2 (at oldest_entry.change_number - 1) succeeds
+    # Requesting at exactly (oldest_entry.change_number - 1) succeeds
+    valid_cursor = item3_cn - 1
     res_valid = client.get(
-        "/api/v1/clipboard/sync", params={"since_change_number": 2}, headers=auth_headers
+        "/api/v1/clipboard/sync",
+        params={"since_change_number": valid_cursor},
+        headers=auth_headers,
     )
     assert res_valid.status_code == 200
     assert len(res_valid.json()["entries"]) == 1
