@@ -1,12 +1,4 @@
-"""
-Test Suite: main.py Application Lifecycle, Exception Handlers & Background Tasks
-
-Scenarios Targeted:
-1. internal_exception_handler catches unhandled exceptions and returns 500 JSON.
-2. http_exception_handler formats HTTPException as JSONResponse with matching status and detail.
-3. periodic_cleanup background loop handles tombstones across multiple users and dispatches push notifications.
-4. health_check endpoint returns server status and custom genuine server header.
-"""
+# Test Suite: Application Lifecycle, Exception Handlers & Background Tasks
 
 import asyncio
 from unittest.mock import AsyncMock, patch
@@ -19,6 +11,7 @@ from app.main import app, periodic_cleanup
 from app.services.cleanup_service import CleanupResult
 
 
+# 1. Unhandled exceptions trigger the internal exception handler returning 500 JSON.
 def test_internal_exception_handler_returns_500_json():
     router = APIRouter()
 
@@ -38,6 +31,7 @@ def test_internal_exception_handler_returns_500_json():
         ]
 
 
+# 2. HTTPException triggers the HTTP exception handler returning formatted JSON error.
 def test_http_exception_handler_returns_json_body():
     router = APIRouter()
 
@@ -57,6 +51,7 @@ def test_http_exception_handler_returns_json_body():
         ]
 
 
+# 3. Server health check endpoint returns 200 OK and genuine server header.
 def test_health_check_endpoint(client):
     res = client.get("/api/health")
     assert res.status_code == 200
@@ -64,6 +59,7 @@ def test_health_check_endpoint(client):
     assert res.headers.get("Synclo-Server") == "genuine"
 
 
+# 4. Periodic cleanup background loop broadcasts tombstones and triggers push notifications.
 @pytest.mark.asyncio
 async def test_periodic_cleanup_broadcasts_tombstones_and_triggers_push():
     sample_tombstones = [
@@ -96,7 +92,6 @@ async def test_periodic_cleanup_broadcasts_tombstones_and_triggers_push():
                         user_id="user_alpha", message={"type": "clipboard_sync", "id": "tomb_3"}
                     )
 
-                    # Distinct affected users
                     assert mock_push.call_count == 2
                     mock_push.assert_any_call(user_id="user_alpha")
                     mock_push.assert_any_call(user_id="user_beta")

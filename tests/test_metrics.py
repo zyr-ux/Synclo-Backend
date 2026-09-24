@@ -1,14 +1,4 @@
-"""
-Test Suite: Telemetry & Prometheus Metrics (/metrics)
-
-Scenarios Targeted:
-1. Endpoint accessibility and standard Prometheus/OpenMetrics exposition output format via 'GET /metrics'.
-2. Automatic HTTP request latency and throughput instrumentation across endpoints.
-3. Real-time active WebSocket client connections gauge tracking on connect and disconnect.
-4. Broadcast WebSocket event counter tracking categorized by generic event type.
-5. Push notification delivery latency histogram and outcome counter tracking.
-6. Zero-Knowledge and anonymity invariant verification (ensuring zero PII, user IDs, or tokens leak).
-"""
+# Test Suite: Telemetry & Prometheus Metrics (/metrics)
 
 from unittest.mock import AsyncMock, patch
 import httpx
@@ -18,6 +8,7 @@ from app.websockets.connection_manager import manager
 from app.services.push_service import push_service
 
 
+# 1. Endpoint accessibility and standard Prometheus/OpenMetrics exposition output format via 'GET /metrics'.
 def test_metrics_endpoint_accessible(client):
     response = client.get("/metrics")
     assert response.status_code == 200
@@ -30,6 +21,7 @@ def test_metrics_endpoint_accessible(client):
     assert "synclo_push_duration_seconds" in response.text
 
 
+# 2. Automatic HTTP request latency and throughput instrumentation across endpoints.
 def test_http_request_metrics_recorded(client):
     client.get("/api/health")
     client.get("/api/v1/salt/test@example.com")
@@ -42,6 +34,7 @@ def test_http_request_metrics_recorded(client):
     )
 
 
+# 3. Real-time active WebSocket client connections gauge and event counter tracking.
 @pytest.mark.asyncio
 async def test_websocket_active_connections_and_event_metrics():
     from app.core.metrics import ACTIVE_WEBSOCKETS, WEBSOCKET_EVENTS_TOTAL
@@ -68,13 +61,13 @@ async def test_websocket_active_connections_and_event_metrics():
     assert ACTIVE_WEBSOCKETS._value.get() == ws_gauge_before
 
 
+# 4. Push notification delivery latency histogram and outcome counter tracking.
 @pytest.mark.asyncio
 async def test_push_service_metrics_recording():
     import contextlib
     from unittest.mock import MagicMock
     from app.core.metrics import PUSH_DISPATCHES_TOTAL
 
-    # Sample baseline metrics
     success_before = PUSH_DISPATCHES_TOTAL.labels(status="success")._value.get()
     timeout_before = PUSH_DISPATCHES_TOTAL.labels(status="timeout")._value.get()
 
@@ -123,6 +116,7 @@ async def test_push_service_metrics_recording():
         assert timeout_after == timeout_before + 1
 
 
+# 5. Zero-Knowledge and anonymity invariant verification ensuring zero PII leaks into metrics.
 def test_zero_knowledge_anonymity_in_metrics(client, user_factory):
     secret_email = "supersecret_privacy_test@example.com"
     user_factory(email=secret_email)

@@ -1,11 +1,4 @@
-"""
-Unit and integration tests for periodic cleanup and background maintenance:
-- run_all_cleanup across all cleanup sub-tasks (blacklisted tokens, refresh tokens, tombstones, clipboard pruning)
-- Failure tolerance in run_all_cleanup (partial failure tracking and metrics increment)
-- periodic_cleanup lock acquisition skips when Redis lock is busy
-- periodic_cleanup dispatches tombstone broadcasts and background pushes to affected users
-- Clean task cancellation handling
-"""
+# Test Suite: Periodic Background Cleanup & Maintenance Tasks
 
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -21,12 +14,12 @@ from app.main import app, periodic_cleanup
 from app.services.cleanup_service import CleanupResult, run_all_cleanup
 
 
+# 1. End-to-end execution of all cleanup routines purging expired tokens and tombstones.
 def test_run_all_cleanup_end_to_end(db_session):
     now = datetime.now(timezone.utc)
     past = now - timedelta(days= Settings.TOMBSTONE_RETENTION_DAYS + 5)
     future = now + timedelta(days=1)
 
-    # 1. Setup User
     user = User(
         user_id="user-cleanup-all",
         email="cleanup_all@synclo.app",
@@ -39,11 +32,9 @@ def test_run_all_cleanup_end_to_end(db_session):
         sync_sequence=0,
     )
 
-    # 2. Blacklisted Tokens (1 expired, 1 active)
     bt_expired = BlacklistedToken(token="bt_expired", expiry=past)
     bt_active = BlacklistedToken(token="bt_active", expiry=future)
 
-    # 3. Refresh Tokens (1 expired, 1 active)
     rt_expired = RefreshToken(
         user_id="user-cleanup-all",
         token="rt_expired_hash",
@@ -59,7 +50,6 @@ def test_run_all_cleanup_end_to_end(db_session):
         token_id="tok-2",
     )
 
-    # 4. Tombstone past retention
     clip_old_tombstone = Clipboard(
         clipboard_id="clip-tombstone-expired",
         user_id="user-cleanup-all",
@@ -72,7 +62,6 @@ def test_run_all_cleanup_end_to_end(db_session):
         change_number=1,
     )
 
-    # 5. Stale active unpinned clipboard entry (past clipboard retention)
     clip_stale_active = Clipboard(
         clipboard_id="clip-stale-active",
         user_id="user-cleanup-all",
@@ -98,19 +87,16 @@ def test_run_all_cleanup_end_to_end(db_session):
 
     run_in_write_transaction(db_session, mutate)
 
-    # Run all cleanup
     result = run_all_cleanup(db_session)
 
     assert isinstance(result, CleanupResult)
     assert result.failures == 0
-    # The stale active clipboard should have been pruned and returned as a tombstone
     assert len(result.tombstones) == 1
     user_id, tombstone = result.tombstones[0]
     assert user_id == "user-cleanup-all"
     assert tombstone["id"] == "clip-stale-active"
     assert tombstone["is_deleted"] is True
 
-    # Direct database assertions
     remaining_bt = list(db_session.scalars(select(BlacklistedToken.token)).all())
     assert "bt_active" in remaining_bt
     assert "bt_expired" not in remaining_bt
@@ -122,16 +108,14 @@ def test_run_all_cleanup_end_to_end(db_session):
     remaining_clips = {
         c.clipboard_id: c for c in db_session.scalars(select(Clipboard)).all()
     }
-    # Expired tombstone must be purged from database
     assert "clip-tombstone-expired" not in remaining_clips
-    # Stale active entry must now be soft-deleted in DB
     assert "clip-stale-active" in remaining_clips
     assert remaining_clips["clip-stale-active"].is_deleted is True
     assert remaining_clips["clip-stale-active"].ciphertext is None
 
 
+# 2. Failure isolation tracking partial failures when a cleanup subroutine returns False.
 def test_run_all_cleanup_handles_subtask_failure(db_session, monkeypatch):
-    # Simulate an unhandled exception in one of the cleanup subroutines
     def mock_broken_tokens(db):
         return False
 
@@ -144,6 +128,7 @@ def test_run_all_cleanup_handles_subtask_failure(db_session, monkeypatch):
     assert result.failures >= 1
 
 
+# 3. Periodic cleanup loop skips execution cycle when Redis distributed lock is held.
 @pytest.mark.asyncio
 async def test_periodic_cleanup_skips_when_lock_not_acquired():
     mock_redis = AsyncMock()
@@ -153,9 +138,7 @@ async def test_periodic_cleanup_skips_when_lock_not_acquired():
 
     with patch.object(app.state, "redis", mock_redis, create=True):
         with patch("app.main._execute_cleanup") as mock_exec:
-            # Run one cycle of periodic_cleanup, then cancel sleep
             task = asyncio.create_task(periodic_cleanup())
-            # Give loop a moment to attempt acquiring lock
             await asyncio.sleep(0.01)
             task.cancel()
             try:
@@ -168,6 +151,7 @@ async def test_periodic_cleanup_skips_when_lock_not_acquired():
             mock_lock.release.assert_not_called()
 
 
+# 4. Periodic cleanup broadcasts tombstones and dispatches push notifications to affected users.
 @pytest.mark.asyncio
 async def test_periodic_cleanup_broadcasts_and_pushes_when_tombstones_found():
     mock_redis = AsyncMock()
@@ -195,6 +179,5 @@ async def test_periodic_cleanup_broadcasts_and_pushes_when_tombstones_found():
                         pass
 
                     assert mock_bcast.call_count == 2
-                    # launch_background_push called once per unique affected user
                     mock_push.assert_called_once_with(user_id="user-target-1")
                     mock_lock.release.assert_called_once()

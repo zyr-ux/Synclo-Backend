@@ -1,14 +1,4 @@
-"""
-Unit tests for ConnectionManager in app/websockets/connection_manager.py.
-
-Covers:
-- Disconnect with mismatched websocket (no-op preservation)
-- Local broadcast handling generic exceptions and cleaning up dead sockets
-- Local broadcast with exclude_device filtering
-- Disconnect device with Redis publish failure handling
-- Disconnect user with custom message and close codes (including code 4004 default envelope)
-- Active connection metrics tracking
-"""
+# Test Suite: WebSocket ConnectionManager Unit & Resilience Tests
 
 from unittest.mock import AsyncMock
 import pytest
@@ -21,6 +11,7 @@ def clean_manager():
     return ConnectionManager()
 
 
+# 1. Disconnect attempt using stale mismatched WebSocket reference acts as a no-op.
 @pytest.mark.asyncio
 async def test_disconnect_mismatched_websocket_noop(clean_manager):
     ws_current = AsyncMock()
@@ -29,16 +20,15 @@ async def test_disconnect_mismatched_websocket_noop(clean_manager):
     await clean_manager.connect("user-1", "dev-1", ws_current)
     assert clean_manager.is_device_online("user-1", "dev-1") is True
 
-    # Attempting to disconnect using a stale websocket reference must be a no-op
     clean_manager.disconnect("user-1", "dev-1", websocket=ws_stale)
     assert clean_manager.is_device_online("user-1", "dev-1") is True
 
-    # Disconnecting with the matching websocket removes it
     clean_manager.disconnect("user-1", "dev-1", websocket=ws_current)
     assert clean_manager.is_device_online("user-1", "dev-1") is False
     assert "user-1" not in clean_manager.active_connections
 
 
+# 2. Local broadcast gracefully handles serialization exceptions and cleans up broken connections.
 @pytest.mark.asyncio
 async def test_broadcast_local_generic_exception_disconnects(clean_manager):
     broken_ws = AsyncMock()
@@ -47,11 +37,11 @@ async def test_broadcast_local_generic_exception_disconnects(clean_manager):
     await clean_manager.connect("user-1", "dev-broken", broken_ws)
     assert clean_manager.is_device_online("user-1", "dev-broken") is True
 
-    # Must catch the exception, log error, and clean up the connection
     await clean_manager._broadcast_local("user-1", {"type": "test"})
     assert clean_manager.is_device_online("user-1", "dev-broken") is False
 
 
+# 3. Local broadcast filters out excluded origin device correctly.
 @pytest.mark.asyncio
 async def test_broadcast_local_exclude_device(clean_manager):
     ws1 = AsyncMock()
@@ -67,6 +57,7 @@ async def test_broadcast_local_exclude_device(clean_manager):
     ws2.send_json.assert_called_once_with(msg)
 
 
+# 4. Device disconnection handles Redis publish failure gracefully and closes socket locally.
 @pytest.mark.asyncio
 async def test_disconnect_device_redis_publish_failure(clean_manager):
     mock_redis = AsyncMock()
@@ -76,13 +67,13 @@ async def test_disconnect_device_redis_publish_failure(clean_manager):
     ws = AsyncMock()
     await clean_manager.connect("user-1", "dev-1", ws)
 
-    # Must disconnect device locally without bubbling unhandled Redis exception
     await clean_manager.disconnect_device("user-1", "dev-1")
 
     assert clean_manager.is_device_online("user-1", "dev-1") is False
     ws.close.assert_called_once_with(code=4003)
 
 
+# 5. User disconnection dispatches custom warning message and specific close code.
 @pytest.mark.asyncio
 async def test_disconnect_user_with_custom_message_and_code(clean_manager):
     ws1 = AsyncMock()
@@ -101,12 +92,12 @@ async def test_disconnect_user_with_custom_message_and_code(clean_manager):
     assert "user-1" not in clean_manager.active_connections
 
 
+# 6. User disconnection with close code 4004 auto-populates session invalidation message.
 @pytest.mark.asyncio
 async def test_disconnect_user_code_4004_auto_populates_message(clean_manager):
     ws = AsyncMock()
     await clean_manager.connect("user-1", "dev-1", ws)
 
-    # Code 4004 with message=None should send session_invalidated credentials_changed
     await clean_manager.disconnect_user("user-1", code=4004, message=None)
 
     ws.send_json.assert_called_once_with(
@@ -115,6 +106,7 @@ async def test_disconnect_user_code_4004_auto_populates_message(clean_manager):
     ws.close.assert_called_once_with(code=4004)
 
 
+# 7. Active connection tracking accurately increments and decrements connection states.
 @pytest.mark.asyncio
 async def test_active_metrics_tracking(clean_manager):
     ws1 = AsyncMock()

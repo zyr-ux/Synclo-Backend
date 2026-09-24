@@ -1,3 +1,5 @@
+# Test Suite: Zero-Knowledge Account Recovery, Key Rotation & Timing Parity
+
 import base64
 import pytest
 from sqlalchemy import select
@@ -7,6 +9,7 @@ from app.database.models import User
 from tests.conftest import generate_random_base64, make_clipboard_payload
 
 
+# 1. Zero-knowledge registration persisting mandatory recovery wrapped key and hashed verifier.
 def test_register_with_mandatory_recovery_key_and_verifier(client, db_session):
     email = "mandatory_rec@synclo.app"
     auth_key = generate_random_base64(32)
@@ -42,6 +45,7 @@ def test_register_with_mandatory_recovery_key_and_verifier(client, db_session):
     assert db_user.recovery_key_verifier.startswith("$2")
 
 
+# 2. Registration schema rejection when recovery wrapped master key is missing (422).
 def test_register_missing_recovery_key_fails(client):
     payload = {
         "email": "missing_rec_key@synclo.app",
@@ -56,6 +60,7 @@ def test_register_missing_recovery_key_fails(client):
     assert res.status_code == 422
 
 
+# 3. Registration schema rejection when recovery key verifier is missing (422).
 def test_register_missing_recovery_verifier_fails(client):
     payload = {
         "email": "missing_rec_ver@synclo.app",
@@ -70,6 +75,7 @@ def test_register_missing_recovery_verifier_fails(client):
     assert res.status_code == 422
 
 
+# 4. Recovery material endpoint returns wrapped master key without exposing secrets.
 def test_recovery_material_returns_only_wrapped_key(client, user_factory):
     user = user_factory()
     res = client.post("/api/v1/auth/recovery-material", json={"email": user["email"]})
@@ -82,12 +88,14 @@ def test_recovery_material_returns_only_wrapped_key(client, user_factory):
     assert "recovery_key_verifier" not in data
 
 
+# 5. Recovery material request with nonexistent email returns 401 generic error.
 def test_recovery_material_nonexistent_email(client):
     res = client.post("/api/v1/auth/recovery-material", json={"email": "nobody@synclo.app"})
     assert res.status_code == 401
     assert res.json()["detail"] == "Could not recover account"
 
 
+# 6. Account recovery attempt with invalid verifier returns 401 generic error.
 def test_account_recovery_invalid_verifier_rejected(client, user_factory):
     user = user_factory()
     payload = {
@@ -106,6 +114,7 @@ def test_account_recovery_invalid_verifier_rejected(client, user_factory):
     assert res.json()["detail"] == "Could not recover account"
 
 
+# 7. Account recovery preserves user's encrypted clipboard data and pinned items intact.
 def test_account_recovery_flow_preserves_clipboard(client, user_factory):
     user = user_factory()
     headers = user["headers"]
@@ -142,6 +151,7 @@ def test_account_recovery_flow_preserves_clipboard(client, user_factory):
     assert item["is_pinned"] is True
 
 
+# 8. Account recovery burns used verifier and automatically rotates recovery key material.
 def test_account_recovery_auto_rotates_recovery_key(client, user_factory):
     user = user_factory()
     old_verifier = user["recovery_key_verifier"]
@@ -163,11 +173,9 @@ def test_account_recovery_auto_rotates_recovery_key(client, user_factory):
     res1 = client.post("/api/v1/auth/recover", json=recover_payload_1)
     assert res1.status_code == 200
 
-    # Burning verification: old verifier must be rejected
     res_burned = client.post("/api/v1/auth/recover", json=recover_payload_1)
     assert res_burned.status_code == 401
 
-    # New verifier must succeed on next recovery
     new_verifier_2 = generate_random_base64(32)
     recover_payload_2 = {
         "email": user["email"],
@@ -184,6 +192,7 @@ def test_account_recovery_auto_rotates_recovery_key(client, user_factory):
     assert res2.status_code == 200
 
 
+# 9. Account recovery schema rejection when new rotation key material is omitted (422).
 def test_account_recovery_missing_new_recovery_key_fails(client, user_factory):
     user = user_factory()
     payload = {
@@ -199,6 +208,7 @@ def test_account_recovery_missing_new_recovery_key_fails(client, user_factory):
     assert res.status_code == 422
 
 
+# 10. Account recovery terminates existing sessions and revokes all active refresh tokens.
 def test_account_recovery_revokes_old_sessions(client, user_factory):
     user = user_factory()
     dev1_refresh = user["refresh_token"]
@@ -229,7 +239,6 @@ def test_account_recovery_revokes_old_sessions(client, user_factory):
     res_rec = client.post("/api/v1/auth/recover", json=recover_payload)
     assert res_rec.status_code == 200
 
-    # Old refresh tokens should fail
     ref1 = client.post("/api/v1/refresh", json={"refresh_token": dev1_refresh})
     assert ref1.status_code == 401
 
@@ -237,6 +246,7 @@ def test_account_recovery_revokes_old_sessions(client, user_factory):
     assert ref2.status_code == 401
 
 
+# 11. Authenticated manual recovery key rotation updates material and invalidates old verifier.
 def test_manual_recovery_key_rotation_endpoint(client, user_factory):
     user = user_factory()
     old_verifier = user["recovery_key_verifier"]
@@ -254,12 +264,10 @@ def test_manual_recovery_key_rotation_endpoint(client, user_factory):
     assert res_rotate.status_code == 200
     assert res_rotate.json()["message"] == "Recovery key regenerated and updated successfully"
 
-    # Verify recovery material endpoint returns new wrapped key
     res_mat = client.post("/api/v1/auth/recovery-material", json={"email": user["email"]})
     assert res_mat.status_code == 200
     assert res_mat.json()["recovery_wrapped_master_key"] == new_wrapped
 
-    # Verify old verifier no longer works
     fail_payload = {
         "email": user["email"],
         "recovery_key_verifier": old_verifier,
@@ -273,7 +281,6 @@ def test_manual_recovery_key_rotation_endpoint(client, user_factory):
     }
     assert client.post("/api/v1/auth/recover", json=fail_payload).status_code == 401
 
-    # Verify new verifier works
     succ_payload = {
         "email": user["email"],
         "recovery_key_verifier": new_verifier,
@@ -288,6 +295,7 @@ def test_manual_recovery_key_rotation_endpoint(client, user_factory):
     assert client.post("/api/v1/auth/recover", json=succ_payload).status_code == 200
 
 
+# 12. Manual recovery key rotation endpoint rejects unauthenticated requests (401).
 def test_manual_recovery_key_rotation_unauthenticated(client):
     res = client.post(
         "/api/v1/auth/recovery-key/rotate",
@@ -299,6 +307,7 @@ def test_manual_recovery_key_rotation_unauthenticated(client):
     assert res.status_code == 401
 
 
+# 13. Password change rotates recovery wrapped master key and updates verifier.
 def test_password_change_rotates_recovery_key_and_verifier(client, user_factory):
     user = user_factory()
     old_verifier = user["recovery_key_verifier"]
@@ -318,12 +327,10 @@ def test_password_change_rotates_recovery_key_and_verifier(client, user_factory)
     res = client.post("/api/v1/password/change", json=change_payload, headers=user["headers"])
     assert res.status_code == 200
 
-    # Recovery material now returns new wrapped key
     res_mat = client.post("/api/v1/auth/recovery-material", json={"email": user["email"]})
     assert res_mat.status_code == 200
     assert res_mat.json()["recovery_wrapped_master_key"] == new_wrapped
 
-    # Old verifier rejected
     res_old = client.post(
         "/api/v1/auth/recover",
         json={
@@ -340,7 +347,6 @@ def test_password_change_rotates_recovery_key_and_verifier(client, user_factory)
     )
     assert res_old.status_code == 401
 
-    # New verifier accepted
     res_new = client.post(
         "/api/v1/auth/recover",
         json={
@@ -358,6 +364,7 @@ def test_password_change_rotates_recovery_key_and_verifier(client, user_factory)
     assert res_new.status_code == 200
 
 
+# 14. Password change preserves existing recovery material when optional rotation fields omitted.
 def test_password_change_preserves_recovery_key(client, user_factory):
     user = user_factory()
     orig_verifier = user["recovery_key_verifier"]
@@ -373,7 +380,6 @@ def test_password_change_preserves_recovery_key(client, user_factory):
     res = client.post("/api/v1/password/change", json=change_payload, headers=user["headers"])
     assert res.status_code == 200
 
-    # Original verifier still valid for recovery
     res_rec = client.post(
         "/api/v1/auth/recover",
         json={
@@ -391,6 +397,7 @@ def test_password_change_preserves_recovery_key(client, user_factory):
     assert res_rec.status_code == 200
 
 
+# 15. Password change rejects partial recovery key rotation fields (400).
 def test_password_change_partial_recovery_fields_rejected(client, user_factory):
     user = user_factory()
     base_payload = {
@@ -410,6 +417,7 @@ def test_password_change_partial_recovery_fields_rejected(client, user_factory):
     assert res2.status_code == 400
 
 
+# 16. Password change rejects incorrect current password auth key (401).
 def test_password_change_wrong_current_password_rejected(client, user_factory):
     user = user_factory()
     change_payload = {
@@ -424,6 +432,7 @@ def test_password_change_wrong_current_password_rejected(client, user_factory):
     assert res.json()["detail"] == "Incorrect current password"
 
 
+# 17. Account recovery validates base64 formatting, min lengths, and supported KDF version.
 def test_recovery_validation_failures(client, user_factory):
     user = user_factory()
     base_valid = {
@@ -454,6 +463,7 @@ def test_recovery_validation_failures(client, user_factory):
     assert client.post("/api/v1/auth/recover", json=bad_kdf).status_code == 400
 
 
+# 18. Account recovery immediately terminates active WebSocket connections with code 4004.
 def test_recovery_disconnects_active_websockets(client, user_factory):
     user = user_factory()
     token = user["access_token"]
@@ -484,6 +494,7 @@ def test_recovery_disconnects_active_websockets(client, user_factory):
         assert exc_info.value.code == 4004
 
 
+# 19. Dummy verifier check enforces timing parity to prevent user enumeration via recovery.
 @pytest.mark.slow
 def test_recovery_nonexistent_email_timing_parity(client, user_factory):
     import time
@@ -491,7 +502,6 @@ def test_recovery_nonexistent_email_timing_parity(client, user_factory):
     user = user_factory()
     invalid_verifier = generate_random_base64(32)
 
-    # 1. Existing user with wrong verifier (computes real bcrypt.checkpw against user's stored hash)
     payload_existing = {
         "email": user["email"],
         "recovery_key_verifier": invalid_verifier,
@@ -509,7 +519,6 @@ def test_recovery_nonexistent_email_timing_parity(client, user_factory):
     assert res1.status_code == 401
     assert res1.json()["detail"] == "Could not recover account"
 
-    # 2. Nonexistent user (must run dummy bcrypt.checkpw to preserve timing parity)
     payload_nonexistent = {
         "email": "nonexistent_recovery_target@synclo.app",
         "recovery_key_verifier": invalid_verifier,
@@ -527,7 +536,6 @@ def test_recovery_nonexistent_email_timing_parity(client, user_factory):
     assert res2.status_code == 401
     assert res2.json()["detail"] == "Could not recover account"
 
-    # Both paths must execute bcrypt (wall time > 10ms) and finish within 3.0x of each other
     assert t_existing > 0.01
     assert t_nonexistent > 0.01
     ratio = max(t_existing, t_nonexistent) / min(t_existing, t_nonexistent)
@@ -535,4 +543,3 @@ def test_recovery_nonexistent_email_timing_parity(client, user_factory):
         f"Timing divergence ratio {ratio:.2f} exceeded 3.0x limit "
         f"(existing={t_existing:.4f}s, nonexistent={t_nonexistent:.4f}s)"
     )
-

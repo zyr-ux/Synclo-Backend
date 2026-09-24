@@ -2,7 +2,7 @@ import base64
 import datetime
 import os
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fastapi_limiter
 import fastapi_limiter.depends
@@ -17,7 +17,6 @@ from sqlalchemy.pool import StaticPool
 from app.database.engine import Base, SessionLocal, configure_sqlite_engine, get_db
 from app.main import app
 
-# Early Mocking of Redis and FastAPILimiter
 mock_redis_client = AsyncMock()
 
 mock_pubsub = MagicMock()
@@ -63,7 +62,6 @@ def engine():
 
 @pytest.fixture(autouse=True)
 def setup_test_db(engine):
-    """Recreate tables before each test to ensure complete test isolation."""
     SessionLocal.configure(bind=engine)
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -83,8 +81,6 @@ def db_session(engine):
 
 @pytest.fixture
 def client(db_session):
-    from unittest.mock import patch
-
     app.dependency_overrides[get_db] = lambda: db_session
     with patch("alembic.command.upgrade"):
         with TestClient(app) as test_client:
@@ -94,8 +90,6 @@ def client(db_session):
 
 @pytest.fixture
 def user_factory(client):
-    """Helper factory to register unique test users."""
-
     def _create_user(
         email=None,
         username="testuser",
@@ -157,47 +151,34 @@ def user_factory(client):
 
 @pytest.fixture
 def auth_user(user_factory):
-    """Provides a default registered and authenticated user."""
     return user_factory()
 
 
 @pytest.fixture
 def auth_headers(auth_user):
-    """Provides authorization headers for the default user."""
     return auth_user["headers"]
-
-
-# Helper Fixtures
 
 
 @pytest.fixture
 def random_base64():
-    """Provides factory function to generate random base64 strings."""
     return generate_random_base64
 
 
 @pytest.fixture
 def now_iso():
-    """Provides function to return current UTC ISO 8601 string."""
     return utc_now_iso
 
 
 @pytest.fixture
 def clip_payload():
-    """Provides factory function to build clipboard payloads."""
     return make_clipboard_payload
 
 
-# Helper Functions
-
-
 def generate_random_base64(length=32):
-    """Generate a random base64-encoded string of the given byte length."""
     return base64.b64encode(os.urandom(length)).decode("utf-8")
 
 
 def utc_now_iso():
-    """Return the current UTC time as an ISO 8601 string with 'Z' suffix."""
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
@@ -210,7 +191,6 @@ def make_clipboard_payload(
     timestamp=None,
     pinned_at=None,
 ):
-    """Build a clipboard sync payload dict with random encrypted fields."""
     payload = {
         "id": clip_id,
         "ciphertext": generate_random_base64(32),

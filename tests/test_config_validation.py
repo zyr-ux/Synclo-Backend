@@ -1,14 +1,4 @@
-"""
-Test Suite: Configuration & Settings Startup Guards
-
-Scenarios Targeted:
-1. Rejection of missing SECRET_KEY at module load time.
-2. Rejection of short SECRET_KEY (< 32 characters).
-3. Rejection of unsupported JWT signing algorithm.
-4. Rejection of missing REFRESH_TOKEN_HASH_KEY.
-5. Rejection of short REFRESH_TOKEN_HASH_KEY (< 16 characters).
-6. Rejection of missing push providers configuration file.
-"""
+# Test Suite: Configuration & Settings Startup Guards
 
 import os
 from pathlib import Path
@@ -31,18 +21,21 @@ def _run_config_import_subprocess(env_overrides: dict[str, str]) -> subprocess.C
     )
 
 
+# 1. Rejection of missing SECRET_KEY at module load time.
 def test_settings_rejects_missing_secret_key():
     res = _run_config_import_subprocess({"SECRET_KEY": ""})
     assert res.returncode != 0
     assert "SECRET_KEY environment variable is required for token signing" in res.stderr
 
 
+# 2. Rejection of short SECRET_KEY (< 32 characters).
 def test_settings_rejects_short_secret_key():
     res = _run_config_import_subprocess({"SECRET_KEY": "short_secret"})
     assert res.returncode != 0
     assert "SECRET_KEY must be at least 32 characters long" in res.stderr
 
 
+# 3. Rejection of unsupported JWT signing algorithm.
 def test_settings_rejects_unsupported_algorithm():
     res = _run_config_import_subprocess(
         {"SECRET_KEY": "a" * 32, "ALGORITHM": "RS256"}
@@ -51,6 +44,7 @@ def test_settings_rejects_unsupported_algorithm():
     assert "Unsupported JWT signing algorithm: RS256" in res.stderr
 
 
+# 4. Rejection of missing REFRESH_TOKEN_HASH_KEY.
 def test_settings_rejects_missing_refresh_token_hash_key():
     res = _run_config_import_subprocess(
         {"SECRET_KEY": "a" * 32, "REFRESH_TOKEN_HASH_KEY": ""}
@@ -59,6 +53,7 @@ def test_settings_rejects_missing_refresh_token_hash_key():
     assert "REFRESH_TOKEN_HASH_KEY environment variable is required" in res.stderr
 
 
+# 5. Rejection of short REFRESH_TOKEN_HASH_KEY (< 16 characters).
 def test_settings_rejects_short_refresh_token_hash_key():
     res = _run_config_import_subprocess(
         {"SECRET_KEY": "a" * 32, "REFRESH_TOKEN_HASH_KEY": "too_short"}
@@ -67,49 +62,47 @@ def test_settings_rejects_short_refresh_token_hash_key():
     assert "REFRESH_TOKEN_HASH_KEY must be at least 16 characters long" in res.stderr
 
 
+# 6. Rejection of missing push providers configuration file.
 def test_load_allowed_push_domains_missing_file_raises():
     with pytest.raises(RuntimeError, match="Push providers configuration file not found"):
         _load_allowed_push_domains(Path("non_existent_push_providers_path.json"))
 
 
+# 7. Rejection of out-of-bounds or non-integer ACCESS_TOKEN_EXPIRE_MINUTES.
 def test_settings_rejects_invalid_access_token_expire_minutes():
     valid_keys = {"SECRET_KEY": "a" * 32, "REFRESH_TOKEN_HASH_KEY": "b" * 16}
 
-    # Non-integer
     res = _run_config_import_subprocess({**valid_keys, "ACCESS_TOKEN_EXPIRE_MINUTES": "not_an_int"})
     assert res.returncode != 0
     assert "ACCESS_TOKEN_EXPIRE_MINUTES must be an integer" in res.stderr
 
-    # Lower bound (< 1)
     res = _run_config_import_subprocess({**valid_keys, "ACCESS_TOKEN_EXPIRE_MINUTES": "0"})
     assert res.returncode != 0
     assert "ACCESS_TOKEN_EXPIRE_MINUTES must be between 1 and 60 minutes" in res.stderr
 
-    # Upper bound (> 60)
     res = _run_config_import_subprocess({**valid_keys, "ACCESS_TOKEN_EXPIRE_MINUTES": "61"})
     assert res.returncode != 0
     assert "ACCESS_TOKEN_EXPIRE_MINUTES must be between 1 and 60 minutes" in res.stderr
 
 
+# 8. Rejection of out-of-bounds or non-integer REFRESH_TOKEN_EXPIRE_DAYS.
 def test_settings_rejects_invalid_refresh_token_expire_days():
     valid_keys = {"SECRET_KEY": "a" * 32, "REFRESH_TOKEN_HASH_KEY": "b" * 16}
 
-    # Non-integer
     res = _run_config_import_subprocess({**valid_keys, "REFRESH_TOKEN_EXPIRE_DAYS": "invalid"})
     assert res.returncode != 0
     assert "REFRESH_TOKEN_EXPIRE_DAYS must be an integer" in res.stderr
 
-    # Lower bound (< 1)
     res = _run_config_import_subprocess({**valid_keys, "REFRESH_TOKEN_EXPIRE_DAYS": "0"})
     assert res.returncode != 0
     assert "REFRESH_TOKEN_EXPIRE_DAYS must be between 1 and 365 days" in res.stderr
 
-    # Upper bound (> 365)
     res = _run_config_import_subprocess({**valid_keys, "REFRESH_TOKEN_EXPIRE_DAYS": "366"})
     assert res.returncode != 0
     assert "REFRESH_TOKEN_EXPIRE_DAYS must be between 1 and 365 days" in res.stderr
 
 
+# 9. Acceptance of valid token expiry boundary limits.
 def test_settings_accepts_valid_token_expiry_bounds():
     valid_keys = {
         "SECRET_KEY": "a" * 32,
@@ -121,6 +114,7 @@ def test_settings_accepts_valid_token_expiry_bounds():
     assert res.returncode == 0
 
 
+# 10. Acceptance of zero CLIPBOARD_RETENTION_DAYS for unlimited retention.
 def test_settings_accepts_zero_clipboard_retention_days():
     valid_keys = {
         "SECRET_KEY": "a" * 32,
@@ -131,6 +125,7 @@ def test_settings_accepts_zero_clipboard_retention_days():
     assert res.returncode == 0
 
 
+# 11. Rejection of negative CLIPBOARD_RETENTION_DAYS value.
 def test_settings_rejects_negative_clipboard_retention_days():
     valid_keys = {
         "SECRET_KEY": "a" * 32,
@@ -140,4 +135,3 @@ def test_settings_rejects_negative_clipboard_retention_days():
     res = _run_config_import_subprocess(valid_keys)
     assert res.returncode != 0
     assert "CLIPBOARD_RETENTION_DAYS must be at least 0 days" in res.stderr
-

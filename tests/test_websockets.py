@@ -1,14 +1,4 @@
-"""
-Test Suite: Real-Time WebSocket Synchronization & Event Broadcasting
-
-Scenarios Targeted:
-1. WebSocket connection lifecycle and heartbeat ping/pong message exchange.
-2. Synchronous clipboard creation via WebSocket receiving server acknowledgment ({'type': 'ack'}).
-3. Live broadcast of display username changes across connected client devices.
-4. Live broadcast of email address updates across connected client devices.
-5. Live multi-device clipboard sync propagation from device 1 to device 2.
-6. Connection rejection (error frame / close 1008) when authentication credentials are missing.
-"""
+# Test Suite: Real-Time WebSocket Synchronization & Event Broadcasting
 
 import time
 from datetime import timedelta
@@ -27,7 +17,6 @@ _MAX_WS_RECV_ATTEMPTS = 50
 
 
 def _receive_non_ping(ws):
-    """Receive the next non-ping message, with a guard against infinite loops."""
     for _ in range(_MAX_WS_RECV_ATTEMPTS):
         msg = ws.receive_json()
         if msg.get("type") == "ping":
@@ -37,23 +26,23 @@ def _receive_non_ping(ws):
     raise TimeoutError(f"Did not receive a non-ping message after {_MAX_WS_RECV_ATTEMPTS} attempts")
 
 
+# 1. WebSocket connection lifecycle and heartbeat ping/pong message exchange.
 def test_websocket_connect_and_ping(client, auth_user):
     token = auth_user["access_token"]
     with client.websocket_connect(
         "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
     ) as ws:
-        # Send ping
         ws.send_json({"type": "ping"})
         response = _receive_non_ping(ws)
         assert response.get("type") == "pong"
 
 
+# 2. Synchronous clipboard creation via WebSocket receiving server acknowledgment.
 def test_websocket_clipboard_sync_event(client, auth_user):
     token = auth_user["access_token"]
     with client.websocket_connect(
         "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
     ) as ws:
-        # Send clipboard item over websocket
         clip_id = "ws_clip_item_01"
         ws.send_json(make_clipboard_payload(clip_id))
         resp = _receive_non_ping(ws)
@@ -61,11 +50,10 @@ def test_websocket_clipboard_sync_event(client, auth_user):
         assert resp.get("id") == clip_id
 
 
+# 3. Live broadcast of display username changes across connected client devices.
 def test_websocket_broadcast_on_username_update(client, user_factory):
-    # Setup user with 2 devices
     user = user_factory(username="orig_name")
 
-    # Register device 2
     dev2_res = client.post(
         "/api/v1/login",
         json={
@@ -78,11 +66,9 @@ def test_websocket_broadcast_on_username_update(client, user_factory):
     )
     token_dev2 = dev2_res.json()["access_token"]
 
-    # Device 2 connects to WebSocket
     with client.websocket_connect(
         "/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}
     ) as ws_dev2:
-        # Device 1 updates username via REST
         resp_update = client.put(
             "/api/v1/user/username",
             json={"username": "broadcasted_name"},
@@ -90,12 +76,12 @@ def test_websocket_broadcast_on_username_update(client, user_factory):
         )
         assert resp_update.status_code == 200
 
-        # Device 2 should receive username_updated broadcast
         msg = _receive_non_ping(ws_dev2)
         assert msg.get("type") == "username_updated"
         assert msg.get("username") == "broadcasted_name"
 
 
+# 4. Live broadcast of email address updates across connected client devices.
 def test_websocket_broadcast_on_email_update(client, user_factory):
     user = user_factory()
     dev2_res = client.post(
@@ -126,6 +112,7 @@ def test_websocket_broadcast_on_email_update(client, user_factory):
         assert msg.get("email") == new_email
 
 
+# 5. Live multi-device clipboard sync propagation from device 1 to device 2.
 def test_websocket_clipboard_broadcast_to_other_devices(client, user_factory):
     user = user_factory()
     dev2_res = client.post(
@@ -149,13 +136,13 @@ def test_websocket_clipboard_broadcast_to_other_devices(client, user_factory):
             ack = _receive_non_ping(ws1)
             assert ack.get("type") == "ack"
 
-            # Device 2 should receive broadcast
             broadcast_msg = _receive_non_ping(ws2)
             assert broadcast_msg.get("type") == "clipboard_sync"
             assert broadcast_msg.get("id") == clip_id
             assert broadcast_msg.get("is_deleted") is False
 
 
+# 6. Disconnection of replaced socket does not remove active replacement socket.
 def test_replaced_websocket_disconnect_does_not_remove_current_connection():
     from unittest.mock import MagicMock
     from app.websockets.connection_manager import ConnectionManager
@@ -170,6 +157,7 @@ def test_replaced_websocket_disconnect_does_not_remove_current_connection():
     assert manager.active_connections["user"]["device"] is new_socket
 
 
+# 7. Connection rejection (close code 1008) when authentication credentials are missing.
 def test_websocket_rejects_missing_auth(client):
     from starlette.websockets import WebSocketDisconnect
 
@@ -182,12 +170,12 @@ def test_websocket_rejects_missing_auth(client):
         assert exc_info.value.code == 1008
 
 
+# 8. Connection rejection (close code 4001) when access token is expired upon handshake.
 def test_websocket_rejects_expired_token(client, auth_user):
     from starlette.websockets import WebSocketDisconnect
     from app.services.auth import create_access_token
     import datetime
 
-    # Create an expired token (-1 minute)
     expired_token = create_access_token(
         data={"sub": auth_user["email"], "device_id": auth_user["device_id"]},
         expires_delta=datetime.timedelta(minutes=-1),
@@ -196,7 +184,6 @@ def test_websocket_rejects_expired_token(client, auth_user):
     with client.websocket_connect(
         "/ws/v1/sync", headers={"Authorization": f"Bearer {expired_token}"}
     ) as ws:
-        # Should be rejected
         msg = ws.receive_json()
         assert msg.get("type") == "error"
         with pytest.raises(WebSocketDisconnect) as exc_info:
@@ -204,13 +191,13 @@ def test_websocket_rejects_expired_token(client, auth_user):
         assert exc_info.value.code == 4001
 
 
+# 9. Connection rejection (close code 1008) when access token is blacklisted.
 def test_websocket_rejects_blacklisted_token(client, auth_user):
     from starlette.websockets import WebSocketDisconnect
 
     token = auth_user["access_token"]
     refresh_token = auth_user["refresh_token"]
 
-    # Logout to blacklist the access token
     res_logout = client.post(
         "/api/v1/logout",
         json={"refresh_token": refresh_token},
@@ -218,7 +205,6 @@ def test_websocket_rejects_blacklisted_token(client, auth_user):
     )
     assert res_logout.status_code == 200
 
-    # Attempt to connect to WebSocket with the blacklisted token
     with client.websocket_connect(
         "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
     ) as ws:
@@ -230,6 +216,7 @@ def test_websocket_rejects_blacklisted_token(client, auth_user):
         assert exc_info.value.code == 1008
 
 
+# 10. Live broadcast of clipboard pin state update across connected client devices.
 def test_websocket_broadcast_on_pin_update(client, user_factory):
     user = user_factory()
     dev2_res = client.post(
@@ -250,13 +237,11 @@ def test_websocket_broadcast_on_pin_update(client, user_factory):
     with client.websocket_connect(
         "/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}
     ) as ws2:
-        # Device 1 pins the clipboard item
         res = client.patch(
             f"/api/v1/clipboard/{clip_id}/pin", json={"is_pinned": True}, headers=user["headers"]
         )
         assert res.status_code == 200
 
-        # Device 2 should receive the clipboard_pin broadcast
         msg = _receive_non_ping(ws2)
         assert msg.get("type") == "clipboard_pin"
         assert msg.get("id") == clip_id
@@ -265,6 +250,7 @@ def test_websocket_broadcast_on_pin_update(client, user_factory):
         assert msg.get("updated_at") is not None
 
 
+# 11. Live broadcast of device rename across connected client devices.
 def test_websocket_broadcast_on_device_rename(client, user_factory):
     user = user_factory()
     dev2_res = client.post(
@@ -282,7 +268,6 @@ def test_websocket_broadcast_on_device_rename(client, user_factory):
     with client.websocket_connect(
         "/ws/v1/sync", headers={"Authorization": f"Bearer {token_dev2}"}
     ) as ws2:
-        # Device 1 renames device 2 (or its own device)
         res = client.patch(
             f"/api/v1/devices/{user['device_id']}",
             json={"device_name": "Desktop Beast"},
@@ -290,7 +275,6 @@ def test_websocket_broadcast_on_device_rename(client, user_factory):
         )
         assert res.status_code == 200
 
-        # Device 2 should receive the device_updated broadcast
         msg = _receive_non_ping(ws2)
         assert msg.get("type") == "device_updated"
         device_info = msg.get("device")
@@ -300,6 +284,7 @@ def test_websocket_broadcast_on_device_rename(client, user_factory):
         assert device_info.get("os") == user["os"]
 
 
+# 12. Remote device disconnection command publishes to Redis channel.
 @pytest.mark.asyncio
 async def test_disconnect_device_distributed_via_redis():
     import json
@@ -325,6 +310,7 @@ async def test_disconnect_device_distributed_via_redis():
     assert envelope["sender"] == mgr._node_id
 
 
+# 13. Local device disconnection sends device_deleted frame and closes socket with code 4003.
 @pytest.mark.asyncio
 async def test_disconnect_device_local_closes_socket():
     from unittest.mock import AsyncMock
@@ -346,6 +332,7 @@ async def test_disconnect_device_local_closes_socket():
     assert "d1" not in mgr.active_connections.get("u1", {})
 
 
+# 14. REST device deletion terminates target device WebSocket with close code 4003.
 def test_device_deletion_closes_websocket_with_4003(client, user_factory):
     user = user_factory()
     dev2_res = client.post(
@@ -373,6 +360,7 @@ def test_device_deletion_closes_websocket_with_4003(client, user_factory):
             assert exc.code == 4003
 
 
+# 15. Duplicate clipboard write over WebSocket returns ack and suppresses push notification.
 def test_websocket_duplicate_write_noop_suppresses_push(client, auth_user, monkeypatch):
     from unittest.mock import MagicMock
     import app.websockets.websocket_endpoints as ws_endpoints
@@ -386,32 +374,28 @@ def test_websocket_duplicate_write_noop_suppresses_push(client, auth_user, monke
     with client.websocket_connect(
         "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
     ) as ws:
-        # First write
         ws.send_json(payload)
         resp1 = _receive_non_ping(ws)
         assert resp1.get("type") == "ack"
         assert mock_push.call_count == 1
 
-        # Duplicate write (same payload & timestamp)
         ws.send_json(payload)
         resp2 = _receive_non_ping(ws)
         assert resp2.get("type") == "ack"
-        # Push should NOT be called again
         assert mock_push.call_count == 1
 
 
+# 16. Soft-delete tombstone synchronization over WebSocket converts database record.
 def test_websocket_soft_delete_event(client, auth_user):
     token = auth_user["access_token"]
     clip_id = "ws_delete_clip_item"
 
-    # 1. Create active item via REST
     client.post(
         "/api/v1/clipboard",
         json=make_clipboard_payload(clip_id, timestamp="2026-09-04T10:00:00Z"),
         headers=auth_user["headers"],
     )
 
-    # 2. Connect to WebSocket and send soft-delete payload
     del_payload = {
         "id": clip_id,
         "ciphertext": None,
@@ -429,25 +413,23 @@ def test_websocket_soft_delete_event(client, auth_user):
         assert ack.get("type") == "ack"
         assert ack.get("id") == clip_id
 
-    # 3. Verify item is soft-deleted
     res_get = client.get(f"/api/v1/clipboard/{clip_id}", headers=auth_user["headers"])
     assert res_get.status_code == 200
     assert res_get.json()["is_deleted"] is True
     assert res_get.json()["ciphertext"] is None
 
 
+# 17. Stale write rejection over WebSocket returning conflict error when payload timestamp is older.
 def test_websocket_conflict_stale_write_rejected(client, auth_user):
     token = auth_user["access_token"]
     clip_id = "ws_conflict_item"
 
-    # 1. Write active item at T2
     client.post(
         "/api/v1/clipboard",
         json=make_clipboard_payload(clip_id, timestamp="2026-09-04T12:00:00Z"),
         headers=auth_user["headers"],
     )
 
-    # 2. Connect to WebSocket and attempt stale write at older T1
     stale_payload = make_clipboard_payload(clip_id, timestamp="2026-09-04T11:00:00Z")
     with client.websocket_connect(
         "/ws/v1/sync", headers={"Authorization": f"Bearer {token}"}
@@ -460,6 +442,7 @@ def test_websocket_conflict_stale_write_rejected(client, auth_user):
         assert "conflict" in resp.get("message", "").lower()
 
 
+# 18. Handshake rejection with code 1008 when mandatory JWT claims are missing.
 def test_ws_auth_missing_required_token_claims(client):
     token = jwt.encode(
         {"sub": "test@synclo.app", "device_id": "dev-1", "exp": int(time.time()) + 300},
@@ -479,6 +462,7 @@ def test_ws_auth_missing_required_token_claims(client):
         assert exc.value.code == 1008
 
 
+# 19. WebSocket error response when received clipboard payload lacks required fields.
 def test_ws_invalid_clipboard_payload_missing_fields(client, auth_user):
     token = auth_user["access_token"]
     with client.websocket_connect(
@@ -490,6 +474,7 @@ def test_ws_invalid_clipboard_payload_missing_fields(client, auth_user):
         assert "Missing required fields" in msg.get("message", "")
 
 
+# 20. WebSocket error response when received clipboard payload has malformed schema fields.
 def test_ws_invalid_clipboard_payload_schema_malformed(client, auth_user):
     token = auth_user["access_token"]
     with client.websocket_connect(
@@ -508,6 +493,7 @@ def test_ws_invalid_clipboard_payload_schema_malformed(client, auth_user):
         assert "Invalid payload:" in msg.get("message", "")
 
 
+# 21. Device deletion during active WebSocket session terminates socket with code 4003 on next write.
 def test_ws_device_deleted_mid_session(client, auth_user, db_session):
     token = auth_user["access_token"]
     device_id = auth_user["device_id"]
@@ -541,8 +527,8 @@ def test_ws_device_deleted_mid_session(client, auth_user, db_session):
         assert exc.value.code == 4003
 
 
+# 22. Device deletion between handshake and initial clipboard write aborts session with code 4003.
 def test_ws_device_deleted_between_auth_and_first_clipboard_write(client, auth_user, db_session):
-    """Verify device deletion immediately after WebSocket handshake aborts first clipboard write."""
     token = auth_user["access_token"]
     device_id = auth_user["device_id"]
 
@@ -565,6 +551,7 @@ def test_ws_device_deleted_between_auth_and_first_clipboard_write(client, auth_u
         assert exc.value.code == 4003
 
 
+# 23. Mid-session token expiration disconnects socket with code 4001 upon next frame.
 def test_ws_token_expired_mid_session(client, auth_user):
     short_token = create_access_token(
         {

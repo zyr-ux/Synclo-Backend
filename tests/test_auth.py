@@ -1,16 +1,4 @@
-"""
-Test Suite: Authentication, Zero-Knowledge Key Exchange & Account Lifecycle
-
-Scenarios Targeted:
-1. Zero-knowledge registration and multi-device login returning E2EE key material.
-2. Duplicate email registration rejection (409 Conflict).
-3. Public pre-login salt & KDF version retrieval via '/api/v1/auth/salt'.
-4. User profile inspection via authenticated 'GET /api/v1/user'.
-5. In-place username update via 'PUT /api/v1/user/username' and profile persistence.
-6. Email update workflow including same-email rejection (400), collision (409), and token re-issuance.
-7. Refresh token rotation and session renewal via '/api/v1/refresh'.
-8. Hard account deletion via 'DELETE /api/v1/delete' and immediate token invalidation (401).
-"""
+# Test Suite: Authentication, Zero-Knowledge Key Exchange & Account Lifecycle
 
 import base64
 from datetime import datetime, timedelta, timezone
@@ -35,6 +23,7 @@ from app.utilities.crypto_utils import hash_refresh_token
 from tests.conftest import generate_random_base64
 
 
+# 1. Zero-knowledge registration and multi-device login returning E2EE key material.
 def test_user_registration_success(client):
     email = "register_test@synclo.app"
     auth_key = generate_random_base64(32)
@@ -63,7 +52,6 @@ def test_user_registration_success(client):
     assert "refresh_token" in data
     assert data["username"] == "tester"
 
-    # Verify login returns TokenWithE2EE containing kdf_version and keys
     login_res = client.post(
         "/api/v1/login",
         json={
@@ -81,6 +69,7 @@ def test_user_registration_success(client):
     assert "salt" in login_data
 
 
+# 2. Independent user registrations sharing the same physical device ID.
 def test_device_id_can_be_shared_by_different_users(client, user_factory):
     shared_device_id = "shared_hardware_device"
     first_user = user_factory(email="first_shared@synclo.app", device_id=shared_device_id)
@@ -90,10 +79,10 @@ def test_device_id_can_be_shared_by_different_users(client, user_factory):
     assert second_user["access_token"]
 
 
+# 3. Duplicate email registration rejection (409 Conflict).
 def test_duplicate_user_registration_fails(client, user_factory):
     user_factory(email="dup@synclo.app")
 
-    # Try registering again with the same email
     payload = {
         "email": "dup@synclo.app",
         "username": "another_name",
@@ -111,6 +100,7 @@ def test_duplicate_user_registration_fails(client, user_factory):
     assert res.status_code == 409
 
 
+# 4. Public pre-login salt & KDF version retrieval via '/api/v1/auth/salt'.
 def test_get_salt(client, user_factory):
     email = "salt_test@synclo.app"
     user_factory(email=email)
@@ -122,6 +112,7 @@ def test_get_salt(client, user_factory):
     assert data["kdf_version"] == 1
 
 
+# 5. User profile inspection via authenticated 'GET /api/v1/user'.
 def test_get_user_profile(client, auth_user):
     res = client.get("/api/v1/user", headers=auth_user["headers"])
     assert res.status_code == 200
@@ -132,6 +123,7 @@ def test_get_user_profile(client, auth_user):
     assert profile["kdf_version"] == 1
 
 
+# 6. In-place username update via 'PUT /api/v1/user/username' and profile persistence.
 def test_update_username(client, auth_user):
     res = client.put(
         "/api/v1/user/username",
@@ -141,16 +133,15 @@ def test_update_username(client, auth_user):
     assert res.status_code == 200
     assert res.json()["username"] == "new_awesome_name"
 
-    # Verify profile reflects the new username
     res_prof = client.get("/api/v1/user", headers=auth_user["headers"])
     assert res_prof.json()["username"] == "new_awesome_name"
 
 
+# 7. Email update workflow including same-email rejection (400), collision (409), and token re-issuance.
 def test_update_email_flow(client, user_factory):
     user_a = user_factory(email="user_a@synclo.app")
     user_factory(email="user_b@synclo.app")
 
-    # 1. Same email rejection -> 400
     res_same = client.put(
         "/api/v1/user/email",
         json={"email": "user_a@synclo.app"},
@@ -158,7 +149,6 @@ def test_update_email_flow(client, user_factory):
     )
     assert res_same.status_code == 400
 
-    # 2. Existing User B email conflict -> 409
     res_conflict = client.put(
         "/api/v1/user/email",
         json={"email": "user_b@synclo.app"},
@@ -166,7 +156,6 @@ def test_update_email_flow(client, user_factory):
     )
     assert res_conflict.status_code == 409
 
-    # 3. Successful email update -> 200
     new_email = "user_a_new@synclo.app"
     res_update = client.put(
         "/api/v1/user/email",
@@ -178,17 +167,16 @@ def test_update_email_flow(client, user_factory):
     assert data["email"] == new_email
     new_token = data["access_token"]
 
-    # 4. Profile check with new token
     res_prof = client.get("/api/v1/user", headers={"Authorization": f"Bearer {new_token}"})
     assert res_prof.status_code == 200
     assert res_prof.json()["email"] == new_email
 
 
+# 8. Authentication failure on invalid password auth_key, nonexistent email, or malformed base64 (401).
 def test_login_with_invalid_credentials_fails(client, user_factory):
     email = "neg_auth_test@synclo.app"
     u = user_factory(email=email)
 
-    # 1. Invalid auth_key (wrong password key) -> 401
     wrong_key = generate_random_base64(32)
     res_wrong_pw = client.post(
         "/api/v1/login",
@@ -200,7 +188,6 @@ def test_login_with_invalid_credentials_fails(client, user_factory):
     )
     assert res_wrong_pw.status_code == 401
 
-    # 2. Non-existent email -> 401
     res_no_user = client.post(
         "/api/v1/login",
         json={
@@ -211,7 +198,6 @@ def test_login_with_invalid_credentials_fails(client, user_factory):
     )
     assert res_no_user.status_code == 401
 
-    # 3. Malformed base64 auth_key -> 401
     res_bad_b64 = client.post(
         "/api/v1/login",
         json={
@@ -223,6 +209,7 @@ def test_login_with_invalid_credentials_fails(client, user_factory):
     assert res_bad_b64.status_code == 401
 
 
+# 9. Refresh token rotation and session renewal via '/api/v1/refresh'.
 def test_refresh_token_flow(client, auth_user):
     refresh_tok = auth_user["refresh_token"]
     res = client.post("/api/v1/refresh", json={"refresh_token": refresh_tok})
@@ -232,42 +219,39 @@ def test_refresh_token_flow(client, auth_user):
     assert "refresh_token" in data
     new_access_token = data["access_token"]
 
-    # Verify new access token works
     res_prof = client.get("/api/v1/user", headers={"Authorization": f"Bearer {new_access_token}"})
     assert res_prof.status_code == 200
 
 
+# 10. Refresh token reuse detection terminating the entire token family.
 def test_refresh_token_reuse_revokes_entire_token_family(client, auth_user):
     r1 = auth_user["refresh_token"]
 
-    # 1. Normal refresh: R1 -> R2 (R1 becomes revoked)
     res1 = client.post("/api/v1/refresh", json={"refresh_token": r1})
     assert res1.status_code == 200
     r2 = res1.json()["refresh_token"]
 
-    # 2. Attacker / replay attempt with old R1 -> should detect reuse and revoke entire family
     res_reuse = client.post("/api/v1/refresh", json={"refresh_token": r1})
     assert res_reuse.status_code == 401
     assert "Refresh token reused" in res_reuse.json()["detail"]
 
-    # 3. Legitimate client tries to use R2 -> should also fail because family was terminated
     res_victim = client.post("/api/v1/refresh", json={"refresh_token": r2})
     assert res_victim.status_code == 401
 
 
+# 11. Hard account deletion via 'DELETE /api/v1/delete' and immediate token invalidation (401).
 def test_account_deletion(client, auth_user):
     res = client.delete("/api/v1/delete", headers=auth_user["headers"])
     assert res.status_code == 200
 
-    # Authenticated routes should now fail as user is deleted
     res_prof = client.get("/api/v1/user", headers=auth_user["headers"])
     assert res_prof.status_code == 401
 
 
+# 12. Password change session epoch increment invalidating access tokens and active WebSockets across devices.
 def test_password_change_increments_epoch_and_invalidates_all_tokens(client, user_factory):
     user = user_factory()
 
-    # Log in as Device 2
     dev2_res = client.post(
         "/api/v1/login",
         json={
@@ -279,11 +263,9 @@ def test_password_change_increments_epoch_and_invalidates_all_tokens(client, use
     token_dev2 = dev2_res.json()["access_token"]
     headers_dev2 = {"Authorization": f"Bearer {token_dev2}"}
 
-    # Verify Device 2 can access /api/v1/user
     res_before = client.get("/api/v1/user", headers=headers_dev2)
     assert res_before.status_code == 200
 
-    # Device 1 changes password
     new_auth_key = generate_random_base64(32)
     change_payload = {
         "old_auth_key": user["auth_key"],
@@ -299,23 +281,21 @@ def test_password_change_increments_epoch_and_invalidates_all_tokens(client, use
     )
     assert res_change.status_code == 200
 
-    # Device 2's token must be rejected because its epoch is stale
     res_after = client.get("/api/v1/user", headers=headers_dev2)
     assert res_after.status_code == 401
     assert "session revoked" in res_after.json()["detail"].lower()
 
-    # Device 2's WebSocket attempt with old token must be closed with code 4004
     with client.websocket_connect("/ws/v1/sync", headers=headers_dev2) as ws:
         frame = ws.receive_json()
         assert frame["type"] == "session_invalidated"
 
 
+# 13. Token rejection when missing mandatory session epoch claim (401).
 def test_token_without_epoch_claim_rejected(client, auth_user):
     from datetime import datetime, timezone
     import jwt
     from app.services.auth import SECRET_KEY, ALGORITHM
 
-    # Create a token without epoch
     payload = {
         "sub": auth_user["email"],
         "device_id": auth_user["device_id"],
@@ -326,6 +306,7 @@ def test_token_without_epoch_claim_rejected(client, auth_user):
     assert res.status_code == 401
 
 
+# 14. Password change invalidating existing refresh tokens across all user devices.
 def test_password_change_revokes_all_device_refresh_tokens(client, user_factory):
     user = user_factory()
     dev2_res = client.post(
@@ -339,7 +320,6 @@ def test_password_change_revokes_all_device_refresh_tokens(client, user_factory)
     assert dev2_res.status_code == 200
     dev2_refresh_token = dev2_res.json()["refresh_token"]
 
-    # Device 1 changes password
     new_auth_key = generate_random_base64(32)
     change_payload = {
         "old_auth_key": user["auth_key"],
@@ -355,12 +335,12 @@ def test_password_change_revokes_all_device_refresh_tokens(client, user_factory)
     )
     assert res_change.status_code == 200
 
-    # Device 2 attempts refresh with old refresh token -> must be rejected
     res_refresh = client.post("/api/v1/refresh", json={"refresh_token": dev2_refresh_token})
     assert res_refresh.status_code == 401
     assert "session terminated" in res_refresh.json()["detail"].lower()
 
 
+# 15. Email change invalidating refresh tokens belonging to other devices.
 def test_email_change_revokes_other_device_refresh_tokens(client, user_factory):
     user = user_factory()
     dev2_res = client.post(
@@ -387,6 +367,7 @@ def test_email_change_revokes_other_device_refresh_tokens(client, user_factory):
     assert res_refresh.status_code == 401
 
 
+# 16. Concurrent refresh token race handling ensuring at most one rotation succeeds.
 def test_concurrent_refresh_token_race(client, tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     from sqlalchemy import create_engine
@@ -401,7 +382,6 @@ def test_concurrent_refresh_token_race(client, tmp_path):
     Base.metadata.create_all(bind=file_engine)
     FileSession = sessionmaker(bind=file_engine)
 
-    # Set up user and initial token
     init_db = FileSession()
     user = User(
         user_id="user_race",
@@ -445,7 +425,6 @@ def test_concurrent_refresh_token_race(client, tmp_path):
         statuses = [res1.status_code, res2.status_code]
         success_count = statuses.count(200)
         fail_count = statuses.count(401)
-        # At most one should succeed; token reuse / race condition yields 401
         assert success_count + fail_count == 2
         assert success_count <= 1
     finally:
@@ -456,22 +435,22 @@ def test_concurrent_refresh_token_race(client, tmp_path):
         file_engine.dispose()
 
 
+# 17. Cross-user logout attempt isolation preventing unauthorized token revocation.
 def test_logout_with_another_users_refresh_token_does_not_affect_victim(client, user_factory):
     user_a = user_factory()
     user_b = user_factory()
 
-    # User A tries to log out passing User B's refresh token
     res = client.post(
         "/api/v1/logout", json={"refresh_token": user_b["refresh_token"]}, headers=user_a["headers"]
     )
     assert res.status_code == 200
 
-    # Verify User B's refresh token remains active and can be used
     res_b_refresh = client.post("/api/v1/refresh", json={"refresh_token": user_b["refresh_token"]})
     assert res_b_refresh.status_code == 200
     assert "access_token" in res_b_refresh.json()
 
 
+# 18. AuthContext contract integrity verifying strongly typed context without User instance monkey-patching.
 def test_get_auth_context_structure_and_no_monkey_patching(client, auth_user, db_session):
     from app.services.auth import get_auth_context
     from app.database.schemas import AuthContext
@@ -485,13 +464,13 @@ def test_get_auth_context_structure_and_no_monkey_patching(client, auth_user, db
     assert auth_ctx.user.email == expected_email
     assert auth_ctx.device_id == expected_device_id
 
-    # Invariant: No monkey-patching of current_device_id on SQLAlchemy User instance
     assert (
         not hasattr(auth_ctx.user, "current_device_id")
         or getattr(auth_ctx.user, "current_device_id", None) is None
     )
 
 
+# 19. Explicit session logout marking refresh tokens revoked and triggering reuse detection on replay.
 def test_logout_revokes_token_and_detects_reuse(client, user_factory, db_session):
     from app.database.models import RefreshToken
     from app.services.auth import hash_refresh_token
@@ -500,21 +479,18 @@ def test_logout_revokes_token_and_detects_reuse(client, user_factory, db_session
     refresh_token = user["refresh_token"]
     hashed_token = hash_refresh_token(refresh_token)
 
-    # 1. Verify token exists and is active
     token_record = db_session.scalars(
         select(RefreshToken).where(RefreshToken.token == hashed_token)
     ).first()
     assert token_record is not None
     assert token_record.is_revoked is False
 
-    # 2. Call logout
     res_logout = client.post(
         "/api/v1/logout", json={"refresh_token": refresh_token}, headers=user["headers"]
     )
     assert res_logout.status_code == 200
     assert res_logout.json()["message"] == "Logged out successfully"
 
-    # 3. Verify record was marked is_revoked=True instead of being deleted
     db_session.expire_all()
     token_record_after = db_session.scalars(
         select(RefreshToken).where(RefreshToken.token == hashed_token)
@@ -522,19 +498,18 @@ def test_logout_revokes_token_and_detects_reuse(client, user_factory, db_session
     assert token_record_after is not None
     assert token_record_after.is_revoked is True
 
-    # 4. Attempt to reuse the logged-out refresh token -> triggers reuse detection
     res_reuse = client.post("/api/v1/refresh", json={"refresh_token": refresh_token})
     assert res_reuse.status_code == 401
     assert "Refresh token reused" in res_reuse.json()["detail"]
 
 
+# 20. Log redaction filter sanitizing PII and plain email addresses across log records.
 def test_logging_redacts_emails():
     import logging
     from app.core.logging_config import RedactingFilter
 
     redactor = RedactingFilter()
 
-    # Formatted string message
     record1 = logging.LogRecord(
         name="test",
         level=logging.WARNING,
@@ -548,7 +523,6 @@ def test_logging_redacts_emails():
     assert "secret_user@example.com" not in record1.msg
     assert "[REDACTED]" in record1.msg
 
-    # Argument-interpolated message
     record2 = logging.LogRecord(
         name="test",
         level=logging.WARNING,
@@ -562,7 +536,6 @@ def test_logging_redacts_emails():
     assert "another_user@domain.co.uk" not in record2.msg
     assert "[REDACTED]" in record2.msg
 
-    # Direct helper test
     from app.core.logging_config import RedactingFilter
 
     assert (
@@ -572,14 +545,13 @@ def test_logging_redacts_emails():
     assert RedactingFilter.redact(123) == 123
 
 
+# 21. Request schema field bounds validation across mutating auth and device payloads (422).
 def test_schema_field_bounds_validation(client, auth_headers):
-    # 1. DeviceRename: device_name max_length=128 (129 chars should fail)
     res_rename = client.patch(
         "/api/v1/devices/dev-1", json={"device_name": "A" * 129}, headers=auth_headers
     )
     assert res_rename.status_code == 422
 
-    # 2. PasswordChange: old_auth_key max_length=512 (513 chars should fail)
     res_pwd = client.post(
         "/api/v1/password/change",
         json={
@@ -593,7 +565,6 @@ def test_schema_field_bounds_validation(client, auth_headers):
     )
     assert res_pwd.status_code == 422
 
-    # 3. PasswordChange: new_kdf_version out of bounds (> 100 should fail)
     res_kdf = client.post(
         "/api/v1/password/change",
         json={
@@ -607,7 +578,6 @@ def test_schema_field_bounds_validation(client, auth_headers):
     )
     assert res_kdf.status_code == 422
 
-    # 4. AccountRecoveryRequest: recovery_key_verifier max_length=512 (513 chars should fail)
     res_recover = client.post(
         "/api/v1/auth/recover",
         json={
@@ -624,6 +594,7 @@ def test_schema_field_bounds_validation(client, auth_headers):
     assert res_recover.status_code == 422
 
 
+# 22. Endpoint security audit verifying RateLimiter dependency attachment on all mutating routes.
 def test_all_mutating_endpoints_enforce_rate_limiting():
     from fastapi.routing import APIRoute
     from app.main import app
@@ -632,7 +603,6 @@ def test_all_mutating_endpoints_enforce_rate_limiting():
     for route in app.routes:
         if not isinstance(route, APIRoute):
             continue
-        # Check all sensitive write endpoints under /api/v1
         if (
             route.path.startswith("/api/v1")
             and route.methods
@@ -652,11 +622,7 @@ def test_all_mutating_endpoints_enforce_rate_limiting():
     )
 
 
-# =====================================================================
-# Auth Primitives & Edge Cases
-# =====================================================================
-
-
+# 23. Access token minting with default 15-minute expiry and initial session epoch.
 def test_create_access_token_default_expiry_and_epoch():
     data = {"sub": "user@synclo.app", "device_id": "dev-1"}
     token = create_access_token(data)
@@ -669,10 +635,10 @@ def test_create_access_token_default_expiry_and_epoch():
     exp = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
     now = datetime.now(timezone.utc)
     delta = exp - now
-    # Default is 15 minutes; allow slight clock leeway
     assert 13 * 60 <= delta.total_seconds() <= 16 * 60
 
 
+# 24. Access token minting with custom expiry timedelta and explicit session epoch.
 def test_create_access_token_custom_expiry_and_explicit_epoch():
     custom_delta = timedelta(hours=2)
     data = {"sub": "user@synclo.app", "device_id": "dev-2", "epoch": 7}
@@ -686,6 +652,7 @@ def test_create_access_token_custom_expiry_and_explicit_epoch():
     assert 118 * 60 <= delta.total_seconds() <= 122 * 60
 
 
+# 25. Refresh token generation storing SHA-256 hash and UUID token identifier.
 def test_create_refresh_token_stores_hash_and_auto_uuid(db_session):
     user_id = "test-user-id"
     device_id = "test-dev-id"
@@ -695,24 +662,20 @@ def test_create_refresh_token_stores_hash_and_auto_uuid(db_session):
     assert isinstance(plain_token, str)
     assert len(plain_token) > 32
 
-    # Find the inserted token in the session
-    rt_records = [
-        item for item in db_session.new if isinstance(item, RefreshToken)
-    ]
+    rt_records = [item for item in db_session.new if isinstance(item, RefreshToken)]
     assert len(rt_records) == 1
     rt = rt_records[0]
 
-    # Invariant: Plaintext token must NEVER be stored in the DB (Zero-Knowledge rule)
     assert rt.token != plain_token
     assert rt.token == hash_refresh_token(plain_token)
     assert rt.user_id == user_id
     assert rt.device_id == device_id
     assert rt.is_revoked is False
 
-    # Auto-generated token_id should be a valid UUID
     UUID(rt.token_id, version=4)
 
 
+# 26. Refresh token generation retaining explicit token family identifier for rotation.
 def test_create_refresh_token_with_explicit_token_id(db_session):
     explicit_id = "family-rotation-id-123"
     create_refresh_token(
@@ -722,9 +685,7 @@ def test_create_refresh_token_with_explicit_token_id(db_session):
         token_id=explicit_id,
     )
 
-    rt_records = [
-        item for item in db_session.new if isinstance(item, RefreshToken)
-    ]
+    rt_records = [item for item in db_session.new if isinstance(item, RefreshToken)]
     assert any(rt.token_id == explicit_id for rt in rt_records)
 
 
@@ -754,35 +715,47 @@ def _setup_user_and_device(db_session, email="alice@synclo.app", epoch=1):
     run_in_write_transaction(db_session, mutate)
 
 
+# 27. Valid access token resolution returning complete user and device authentication context.
 def test_get_auth_context_valid(db_session):
     _setup_user_and_device(db_session, email="valid_auth@synclo.app", epoch=1)
-    token = create_access_token({"sub": "valid_auth@synclo.app", "device_id": "dev-auth-ctx", "epoch": 1})
+    token = create_access_token(
+        {"sub": "valid_auth@synclo.app", "device_id": "dev-auth-ctx", "epoch": 1}
+    )
 
     ctx = get_auth_context(token=token, db=db_session)
     assert ctx.user.email == "valid_auth@synclo.app"
     assert ctx.device_id == "dev-auth-ctx"
 
 
+# 28. Token validation rejection when mandatory JWT claims ('sub', 'exp', 'epoch') are missing (401).
 def test_get_auth_context_missing_claims(db_session):
-    # Missing sub
-    tok_no_sub = jwt.encode({"device_id": "dev-1", "epoch": 1, "exp": 9999999999}, SECRET_KEY, algorithm=ALGORITHM)
+    tok_no_sub = jwt.encode(
+        {"device_id": "dev-1", "epoch": 1, "exp": 9999999999}, SECRET_KEY, algorithm=ALGORITHM
+    )
     with pytest.raises(HTTPException) as exc1:
         get_auth_context(token=tok_no_sub, db=db_session)
     assert exc1.value.status_code == 401
 
-    # Missing exp
-    tok_no_exp = jwt.encode({"sub": "user@synclo.app", "device_id": "dev-1", "epoch": 1}, SECRET_KEY, algorithm=ALGORITHM)
+    tok_no_exp = jwt.encode(
+        {"sub": "user@synclo.app", "device_id": "dev-1", "epoch": 1},
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
     with pytest.raises(HTTPException) as exc2:
         get_auth_context(token=tok_no_exp, db=db_session)
     assert exc2.value.status_code == 401
 
-    # Missing epoch
-    tok_no_epoch = jwt.encode({"sub": "user@synclo.app", "device_id": "dev-1", "exp": 9999999999}, SECRET_KEY, algorithm=ALGORITHM)
+    tok_no_epoch = jwt.encode(
+        {"sub": "user@synclo.app", "device_id": "dev-1", "exp": 9999999999},
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
     with pytest.raises(HTTPException) as exc3:
         get_auth_context(token=tok_no_epoch, db=db_session)
     assert exc3.value.status_code == 401
 
 
+# 29. Explicitly blacklisted access token rejection during authentication context resolution (401).
 def test_get_auth_context_blacklisted_token(db_session):
     token = create_access_token({"sub": "user@synclo.app", "device_id": "dev-1", "epoch": 1})
 
@@ -802,6 +775,7 @@ def test_get_auth_context_blacklisted_token(db_session):
     assert "Token has been revoked" in exc.value.detail
 
 
+# 30. Token validation rejection when the subject user does not exist in the database (401).
 def test_get_auth_context_user_not_found(db_session):
     token = create_access_token({"sub": "nonexistent@synclo.app", "device_id": "dev-1", "epoch": 1})
     with pytest.raises(HTTPException) as exc:
@@ -809,10 +783,12 @@ def test_get_auth_context_user_not_found(db_session):
     assert exc.value.status_code == 401
 
 
+# 31. Stale token rejection when token epoch does not match current user session epoch (401).
 def test_get_auth_context_epoch_mismatch(db_session):
     _setup_user_and_device(db_session, email="epoch_test@synclo.app", epoch=2)
-    # Token issued under epoch 1, but user is currently on epoch 2
-    stale_token = create_access_token({"sub": "epoch_test@synclo.app", "device_id": "dev-auth-ctx", "epoch": 1})
+    stale_token = create_access_token(
+        {"sub": "epoch_test@synclo.app", "device_id": "dev-auth-ctx", "epoch": 1}
+    )
 
     with pytest.raises(HTTPException) as exc:
         get_auth_context(token=stale_token, db=db_session)
@@ -820,9 +796,9 @@ def test_get_auth_context_epoch_mismatch(db_session):
     assert "Session revoked, please re-authenticate" in exc.value.detail
 
 
+# 32. Token rejection when device ID does not belong to the authenticated user (403).
 def test_get_auth_context_unauthorized_device(db_session):
     _setup_user_and_device(db_session, email="device_test@synclo.app", epoch=1)
-    # Token issued for a device that does not belong to the user
     foreign_dev_token = create_access_token(
         {"sub": "device_test@synclo.app", "device_id": "non_existent_device", "epoch": 1}
     )
@@ -833,27 +809,25 @@ def test_get_auth_context_unauthorized_device(db_session):
     assert "Unauthorized device" in exc.value.detail
 
 
+# 33. Cryptographic base64 blob validation accepting payloads within exact min/max length boundaries.
 def test_decode_and_validate_blob_boundaries():
-    # Exactly 16 bytes
     b16 = base64.b64encode(b"0" * 16).decode("utf-8")
     res16 = decode_and_validate_blob(b16, min_len=16, max_len=32, field_name="boundary_field")
     assert len(res16) == 16
 
-    # Exactly 32 bytes
     b32 = base64.b64encode(b"0" * 32).decode("utf-8")
     res32 = decode_and_validate_blob(b32, min_len=16, max_len=32, field_name="boundary_field")
     assert len(res32) == 32
 
 
+# 34. Cryptographic base64 blob validation rejecting under- or oversized payloads (400).
 def test_decode_and_validate_blob_out_of_bounds():
-    # Below min (15 bytes when min is 16)
     b15 = base64.b64encode(b"0" * 15).decode("utf-8")
     with pytest.raises(HTTPException) as exc_low:
         decode_and_validate_blob(b15, min_len=16, max_len=32, field_name="low_field")
     assert exc_low.value.status_code == 400
     assert "low_field length out of bounds" in exc_low.value.detail
 
-    # Above max (33 bytes when max is 32)
     b33 = base64.b64encode(b"0" * 33).decode("utf-8")
     with pytest.raises(HTTPException) as exc_high:
         decode_and_validate_blob(b33, min_len=16, max_len=32, field_name="high_field")
@@ -861,13 +835,17 @@ def test_decode_and_validate_blob_out_of_bounds():
     assert "high_field length out of bounds" in exc_high.value.detail
 
 
+# 35. Cryptographic base64 blob validation rejecting invalid base64 encoding (400).
 def test_decode_and_validate_blob_invalid_base64():
     with pytest.raises(HTTPException) as exc:
-        decode_and_validate_blob("not-valid-base64!@@#", min_len=1, max_len=64, field_name="salt_field")
+        decode_and_validate_blob(
+            "not-valid-base64!@@#", min_len=1, max_len=64, field_name="salt_field"
+        )
     assert exc.value.status_code == 400
     assert "Invalid base64 encoding for salt_field" in exc.value.detail
 
 
+# 36. Password change validation rejecting undersized new auth key (400).
 def test_password_change_rejects_undersized_new_auth_key(client, user_factory):
     user = user_factory()
     change_payload = {
@@ -882,6 +860,7 @@ def test_password_change_rejects_undersized_new_auth_key(client, user_factory):
     assert "auth_key length out of bounds" in res.json()["detail"]
 
 
+# 37. Password change validation rejecting undersized new salt (400).
 def test_password_change_rejects_undersized_new_salt(client, user_factory):
     user = user_factory()
     change_payload = {
@@ -896,9 +875,9 @@ def test_password_change_rejects_undersized_new_salt(client, user_factory):
     assert "salt length out of bounds" in res.json()["detail"]
 
 
+# 38. Password change validation rejecting out-of-bounds encrypted master key blobs (400 / 422).
 def test_password_change_rejects_oversized_encrypted_master_key(client, user_factory):
     user = user_factory()
-    # Undersized encrypted master key (< MIN_MK_LEN=16) triggers endpoint runtime validation
     payload_low = {
         "old_auth_key": user["auth_key"],
         "new_auth_key": generate_random_base64(32),
@@ -910,7 +889,6 @@ def test_password_change_rejects_oversized_encrypted_master_key(client, user_fac
     assert res_low.status_code == 400
     assert "encrypted_master_key length out of bounds" in res_low.json()["detail"]
 
-    # Oversized string exceeding schema max_length triggers Pydantic 422
     payload_high = {
         "old_auth_key": user["auth_key"],
         "new_auth_key": generate_random_base64(32),
@@ -922,6 +900,7 @@ def test_password_change_rejects_oversized_encrypted_master_key(client, user_fac
     assert res_high.status_code == 422
 
 
+# 39. Password change validation rejecting unsupported KDF version (400).
 def test_password_change_rejects_unsupported_kdf_version(client, user_factory):
     user = user_factory()
     change_payload = {
@@ -936,6 +915,7 @@ def test_password_change_rejects_unsupported_kdf_version(client, user_factory):
     assert "Unsupported kdf_version" in res.json()["detail"]
 
 
+# 40. Login endpoint validation rejecting undersized device identifier (400).
 def test_login_rejects_device_id_too_short(client, user_factory):
     user = user_factory()
     res = client.post(
@@ -950,6 +930,7 @@ def test_login_rejects_device_id_too_short(client, user_factory):
     assert "device_id length out of bounds" in res.json()["detail"]
 
 
+# 41. Login endpoint validation rejecting oversized device identifier (422).
 def test_login_rejects_device_id_too_long(client, user_factory):
     user = user_factory()
     res = client.post(
@@ -963,8 +944,8 @@ def test_login_rejects_device_id_too_long(client, user_factory):
     assert res.status_code == 422
 
 
+# 42. Registration endpoint validation enforcing device identifier length boundaries (400 / 422).
 def test_register_rejects_device_id_boundaries(client):
-    # Length 2 passes Pydantic (min_length=1) but fails endpoint runtime check (MIN_DEVICE_ID_LEN=3)
     res_short = client.post(
         "/api/v1/register",
         json={
@@ -980,7 +961,6 @@ def test_register_rejects_device_id_boundaries(client):
     assert res_short.status_code == 400
     assert "device_id length out of bounds" in res_short.json()["detail"]
 
-    # Length > 128 fails Pydantic schema validation
     res_long = client.post(
         "/api/v1/register",
         json={
@@ -996,6 +976,7 @@ def test_register_rejects_device_id_boundaries(client):
     assert res_long.status_code == 422
 
 
+# 43. Database integrity constraint check guaranteeing salt column non-nullability.
 def test_get_salt_guard_is_unreachable_due_to_not_null_constraint(db_session):
     from sqlalchemy.exc import IntegrityError
 

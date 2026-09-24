@@ -1,14 +1,4 @@
-"""
-Test Suite: Server-Side Age-Based Clipboard Retention & Auto-Pruning
-
-Scenarios Targeted:
-1. Expired unpinned items older than CLIPBOARD_RETENTION_DAYS (based on updated_at) are soft-deleted into tombstones.
-2. Pinned items are strictly immune to age-based pruning even if months old.
-3. Unpinning an old item resets updated_at, granting a fresh 30-day lifecycle (grace period).
-4. Setting CLIPBOARD_RETENTION_DAYS=0 disables age-based pruning.
-5. REST writes trigger auto-pruning and broadcast deletion tombstones for expired items.
-6. Global background cleanup (prune_all_users_clipboard) prunes expired entries across all users.
-"""
+# Test Suite: Server-Side Age-Based Clipboard Retention & Auto-Pruning
 
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -21,15 +11,15 @@ from app.services.clipboard_service import prune_user_clipboard, prune_all_users
 from tests.conftest import generate_random_base64
 
 
+# 1. Soft-delete unpinned clipboard items older than retention limit into tombstones.
 def test_age_based_pruning_soft_deletes_expired_items(client, auth_user, db_session):
     user = db_session.scalars(select(User).where(User.email == auth_user["email"])).first()
     user_id = user.user_id
 
     now = datetime.now(timezone.utc)
-    old_time = now - timedelta(days=35)  # 35 days old (> 30 days retention)
-    recent_time = now - timedelta(days=5)  # 5 days old (< 30 days retention)
+    old_time = now - timedelta(days=35)
+    recent_time = now - timedelta(days=5)
 
-    # Insert an expired unpinned item directly into DB
     old_id = str(uuid4())
     old_item = Clipboard(
         clipboard_id=old_id,
@@ -44,7 +34,6 @@ def test_age_based_pruning_soft_deletes_expired_items(client, auth_user, db_sess
     )
     db_session.add(old_item)
 
-    # Insert a recent unpinned item
     recent_id = str(uuid4())
     recent_item = Clipboard(
         clipboard_id=recent_id,
@@ -60,14 +49,12 @@ def test_age_based_pruning_soft_deletes_expired_items(client, auth_user, db_sess
     db_session.add(recent_item)
     db_session.commit()
 
-    # Run pruning with 30-day retention
     tombstones = prune_user_clipboard(user_id, db_session, retention_days=30)
     assert len(tombstones) == 1
     assert tombstones[0]["id"] == old_id
     assert tombstones[0]["is_deleted"] is True
     assert tombstones[0]["ciphertext"] is None
 
-    # Verify DB state
     db_old = db_session.scalars(select(Clipboard).where(Clipboard.clipboard_id == old_id)).first()
     assert db_old.is_deleted is True
     assert db_old.ciphertext is None
@@ -78,11 +65,11 @@ def test_age_based_pruning_soft_deletes_expired_items(client, auth_user, db_sess
     assert db_recent.ciphertext == b"recent_cipher"
 
 
+# 2. Pinned items remain strictly immune to age-based pruning regardless of age.
 def test_pinned_items_immune_to_age_based_pruning(client, auth_user, db_session):
     user = db_session.scalars(select(User).where(User.email == auth_user["email"])).first()
     user_id = user.user_id
 
-    # Item is 90 days old, but pinned
     now = datetime.now(timezone.utc)
     old_time = now - timedelta(days=90)
 
@@ -111,6 +98,7 @@ def test_pinned_items_immune_to_age_based_pruning(client, auth_user, db_session)
     assert db_item.is_pinned is True
 
 
+# 3. Unpinning an old item resets updated_at timestamp granting a fresh retention lifecycle.
 def test_unpinning_grants_fresh_lifecycle_grace_period(client, auth_user, db_session):
     headers = auth_user["headers"]
     user = db_session.scalars(select(User).where(User.email == auth_user["email"])).first()
@@ -119,7 +107,6 @@ def test_unpinning_grants_fresh_lifecycle_grace_period(client, auth_user, db_ses
     now = datetime.now(timezone.utc)
     created_time = now - timedelta(days=60)
 
-    # 1. Create a 60-day old pinned item
     cid = str(uuid4())
     item = Clipboard(
         clipboard_id=cid,
@@ -136,15 +123,12 @@ def test_unpinning_grants_fresh_lifecycle_grace_period(client, auth_user, db_ses
     db_session.add(item)
     db_session.commit()
 
-    # 2. Unpin the item via API (which updates updated_at to now)
     unpin_res = client.patch(
         f"/api/v1/clipboard/{cid}/pin", json={"is_pinned": False}, headers=headers
     )
     assert unpin_res.status_code == 200
 
-    # 3. Run pruning with 30-day retention
     tombstones = prune_user_clipboard(user_id, db_session, retention_days=30)
-    # Item must NOT be pruned because its updated_at was refreshed to now
     assert len(tombstones) == 0
 
     active_item = db_session.scalars(select(Clipboard).where(Clipboard.clipboard_id == cid)).first()
@@ -152,13 +136,14 @@ def test_unpinning_grants_fresh_lifecycle_grace_period(client, auth_user, db_ses
     assert active_item.is_pinned is False
 
 
+# 4. Updating an existing clipboard item refreshes updated_at and extends retention.
 def test_update_clipboard_resets_updated_at_and_extends_retention(client, auth_user, db_session):
     headers = auth_user["headers"]
     user = db_session.scalars(select(User).where(User.email == auth_user["email"])).first()
     user_id = user.user_id
 
     now = datetime.now(timezone.utc)
-    old_time = now - timedelta(days=25)  # 25 days old (approaching 30 days retention limit)
+    old_time = now - timedelta(days=25)
 
     cid = str(uuid4())
     item = Clipboard(
@@ -175,7 +160,6 @@ def test_update_clipboard_resets_updated_at_and_extends_retention(client, auth_u
     db_session.add(item)
     db_session.commit()
 
-    # Update the item via POST /api/v1/clipboard (which resets updated_at to now)
     new_payload = {
         "id": cid,
         "ciphertext": generate_random_base64(32),
@@ -188,20 +172,18 @@ def test_update_clipboard_resets_updated_at_and_extends_retention(client, auth_u
     assert update_res.status_code == 200
     assert update_res.json()["status"] == "clipboard updated"
 
-    # Run pruning with 30-day retention
     tombstones = prune_user_clipboard(user_id, db_session, retention_days=30)
     assert len(tombstones) == 0
 
-    # Ensure item remains active and not deleted
     db_item = db_session.scalars(select(Clipboard).where(Clipboard.clipboard_id == cid)).first()
     assert db_item.is_deleted is False
 
 
+# 5. Setting retention days to zero disables age-based pruning.
 def test_zero_retention_days_disables_pruning(client, auth_user, db_session):
     user = db_session.scalars(select(User).where(User.email == auth_user["email"])).first()
     user_id = user.user_id
 
-    # 100-day old unpinned item
     now = datetime.now(timezone.utc)
     old_time = now - timedelta(days=100)
 
@@ -220,7 +202,6 @@ def test_zero_retention_days_disables_pruning(client, auth_user, db_session):
     db_session.add(item)
     db_session.commit()
 
-    # Retention days = 0 (disabled)
     tombstones = prune_user_clipboard(user_id, db_session, retention_days=0)
     assert len(tombstones) == 0
 
@@ -228,12 +209,12 @@ def test_zero_retention_days_disables_pruning(client, auth_user, db_session):
     assert db_item.is_deleted is False
 
 
+# 6. REST write endpoint triggers inline pruning and broadcasts tombstone events.
 def test_write_clipboard_triggers_age_pruning_and_broadcast(client, auth_user, db_session):
     headers = auth_user["headers"]
     user = db_session.scalars(select(User).where(User.email == auth_user["email"])).first()
     user_id = user.user_id
 
-    # Insert an expired entry in DB
     now = datetime.now(timezone.utc)
     old_time = now - timedelta(days=Settings.CLIPBOARD_RETENTION_DAYS + 5)
     expired_id = str(uuid4())
@@ -251,7 +232,6 @@ def test_write_clipboard_triggers_age_pruning_and_broadcast(client, auth_user, d
     db_session.add(expired_item)
     db_session.commit()
 
-    # Now write a new item via API
     new_id = str(uuid4())
     payload = {
         "id": new_id,
@@ -268,7 +248,6 @@ def test_write_clipboard_triggers_age_pruning_and_broadcast(client, auth_user, d
         res = client.post("/api/v1/clipboard", json=payload, headers=headers)
         assert res.status_code == 200
 
-        # Broadcast should have been called for the tombstone
         called_messages = [
             call.kwargs.get("message") or call.args[1] for call in mock_broadcast.call_args_list
         ]
@@ -277,12 +256,12 @@ def test_write_clipboard_triggers_age_pruning_and_broadcast(client, auth_user, d
         ]
         assert len(tombstone_events) >= 1
 
-    # Verify expired item is tombstoned
     tombstone = db_session.scalars(select(Clipboard).where(Clipboard.clipboard_id == expired_id)).first()
     assert tombstone.is_deleted is True
     assert tombstone.ciphertext is None
 
 
+# 7. Global multi-user pruning maintenance purges expired entries across all users.
 def test_prune_all_users_clipboard_maintenance(client, auth_user, db_session):
     user = db_session.scalars(select(User).where(User.email == auth_user["email"])).first()
     user_id = user.user_id
@@ -290,7 +269,6 @@ def test_prune_all_users_clipboard_maintenance(client, auth_user, db_session):
     now = datetime.now(timezone.utc)
     old_time = now - timedelta(days=40)
 
-    # Add 3 old items and 2 fresh items
     for _ in range(3):
         db_session.add(
             Clipboard(
@@ -323,7 +301,6 @@ def test_prune_all_users_clipboard_maintenance(client, auth_user, db_session):
 
     prune_all_users_clipboard(db_session, retention_days=30)
 
-    # Active items should now only be the 2 fresh items
     active_count = len(
         list(
             db_session.scalars(
@@ -336,6 +313,7 @@ def test_prune_all_users_clipboard_maintenance(client, auth_user, db_session):
     assert active_count == 2
 
 
+# 8. Hard deletion cleanup purges expired tombstones while preserving recent tombstones.
 def test_cleanup_old_tombstones(auth_user, db_session):
     from app.services.cleanup_service import cleanup_old_tombstones
 
@@ -346,7 +324,6 @@ def test_cleanup_old_tombstones(auth_user, db_session):
     expired_deleted_at = now - timedelta(days=35)
     recent_deleted_at = now - timedelta(days=5)
 
-    # 1. Expired tombstone (deleted 35 days ago, should be hard purged)
     expired_id = str(uuid4())
     db_session.add(
         Clipboard(
@@ -363,7 +340,6 @@ def test_cleanup_old_tombstones(auth_user, db_session):
         )
     )
 
-    # 2. Recent tombstone (deleted 5 days ago, must be preserved)
     recent_id = str(uuid4())
     db_session.add(
         Clipboard(
@@ -380,7 +356,6 @@ def test_cleanup_old_tombstones(auth_user, db_session):
         )
     )
 
-    # 3. Active unpinned item
     active_id = str(uuid4())
     db_session.add(
         Clipboard(
@@ -401,14 +376,12 @@ def test_cleanup_old_tombstones(auth_user, db_session):
     success = cleanup_old_tombstones(db_session)
     assert success is True
 
-    # Expired tombstone must be permanently deleted
     assert db_session.scalars(select(Clipboard).where(Clipboard.clipboard_id == expired_id)).first() is None
-    # Recent tombstone must remain intact
     assert db_session.scalars(select(Clipboard).where(Clipboard.clipboard_id == recent_id)).first() is not None
-    # Active item must remain intact
     assert db_session.scalars(select(Clipboard).where(Clipboard.clipboard_id == active_id)).first() is not None
 
 
+# 9. Cleanup service purges expired blacklisted access tokens and refresh tokens.
 def test_cleanup_expired_tokens(auth_user, db_session):
     from app.database.models import BlacklistedToken, RefreshToken
     from app.services.cleanup_service import (
@@ -423,11 +396,9 @@ def test_cleanup_expired_tokens(auth_user, db_session):
     expired_time = now - timedelta(hours=2)
     valid_time = now + timedelta(hours=2)
 
-    # Blacklisted tokens
     db_session.add(BlacklistedToken(token="expired_bl_token", expiry=expired_time))
     db_session.add(BlacklistedToken(token="valid_bl_token", expiry=valid_time))
 
-    # Refresh tokens
     db_session.add(
         RefreshToken(
             token="expired_rf_token",
@@ -459,6 +430,7 @@ def test_cleanup_expired_tokens(auth_user, db_session):
     assert db_session.scalars(select(RefreshToken).where(RefreshToken.token == "valid_rf_token")).first() is not None
 
 
+# 10. Orchestration helper runs all maintenance routines without unhandled errors.
 def test_run_all_cleanup_orchestration(auth_user, db_session):
     from app.services.cleanup_service import run_all_cleanup
 

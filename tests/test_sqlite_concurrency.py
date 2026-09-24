@@ -1,3 +1,5 @@
+# Test Suite: SQLite Immediate Begin & Concurrency Retry Mechanisms
+
 import asyncio
 import sqlite3
 import pytest
@@ -13,6 +15,7 @@ from app.database.engine import (
 )
 
 
+# 1. Immediate begin hook ensures write transaction starts properly even after prior read.
 def test_write_transaction_uses_sqlalchemy_immediate_begin_hook():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     configure_sqlite_engine(engine)
@@ -20,7 +23,6 @@ def test_write_transaction_uses_sqlalchemy_immediate_begin_hook():
         session.execute(text("CREATE TABLE values_table (value INTEGER NOT NULL)"))
         session.commit()
 
-        # This read starts SQLAlchemy's implicit transaction before the mutation.
         session.execute(text("SELECT 1")).scalar_one()
 
         run_in_write_transaction(
@@ -31,6 +33,7 @@ def test_write_transaction_uses_sqlalchemy_immediate_begin_hook():
         assert session.execute(text("SELECT COUNT(*) FROM values_table")).scalar_one() == 1
 
 
+# 2. Write transaction correctly handles shared pool connections across sessions.
 def test_write_transaction_handles_shared_connection_across_sessions():
     engine = create_engine(
         "sqlite:///:memory:",
@@ -53,6 +56,7 @@ def test_write_transaction_handles_shared_connection_across_sessions():
         assert second_session.execute(text("SELECT COUNT(*) FROM values_table")).scalar_one() == 1
 
 
+# 3. Synchronous write transaction rolls back failed mutation on locked error before retrying.
 def test_busy_retry_rolls_back_failed_mutation_before_retry(monkeypatch):
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     with Session(engine) as session:
@@ -74,6 +78,7 @@ def test_busy_retry_rolls_back_failed_mutation_before_retry(monkeypatch):
         assert session.execute(text("SELECT COUNT(*) FROM values_table")).scalar_one() == 1
 
 
+# 4. User model mutation retries and commits successfully under database lock contention.
 def test_auth_write_transaction_retries_on_contention(monkeypatch):
     from uuid import uuid4
     from app.database.engine import Base
@@ -111,6 +116,7 @@ def test_auth_write_transaction_retries_on_contention(monkeypatch):
         assert user.email == "retry_test@synclo.app"
 
 
+# 5. Asynchronous write transaction retries on contention and completes mutation.
 @pytest.mark.asyncio
 async def test_async_write_transaction_retries_on_contention():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
@@ -131,6 +137,7 @@ async def test_async_write_transaction_retries_on_contention():
         assert session.execute(text("SELECT COUNT(*) FROM async_values")).scalar_one() == 1
 
 
+# 6. Asynchronous retry backoff yields event loop to allow concurrent task execution.
 @pytest.mark.asyncio
 async def test_async_write_transaction_sleep_yields_loop():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
@@ -161,6 +168,7 @@ async def test_async_write_transaction_sleep_yields_loop():
         assert session.execute(text("SELECT COUNT(*) FROM async_yield")).scalar_one() == 1
 
 
+# 7. File-backed SQLite database handles concurrent write transactions across multiple threads.
 def test_file_backed_sqlite_concurrent_write_transactions(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
 

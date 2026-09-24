@@ -1,12 +1,4 @@
-"""
-Unit tests for app/services/serializers.py.
-
-Guarantees serialization contracts for:
-- user_to_e2ee_response: correct base64 encodings of raw cryptographic material
-- clipboard_to_response: tombstone handling, default fallbacks for change_number and revision
-- device_to_response: fallback device names, user_id resolution, online presence lookup, push flag
-- make_tombstone_payload: deterministic payload structures, ISO timestamp handling, optional fields
-"""
+# Test Suite: Data Models & Response Serializers
 
 import base64
 from datetime import datetime, timezone
@@ -22,11 +14,7 @@ from app.services.serializers import (
 )
 
 
-# =====================================================================
-# user_to_e2ee_response
-# =====================================================================
-
-
+# 1. Serialization of User model with raw E2EE keys to base64 response schema.
 def test_user_to_e2ee_response_valid():
     raw_mk = b"\x01" * 32
     raw_salt = b"\x02" * 16
@@ -48,11 +36,7 @@ def test_user_to_e2ee_response_valid():
     assert base64.b64decode(result.salt) == raw_salt
 
 
-# =====================================================================
-# clipboard_to_response
-# =====================================================================
-
-
+# 2. Serialization of active encrypted clipboard entry to ClipboardOut schema.
 def test_clipboard_to_response_live_entry():
     raw_cipher = b"encrypted_clipboard_bytes"
     raw_nonce = b"12byte_nonce"
@@ -90,8 +74,8 @@ def test_clipboard_to_response_live_entry():
     assert out.last_device_id == "dev-laptop"
 
 
+# 3. Serialization of deleted clipboard tombstone with default fallback fields.
 def test_clipboard_to_response_tombstone_defaults():
-    # A tombstone has ciphertext=None, nonce=None, change_number=None, entry_revision=None
     now = datetime(2025, 5, 1, 11, 0, 0, tzinfo=timezone.utc)
     entry = Clipboard(
         clipboard_id="clip-tombstone",
@@ -115,17 +99,12 @@ def test_clipboard_to_response_tombstone_defaults():
     assert out.ciphertext is None
     assert out.nonce is None
     assert out.is_deleted is True
-    # Fallback assertions
     assert out.change_number == 0
     assert out.entry_revision == 1
     assert out.is_pinned is False
 
 
-# =====================================================================
-# device_to_response
-# =====================================================================
-
-
+# 4. Serialization of Device model with presence check and push enablement.
 def test_device_to_response_named_and_online():
     now = datetime(2025, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
     device = Device(
@@ -149,6 +128,7 @@ def test_device_to_response_named_and_online():
         assert out.push_enabled is True
 
 
+# 5. Serialization fallback to 'Unnamed Device' and offline state when fields are None.
 def test_device_to_response_fallback_unnamed_and_no_user():
     device = Device(
         device_id="dev-unknown",
@@ -166,6 +146,7 @@ def test_device_to_response_fallback_unnamed_and_no_user():
     assert out.push_enabled is False
 
 
+# 6. Serialization with explicit user_id override for device presence lookup.
 def test_device_to_response_override_user_id():
     device = Device(
         device_id="dev-override",
@@ -182,11 +163,7 @@ def test_device_to_response_override_user_id():
         assert out.is_online is False
 
 
-# =====================================================================
-# make_tombstone_payload
-# =====================================================================
-
-
+# 7. Generation of tombstone wire payload with auto-generated ISO timestamp and defaults.
 def test_make_tombstone_payload_auto_timestamp_and_defaults():
     payload = make_tombstone_payload("clip-deleted-1")
 
@@ -201,12 +178,12 @@ def test_make_tombstone_payload_auto_timestamp_and_defaults():
     assert isinstance(payload["timestamp"], str)
     assert payload["timestamp"].endswith("Z")
 
-    # Optional fields should not be present if omitted
     assert "change_number" not in payload
     assert "entry_revision" not in payload
     assert "last_device_id" not in payload
 
 
+# 8. Generation of tombstone wire payload with explicit metadata and revision attributes.
 def test_make_tombstone_payload_explicit_arguments():
     ts_dt = datetime(2025, 4, 1, 9, 30, 0, tzinfo=timezone.utc)
     payload = make_tombstone_payload(
@@ -226,6 +203,7 @@ def test_make_tombstone_payload_explicit_arguments():
     assert payload["last_device_id"] == "dev-terminator"
 
 
+# 9. Generation of tombstone wire payload preserving pre-formatted string timestamps.
 def test_make_tombstone_payload_string_timestamp_passthrough():
     custom_ts = "2025-07-07T07:07:07.777Z"
     payload = make_tombstone_payload("clip-del-3", timestamp=custom_ts)

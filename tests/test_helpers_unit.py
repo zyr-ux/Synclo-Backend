@@ -1,13 +1,4 @@
-"""
-Unit tests for app/utilities/datetime_utils.py, app/utilities/crypto_utils.py, and RedactingFilter.
-
-Covers pure helper functions and RedactingFilter to ensure strict zero-knowledge
-and data integrity guarantees without test bias:
-- hash_refresh_token: type safety, rejection of empty/invalid inputs, determinism, HMAC integrity
-- strict_b64decode: rejection of non-string inputs, invalid base64, corrupt padding, boundary inputs
-- ensure_utc / to_iso_utc / parse_iso_utc: None-safety, naive vs aware handling, ISO 8601 'Z' conformity, round-tripping
-- RedactingFilter: log sanitization for bearer tokens, credentials, and emails without crashing on non-strings or bad records
-"""
+# Test Suite: Pure Helpers, Cryptographic Primitives & Log Sanitization
 
 import base64
 import logging
@@ -21,38 +12,32 @@ from app.utilities.crypto_utils import hash_refresh_token, strict_b64decode
 from app.utilities.datetime_utils import ensure_utc, parse_iso_utc, to_iso_utc
 
 
-# =====================================================================
-# hash_refresh_token
-# =====================================================================
-
-
+# 1. Deterministic SHA-256 HMAC hash generation for refresh tokens.
 def test_hash_refresh_token_valid_output():
     token = "synclo_test_refresh_token_xyz_12345"
     h1 = hash_refresh_token(token)
     h2 = hash_refresh_token(token)
 
     assert isinstance(h1, str)
-    assert len(h1) == 64  # SHA-256 hex digest length
-    assert h1 == h2  # Deterministic given the same secret and token
+    assert len(h1) == 64
+    assert h1 == h2
 
 
+# 2. Sensitivity check ensuring distinct refresh tokens produce different hashes.
 def test_hash_refresh_token_sensitivity():
     token_a = "token_variant_a"
     token_b = "token_variant_b"
     assert hash_refresh_token(token_a) != hash_refresh_token(token_b)
 
 
+# 3. Validation rejecting empty or non-string inputs for refresh token hashing.
 @pytest.mark.parametrize("invalid_token", ["", None, 12345, b"bytes_token", [], {}])
 def test_hash_refresh_token_rejects_empty_or_non_string(invalid_token):
     with pytest.raises(ValueError, match="Token must be a non-empty string"):
         hash_refresh_token(invalid_token)
 
 
-# =====================================================================
-# strict_b64decode
-# =====================================================================
-
-
+# 4. Strict base64 decoding with valid binary and text payloads.
 def test_strict_b64decode_valid_payload():
     original_data = b"synclo-zero-knowledge-secret-payload\x00\xff\xfe"
     encoded = base64.b64encode(original_data).decode("utf-8")
@@ -61,24 +46,27 @@ def test_strict_b64decode_valid_payload():
     assert decoded == original_data
 
 
+# 5. Strict base64 decoding handling empty string input.
 def test_strict_b64decode_empty_string():
     assert strict_b64decode("", "empty_field") == b""
 
 
+# 6. Strict base64 decoding rejecting non-string inputs.
 @pytest.mark.parametrize("non_string_val", [None, 1234, b"raw_bytes", ["list"], {"k": "v"}])
 def test_strict_b64decode_rejects_non_strings(non_string_val):
     with pytest.raises(ValueError, match="test_payload must be a string"):
         strict_b64decode(non_string_val, "test_payload")
 
 
+# 7. Strict base64 decoding rejecting malformed base64 strings and invalid padding.
 @pytest.mark.parametrize(
     "corrupt_base64",
     [
         "not_base64!@#$%",
-        "abcde",  # Invalid length / missing padding
-        "====",   # Only padding
-        "abc===", # Excess padding
-        "ab",     # Invalid base64 chunk length without padding
+        "abcde",
+        "====",
+        "abc===",
+        "ab",
     ],
 )
 def test_strict_b64decode_rejects_malformed_base64(corrupt_base64):
@@ -86,15 +74,12 @@ def test_strict_b64decode_rejects_malformed_base64(corrupt_base64):
         strict_b64decode(corrupt_base64, "custom_field")
 
 
-# =====================================================================
-# ensure_utc
-# =====================================================================
-
-
+# 8. UTC normalization returning None when passed None.
 def test_ensure_utc_none_returns_none():
     assert ensure_utc(None) is None
 
 
+# 9. UTC normalization converting naive datetime to timezone-aware UTC.
 def test_ensure_utc_naive_datetime():
     naive = datetime(2025, 1, 15, 12, 30, 45)
     utc = ensure_utc(naive)
@@ -108,19 +93,19 @@ def test_ensure_utc_naive_datetime():
     assert utc.second == 45
 
 
+# 10. UTC normalization converting timezone-aware datetime offsets to UTC.
 def test_ensure_utc_aware_conversion():
-    # Offset +05:30 (e.g. IST)
     ist_tz = timezone(timedelta(hours=5, minutes=30))
     ist_dt = datetime(2025, 1, 15, 17, 30, 0, tzinfo=ist_tz)
 
     utc = ensure_utc(ist_dt)
     assert utc.tzinfo is timezone.utc
-    # 17:30 - 05:30 = 12:00 UTC
     assert utc.hour == 12
     assert utc.minute == 0
     assert utc.timestamp() == ist_dt.timestamp()
 
 
+# 11. UTC normalization preserving datetime already in UTC.
 def test_ensure_utc_already_utc():
     utc_dt = datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
     res = ensure_utc(utc_dt)
@@ -128,15 +113,12 @@ def test_ensure_utc_already_utc():
     assert res.tzinfo is timezone.utc
 
 
-# =====================================================================
-# to_iso_utc
-# =====================================================================
-
-
+# 12. ISO 8601 formatting returning None when passed None.
 def test_to_iso_utc_none_returns_none():
     assert to_iso_utc(None) is None
 
 
+# 13. ISO 8601 formatting ensuring datetime formatted with 'Z' suffix instead of offset.
 def test_to_iso_utc_formatting_contains_z_suffix():
     dt = datetime(2025, 6, 1, 14, 15, 30, 123456, tzinfo=timezone.utc)
     res = to_iso_utc(dt)
@@ -144,12 +126,14 @@ def test_to_iso_utc_formatting_contains_z_suffix():
     assert not res.endswith("+00:00")
 
 
+# 14. ISO 8601 formatting converting naive datetime to string with 'Z' suffix.
 def test_to_iso_utc_naive_converted_to_z():
     naive = datetime(2025, 6, 1, 14, 15, 30)
     res = to_iso_utc(naive)
     assert res == "2025-06-01T14:15:30Z"
 
 
+# 15. ISO 8601 formatting supporting duck-typed objects implementing isoformat().
 def test_to_iso_utc_duck_typed_isoformat():
     class CustomDateLike:
         def isoformat(self):
@@ -160,16 +144,13 @@ def test_to_iso_utc_duck_typed_isoformat():
     assert res == "2025-12-31T23:59:59Z"
 
 
+# 16. ISO 8601 formatting falling back to string conversion for non-datetime inputs.
 def test_to_iso_utc_fallback_str():
     assert to_iso_utc(cast(Any, "already_a_string")) == "already_a_string"
     assert to_iso_utc(cast(Any, 123456)) == "123456"
 
 
-# =====================================================================
-# parse_iso_utc
-# =====================================================================
-
-
+# 17. Parsing ISO 8601 timestamp string with 'Z' suffix into UTC datetime.
 def test_parse_iso_utc_with_z():
     s = "2025-04-10T08:30:00Z"
     dt = parse_iso_utc(s)
@@ -181,8 +162,8 @@ def test_parse_iso_utc_with_z():
     assert dt.minute == 30
 
 
+# 18. Parsing ISO 8601 timestamp string with timezone offset into UTC datetime.
 def test_parse_iso_utc_with_offset():
-    # 14:00+05:30 is 08:30 UTC
     s = "2025-04-10T14:00:00+05:30"
     dt = parse_iso_utc(s)
     assert dt.tzinfo is timezone.utc
@@ -190,6 +171,7 @@ def test_parse_iso_utc_with_offset():
     assert dt.minute == 30
 
 
+# 19. Roundtrip serialization and parsing between datetime and ISO 8601 string.
 def test_parse_iso_utc_roundtrip():
     original = datetime(2025, 8, 20, 19, 45, 12, 654321, tzinfo=timezone.utc)
     iso_str = to_iso_utc(original)
@@ -199,22 +181,20 @@ def test_parse_iso_utc_roundtrip():
     assert parsed.tzinfo is timezone.utc
 
 
+# 20. Parsing rejecting invalid timestamp strings.
 def test_parse_iso_utc_invalid_string():
     with pytest.raises(ValueError):
         parse_iso_utc("not-a-timestamp")
 
 
-# =====================================================================
-# RedactingFilter
-# =====================================================================
-
-
+# 21. Log redacting filter preserving non-string inputs safely.
 def test_redacting_filter_redact_non_string():
     assert RedactingFilter.redact(None) is None
     assert RedactingFilter.redact(12345) == 12345
     assert RedactingFilter.redact(["a", "b"]) == ["a", "b"]
 
 
+# 22. Log redacting filter sanitizing Bearer authorization tokens.
 def test_redacting_filter_redacts_bearer_tokens():
     raw = "Header Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xyz_123-abc"
     redacted = RedactingFilter.redact(raw)
@@ -222,6 +202,7 @@ def test_redacting_filter_redacts_bearer_tokens():
     assert "eyJhbGci" not in redacted
 
 
+# 23. Log redacting filter sanitizing auth_key and password parameters.
 def test_redacting_filter_redacts_auth_key_and_password():
     raw1 = 'Payload received with auth_key: "super_secret_auth_key_abc"'
     raw2 = "Setting auth_key='secret_key_123' in session"
@@ -236,6 +217,7 @@ def test_redacting_filter_redacts_auth_key_and_password():
         assert "MyClearPassword123!" not in redacted
 
 
+# 24. Log redacting filter sanitizing email addresses.
 def test_redacting_filter_redacts_emails():
     raw = "Notification dispatched to user.name+tag@sub.domain.org and backup@synclo.app"
     redacted = RedactingFilter.redact(raw)
@@ -244,6 +226,7 @@ def test_redacting_filter_redacts_emails():
     assert "backup@synclo.app" not in redacted
 
 
+# 25. Log redacting filter sanitizing multiple mixed sensitive patterns in a single string.
 def test_redacting_filter_multi_pattern_mixed_string():
     raw = (
         "User alice@example.com logged in via Bearer token_secret_123 "
@@ -257,11 +240,13 @@ def test_redacting_filter_multi_pattern_mixed_string():
     assert redacted.count("[REDACTED]") == 4
 
 
+# 26. Log redacting filter leaving unsensitive clean log messages untouched.
 def test_redacting_filter_clean_message_untouched():
     raw = "Database connection pool initialized with 10 connections."
     assert RedactingFilter.redact(raw) == raw
 
 
+# 27. Log record filtering redacting message arguments and interpolations.
 def test_redacting_filter_log_record_integration():
     record = logging.LogRecord(
         name="test_logger",
@@ -283,10 +268,10 @@ def test_redacting_filter_log_record_integration():
     assert "[REDACTED]" in record.msg
 
 
+# 28. Log record filtering handling malformed records without raising unhandled exceptions.
 def test_redacting_filter_handles_malformed_record_gracefully():
     broken_record = MagicMock()
     broken_record.getMessage.side_effect = RuntimeError("Broken record message formatting")
 
     filt = RedactingFilter()
-    # Must not raise an unhandled exception, must return True
     assert filt.filter(broken_record) is True
