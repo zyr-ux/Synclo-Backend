@@ -51,10 +51,10 @@ The recommended way to self-host Synclo is using **Docker Compose** behind a rev
 
 ### 1. Create Project Directory
 
-Create the directory for Synclo along with subdirectories for persistent SQLite data and application logs:
+Create the directory for Synclo:
 
 ```bash
-mkdir -p Synclo-Backend/data Synclo-Backend/logs
+mkdir -p Synclo-Backend
 cd Synclo-Backend
 ```
 
@@ -84,6 +84,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      init-perms:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
       interval: 15s
@@ -109,6 +111,15 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+
+  init-perms:
+    image: ghcr.io/zyr-ux/synclo-backend:latest
+    user: "0:0"
+    restart: "no"
+    command: chown -R 10001:10001 /app/data /app/logs
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
 ```
 
 ### 3. Generate Secret Keys & Configure
@@ -131,7 +142,7 @@ docker compose up -d
 
 #### 📁 Persistent Host Data & Logs
 
-Docker mounts your host directories (`./data` and `./logs`) into the container. All database files and logs are directly accessible on your host machine inside `Synclo-Backend/`:
+Docker automatically creates and mounts your host directories (`./data` and `./logs`) into the container. All database files and logs are directly accessible on your host machine inside `Synclo-Backend/`:
 
 ```text
 Synclo-Backend/
