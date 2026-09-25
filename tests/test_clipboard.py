@@ -1013,7 +1013,8 @@ def test_lww_handles_naive_and_offset_timezones_accurately():
 
 
 # 41. Bulk delete history broadcasts tombstones to connected websocket clients.
-def test_bulk_delete_history_broadcasts_tombstones_via_websocket(client, user_factory):
+def test_bulk_delete_history_broadcasts_tombstones_via_websocket(client, user_factory, mocker):
+    mocker.patch("app.endpoints.clipboard_endpoints.launch_background_push")
     user = user_factory()
     dev2_res = client.post(
         "/api/v1/login",
