@@ -31,7 +31,7 @@ def test_https_only_rejects_forwarded_proto_from_untrusted_proxy(client, monkeyp
     import app.main as app_main
 
     monkeypatch.setattr(Settings, "HTTPS_ONLY", True)
-    monkeypatch.setattr(app_main, "LOOPBACK_HOSTS", frozenset({"10.0.0.1"}))
+    monkeypatch.setattr(app_main, "is_trusted_proxy", lambda ip: False)
 
     response = client.get(
         "http://api.synclo.com/api/health",
@@ -77,7 +77,48 @@ def test_websocket_insecure_rejected_when_https_only(client, monkeypatch, auth_u
         assert exc_info.value.code == 1008
 
 
-# 7. Global security headers (nosniff, DENY, referrer-policy) are attached to all HTTP responses.
+# 7. Reverse-proxied WebSocket connection with X-Forwarded-Proto: https succeeds when HTTPS_ONLY=True.
+def test_websocket_reverse_proxied_https_accepted(client, monkeypatch, auth_user):
+    monkeypatch.setattr(Settings, "HTTPS_ONLY", True)
+    token = auth_user["access_token"]
+
+    with client.websocket_connect(
+        "ws://remote.synclo.com/ws/v1/sync",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "x-forwarded-proto": "https",
+        },
+    ) as websocket:
+        websocket.send_json({"type": "ping"})
+        msg = websocket.receive_json()
+        assert msg.get("type") in ("sync_history", "pong")
+
+
+# 8. is_trusted_proxy correctly identifies loopback and private/Docker subnets vs public IPs.
+def test_is_trusted_proxy_recognition():
+    from app.core.constants import is_trusted_proxy
+
+    # Loopback
+    assert is_trusted_proxy("127.0.0.1") is True
+    assert is_trusted_proxy("::1") is True
+    assert is_trusted_proxy("localhost") is True
+    assert is_trusted_proxy("testserver") is True
+
+    # Private / Docker bridge networks
+    assert is_trusted_proxy("172.18.0.1") is True
+    assert is_trusted_proxy("172.17.0.1") is True
+    assert is_trusted_proxy("10.0.0.1") is True
+    assert is_trusted_proxy("192.168.1.1") is True
+
+    # Public / untrusted
+    assert is_trusted_proxy("1.1.1.1") is False
+    assert is_trusted_proxy("8.8.8.8") is False
+    assert is_trusted_proxy("93.184.216.34") is False
+    assert is_trusted_proxy("") is False
+    assert is_trusted_proxy("invalid-ip") is False
+
+
+# 9. Global security headers (nosniff, DENY, referrer-policy) are attached to all HTTP responses.
 def test_global_security_headers_present_on_all_http_responses(client):
     response = client.get("/api/health")
     assert response.status_code == 200

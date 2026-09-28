@@ -1,3 +1,5 @@
+import ipaddress
+
 MIN_DEVICE_ID_LEN = 3
 MAX_DEVICE_ID_LEN = 128
 MIN_DEVICE_NAME_LEN = 1
@@ -16,4 +18,16 @@ MIN_NONCE_LEN = 8
 ALLOWED_BLOB_VERSIONS = {1}
 ALLOWED_KDF_VERSIONS = {1}
 
-LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "testserver"})
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "testserver", "testclient"})
+
+
+def is_trusted_proxy(client_ip: str) -> bool:
+    if not client_ip:
+        return False
+    if client_ip in LOOPBACK_HOSTS:
+        return True
+    try:
+        ip = ipaddress.ip_address(client_ip)
+        return ip.is_loopback or ip.is_private
+    except ValueError:
+        return False

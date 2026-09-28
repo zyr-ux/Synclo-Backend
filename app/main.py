@@ -11,7 +11,7 @@ from redis.asyncio import Redis
 from app.database.engine import SessionLocal
 from app.core.logging_config import logger
 from app.core.config import Settings
-from app.core.constants import LOOPBACK_HOSTS
+from app.core.constants import LOOPBACK_HOSTS, is_trusted_proxy
 from app.core.metrics import setup_metrics
 from app.services.cleanup_service import CleanupResult, run_all_cleanup
 from app.websockets.connection_manager import manager
@@ -94,7 +94,7 @@ async def security_headers_middleware(request: Request, call_next):
     if Settings.HTTPS_ONLY:
         client_ip = request.client.host if request.client else ""
         forwarded_proto = ""
-        if client_ip in LOOPBACK_HOSTS:
+        if is_trusted_proxy(client_ip):
             forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
         is_https = request.url.scheme == "https" or forwarded_proto == "https"
         is_loopback = request.url.hostname in LOOPBACK_HOSTS

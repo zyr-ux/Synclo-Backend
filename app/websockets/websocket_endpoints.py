@@ -10,7 +10,7 @@ from jwt import ExpiredSignatureError, InvalidTokenError
 
 from app.database.engine import SessionLocal, run_in_write_transaction
 from app.core.config import Settings
-from app.core.constants import LOOPBACK_HOSTS
+from app.core.constants import LOOPBACK_HOSTS, is_trusted_proxy
 from app.core.logging_config import logger
 from sqlalchemy import select
 from app.database.models import User, Device, BlacklistedToken
@@ -28,7 +28,7 @@ async def _validate_ws_security(websocket: WebSocket) -> bool:
     if Settings.HTTPS_ONLY:
         client_ip = websocket.client.host if websocket.client else ""
         forwarded_proto = ""
-        if client_ip in LOOPBACK_HOSTS:
+        if is_trusted_proxy(client_ip):
             forwarded_proto = websocket.headers.get("x-forwarded-proto", "").lower()
         is_secure = websocket.url.scheme == "wss" or forwarded_proto in ("https", "wss")
         is_loopback = websocket.url.hostname in LOOPBACK_HOSTS
