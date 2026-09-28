@@ -69,7 +69,7 @@ services:
     container_name: synclo-backend
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8000:8000"
+      - "8000:8000"
     environment:
       SECRET_KEY: "change_this_to_a_random_hex_key" # minimum 32 characters
       REFRESH_TOKEN_HASH_KEY: "change_this_to_a_random_hex_key" # minimum 16 characters
@@ -163,7 +163,7 @@ tail -f logs/server.log
 
 ### 5. Configure Reverse Proxy (Caddy Example)
 
-Synclo binds locally to `127.0.0.1:8000` to prevent direct unencrypted exposure. Expose Synclo to your domain with automatic HTTPS certificates using a host-level Caddy reverse proxy:
+Synclo runs on port `8000`. Expose Synclo to your domain with automatic HTTPS certificates using a host-level Caddy reverse proxy:
 
 1. Open your host's Caddy configuration:
    ```bash
