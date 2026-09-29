@@ -5,7 +5,6 @@ from typing import Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi_limiter.depends import RateLimiter
 import jwt
 from jwt import InvalidTokenError
 from sqlalchemy import CursorResult, delete, select, update
@@ -13,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.core.limiter import create_limiter
 from app.core.constants import (
     MIN_DEVICE_ID_LEN,
     MAX_DEVICE_ID_LEN,
@@ -86,7 +86,7 @@ def decode_and_validate_blob(value: str, min_len: int, max_len: int, field_name:
 @router.get(
     "/auth/salt",
     response_model=SaltResponse,
-    dependencies=[Depends(RateLimiter(times=10, seconds=60))],
+    dependencies=[Depends(create_limiter(times=10, seconds=60))],
 )
 def get_salt_for_email(email: str, db: Session = Depends(get_db)):
     user = db.scalars(select(User).where(User.email == email)).first()
@@ -102,7 +102,7 @@ def get_salt_for_email(email: str, db: Session = Depends(get_db)):
 @router.post(
     "/auth/recovery-material",
     response_model=RecoveryMaterialResponse,
-    dependencies=[Depends(RateLimiter(times=5, seconds=60))],
+    dependencies=[Depends(create_limiter(times=5, seconds=60))],
 )
 def get_recovery_material(request: RecoveryMaterialRequest, db: Session = Depends(get_db)):
     user = db.scalars(select(User).where(User.email == request.email)).first()
@@ -117,7 +117,7 @@ def get_recovery_material(request: RecoveryMaterialRequest, db: Session = Depend
 
 
 @router.post(
-    "/auth/recover", response_model=Token, dependencies=[Depends(RateLimiter(times=3, seconds=60))]
+    "/auth/recover", response_model=Token, dependencies=[Depends(create_limiter(times=3, seconds=60))]
 )
 async def recover_account(data: AccountRecoveryRequest, db: Session = Depends(get_db)):
     if not (MIN_DEVICE_ID_LEN <= len(data.device_id) <= MAX_DEVICE_ID_LEN):
@@ -223,7 +223,7 @@ async def recover_account(data: AccountRecoveryRequest, db: Session = Depends(ge
 
 
 @router.post(
-    "/register", response_model=Token, dependencies=[Depends(RateLimiter(times=3, seconds=60))]
+    "/register", response_model=Token, dependencies=[Depends(create_limiter(times=3, seconds=60))]
 )
 async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
     if not (MIN_DEVICE_ID_LEN <= len(user.device_id) <= MAX_DEVICE_ID_LEN):
@@ -318,7 +318,7 @@ async def register(user: UserRegisterWithDevice, db: Session = Depends(get_db)):
 
 
 @router.post(
-    "/login", response_model=TokenWithE2EE, dependencies=[Depends(RateLimiter(times=5, seconds=60))]
+    "/login", response_model=TokenWithE2EE, dependencies=[Depends(create_limiter(times=5, seconds=60))]
 )
 async def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
     db_user = db.scalars(select(User).where(User.email == user.email)).first()
@@ -422,7 +422,7 @@ async def login(user: UserLoginWithDevice, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/logout", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+@router.post("/logout", dependencies=[Depends(create_limiter(times=10, seconds=60))])
 def logout(
     request: RefreshTokenRequest,
     access_token: str = Depends(oauth2_scheme),
@@ -468,7 +468,7 @@ def logout(
 
 
 @router.post(
-    "/refresh", response_model=Token, dependencies=[Depends(RateLimiter(times=10, seconds=60))]
+    "/refresh", response_model=Token, dependencies=[Depends(create_limiter(times=10, seconds=60))]
 )
 def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
     try:
@@ -555,7 +555,7 @@ def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
     }
 
 
-@router.delete("/delete", dependencies=[Depends(RateLimiter(times=2, seconds=60))])
+@router.delete("/delete", dependencies=[Depends(create_limiter(times=2, seconds=60))])
 async def delete_account(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(get_auth_context),
@@ -576,7 +576,7 @@ async def delete_account(
     return {"message": "Your account and all associated data have been deleted."}
 
 
-@router.post("/password/change", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
+@router.post("/password/change", dependencies=[Depends(create_limiter(times=5, seconds=60))])
 async def change_password(
     data: PasswordChange,
     db: Session = Depends(get_db),
@@ -656,7 +656,7 @@ async def change_password(
     return {"message": "Password changed successfully. Master key re-wrapped."}
 
 
-@router.post("/auth/recovery-key/rotate", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
+@router.post("/auth/recovery-key/rotate", dependencies=[Depends(create_limiter(times=5, seconds=60))])
 def rotate_recovery_key(
     data: RecoveryKeyRotateRequest,
     db: Session = Depends(get_db),
@@ -686,7 +686,7 @@ def rotate_recovery_key(
     return {"message": "Recovery key regenerated and updated successfully"}
 
 
-@router.put("/user/username", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
+@router.put("/user/username", dependencies=[Depends(create_limiter(times=5, seconds=60))])
 async def update_username(
     data: UsernameUpdate,
     db: Session = Depends(get_db),
@@ -713,7 +713,7 @@ async def update_username(
 @router.put(
     "/user/email",
     response_model=EmailUpdateResponse,
-    dependencies=[Depends(RateLimiter(times=5, seconds=60))],
+    dependencies=[Depends(create_limiter(times=5, seconds=60))],
 )
 async def update_email(
     data: EmailUpdate,
@@ -775,7 +775,7 @@ async def update_email(
 
 
 @router.get(
-    "/user", response_model=UserResponse, dependencies=[Depends(RateLimiter(times=20, seconds=60))]
+    "/user", response_model=UserResponse, dependencies=[Depends(create_limiter(times=20, seconds=60))]
 )
 def get_user_profile(auth: AuthContext = Depends(get_auth_context)):
     return auth.user

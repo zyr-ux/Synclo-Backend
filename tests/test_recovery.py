@@ -6,7 +6,8 @@ from sqlalchemy import select
 from starlette.websockets import WebSocketDisconnect
 
 from app.database.models import User
-from tests.conftest import generate_random_base64, make_clipboard_payload
+from tests.conftest import _test_sync_redis, generate_random_base64, make_clipboard_payload
+
 
 
 # 1. Zero-knowledge registration persisting mandatory recovery wrapped key and hashed verifier.
@@ -456,6 +457,7 @@ def test_recovery_validation_failures(client, user_factory):
     short_dev = {**base_valid, "device_id": "ab"}
     assert client.post("/api/v1/auth/recover", json=short_dev).status_code == 400
 
+    _test_sync_redis.flushall()
     long_dev_name = {**base_valid, "device_name": "a" * 129}
     assert client.post("/api/v1/auth/recover", json=long_dev_name).status_code in (400, 422)
 

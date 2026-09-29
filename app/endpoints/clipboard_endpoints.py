@@ -3,11 +3,11 @@ from datetime import datetime, timedelta, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi_limiter.depends import RateLimiter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.core.limiter import create_limiter
 from app.database.models import Clipboard, User
 from app.database.schemas import (
     ClipboardIn,
@@ -32,7 +32,7 @@ from app.websockets.connection_manager import manager
 router = APIRouter()
 
 
-@router.post("/clipboard", dependencies=[Depends(RateLimiter(times=30, seconds=60))])
+@router.post("/clipboard", dependencies=[Depends(create_limiter(times=30, seconds=60))])
 async def sync_clipboard(
     data: ClipboardIn,
     db: Session = Depends(get_db),
@@ -67,7 +67,7 @@ async def sync_clipboard(
 @router.get(
     "/clipboard",
     response_model=ClipboardOut,
-    dependencies=[Depends(RateLimiter(times=30, seconds=60))],
+    dependencies=[Depends(create_limiter(times=30, seconds=60))],
 )
 def get_clipboard(
     db: Session = Depends(get_db),
@@ -90,7 +90,7 @@ def get_clipboard(
 @router.get(
     "/clipboard/all",
     response_model=List[ClipboardOut],
-    dependencies=[Depends(RateLimiter(times=20, seconds=60))],
+    dependencies=[Depends(create_limiter(times=20, seconds=60))],
 )
 def get_clipboard_all(
     include_deleted: bool = False,
@@ -113,7 +113,7 @@ def get_clipboard_all(
 @router.get(
     "/clipboard/sync",
     response_model=ClipboardSyncResponse,
-    dependencies=[Depends(RateLimiter(times=20, seconds=60))],
+    dependencies=[Depends(create_limiter(times=20, seconds=60))],
 )
 def get_sync_clipboard(
     since_change_number: int = Query(..., ge=0),
@@ -180,7 +180,7 @@ def get_sync_clipboard(
 @router.get(
     "/clipboard/{clipboard_id}",
     response_model=ClipboardOut,
-    dependencies=[Depends(RateLimiter(times=30, seconds=60))],
+    dependencies=[Depends(create_limiter(times=30, seconds=60))],
 )
 def get_clipboard_by_id(
     clipboard_id: str,
@@ -200,7 +200,7 @@ def get_clipboard_by_id(
 @router.patch(
     "/clipboard/{clipboard_id}/pin",
     response_model=ClipboardOut,
-    dependencies=[Depends(RateLimiter(times=30, seconds=60))],
+    dependencies=[Depends(create_limiter(times=30, seconds=60))],
 )
 async def pin_clipboard_item(
     clipboard_id: str,
@@ -222,7 +222,7 @@ async def pin_clipboard_item(
 
 
 @router.delete(
-    "/clipboard/{clipboard_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))]
+    "/clipboard/{clipboard_id}", dependencies=[Depends(create_limiter(times=10, seconds=60))]
 )
 async def delete_clipboard_item(
     clipboard_id: str,
@@ -242,7 +242,7 @@ async def delete_clipboard_item(
     return {"message": "Clipboard entry deleted"}
 
 
-@router.delete("/clipboard", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
+@router.delete("/clipboard", dependencies=[Depends(create_limiter(times=5, seconds=60))])
 async def delete_clipboard_history(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(get_auth_context),

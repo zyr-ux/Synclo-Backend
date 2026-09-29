@@ -5,13 +5,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi_limiter import FastAPILimiter
 from redis.asyncio import Redis
 
 from app.database.engine import SessionLocal
 from app.core.logging_config import logger
 from app.core.config import Settings
 from app.core.constants import LOOPBACK_HOSTS, is_trusted_proxy
+from app.core.limiter import set_redis
 from app.core.metrics import setup_metrics
 from app.services.cleanup_service import CleanupResult, run_all_cleanup
 from app.websockets.connection_manager import manager
@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
 
     redis = Redis.from_url(Settings.REDIS_URL, encoding="utf-8", decode_responses=True)
     app.state.redis = redis
-    await FastAPILimiter.init(redis)
+    set_redis(redis)
     manager.set_redis(redis)
     await manager.start_listener()
     await push_service.start()

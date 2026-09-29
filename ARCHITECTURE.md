@@ -1450,6 +1450,9 @@ Initializes stdout stream loggers and rotating file log handlers writing logs to
 #### [metrics.py](app/core/metrics.py)
 Initializes Prometheus instrumentation middleware and exposes the `/metrics` endpoint with custom zero-knowledge metrics tracking active WebSockets, event dispatches, push notification latencies, and status outcomes.
 
+#### [limiter.py](app/core/limiter.py)
+Provides centralized rate limiting via `create_limiter(times, seconds)` using `fastapi-limiter >= 0.2.0` backed by `pyrate-limiter`. Configures a custom `SyncloBucketFactory` backed by Redis (`RedisStateStore`) with an in-memory fallback, a secure client identifier (`default_identifier`) validating trusted proxies for `X-Forwarded-For`, and safe routing resolution for FastAPI included routers.
+
 ---
 
 ### Database Layer (`app/database/`)
@@ -1717,9 +1720,10 @@ Synclo-Backend/
 │   ├── versions/              # Individual migration revisions
 │   └── env.py                 # Alembic migration runner configuration
 ├── app/
-│   ├── core/                  # Core primitives (config, constants, logging, metrics)
+│   ├── core/                  # Core primitives (config, constants, logging, metrics, limiter)
 │   │   ├── config.py          # Pydantic BaseSettings and runtime configuration
 │   │   ├── constants.py       # Global constants, close codes, and rate limits
+│   │   ├── limiter.py         # Centralized rate limiter factory (fastapi-limiter >= 0.2.0)
 │   │   ├── logging_config.py  # Structured rotating file & console logging
 │   │   └── metrics.py         # Prometheus metrics instruments and registry
 │   ├── endpoints/             # FastAPI HTTP REST route controllers
@@ -1768,6 +1772,7 @@ Synclo-Backend/
 │   ├── test_migrations.py     # Alembic baseline migration, backup/restore, and ORM schema parity tests
 │   ├── test_periodic_cleanup.py # Scheduled maintenance background tasks and expired token pruning tests
 │   ├── test_push_service.py   # UnifiedPush dispatch and stale endpoint recovery tests
+│   ├── test_rate_limiter.py   # Centralized rate limiter factory, fail-open, and isolation tests
 │   ├── test_recovery.py       # Zero-Knowledge account recovery tests
 │   ├── test_serializers_unit.py # Base64 serialization, binary blob handling, and tombstone payload tests
 │   ├── test_sqlite_concurrency.py # SQLite WAL concurrency, write lock contention, and retry tests

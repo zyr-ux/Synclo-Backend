@@ -1,15 +1,16 @@
 from datetime import datetime, timezone
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi_limiter.depends import RateLimiter
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
+
 from app.core.constants import (
     MIN_DEVICE_ID_LEN,
     MAX_DEVICE_ID_LEN,
     MIN_DEVICE_NAME_LEN,
     MAX_DEVICE_NAME_LEN,
 )
+from app.core.limiter import create_limiter
 from app.database.engine import get_db, run_in_write_transaction
 from app.database.models import Device, RefreshToken
 from app.database.schemas import (
@@ -30,7 +31,7 @@ router = APIRouter()
 @router.post(
     "/devices/register",
     response_model=DeviceOut,
-    dependencies=[Depends(RateLimiter(times=10, seconds=60))],
+    dependencies=[Depends(create_limiter(times=10, seconds=60))],
 )
 async def register_device(
     device: DeviceRegister,
@@ -81,7 +82,7 @@ async def register_device(
 @router.get(
     "/devices",
     response_model=List[DeviceOut],
-    dependencies=[Depends(RateLimiter(times=20, seconds=60))],
+    dependencies=[Depends(create_limiter(times=20, seconds=60))],
 )
 def get_devices(
     db: Session = Depends(get_db),
@@ -92,7 +93,7 @@ def get_devices(
     return [device_to_response(d, user_id) for d in devices]
 
 
-@router.delete("/devices/{device_id}", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+@router.delete("/devices/{device_id}", dependencies=[Depends(create_limiter(times=10, seconds=60))])
 async def delete_device(
     device_id: str,
     db: Session = Depends(get_db),
@@ -124,7 +125,7 @@ async def delete_device(
 @router.patch(
     "/devices/{device_id}",
     response_model=DeviceOut,
-    dependencies=[Depends(RateLimiter(times=10, seconds=60))],
+    dependencies=[Depends(create_limiter(times=10, seconds=60))],
 )
 async def rename_device(
     device_id: str,
@@ -168,7 +169,7 @@ async def rename_device(
 @router.put(
     "/devices/{device_id}/push",
     response_model=DeviceOut,
-    dependencies=[Depends(RateLimiter(times=10, seconds=60))],
+    dependencies=[Depends(create_limiter(times=10, seconds=60))],
 )
 async def update_device_push(
     device_id: str,
@@ -198,7 +199,7 @@ async def update_device_push(
 @router.delete(
     "/devices/{device_id}/push",
     response_model=DeviceOut,
-    dependencies=[Depends(RateLimiter(times=10, seconds=60))],
+    dependencies=[Depends(create_limiter(times=10, seconds=60))],
 )
 async def remove_device_push(
     device_id: str,

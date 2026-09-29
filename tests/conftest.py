@@ -1,51 +1,43 @@
 import base64
 import datetime
 import os
+import sys
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-import fastapi_limiter
-import fastapi_limiter.depends
+import fakeredis
 import pytest
 import redis.asyncio
-from fastapi import Request, Response
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.limiter import set_redis
 from app.database.engine import Base, SessionLocal, configure_sqlite_engine, get_db
 from app.main import app
 
-mock_redis_client = AsyncMock()
+if not hasattr(sys, "_synclo_test_redis_server"):
+    _server = fakeredis.FakeServer()
+    setattr(sys, "_synclo_test_redis_server", _server)
+    setattr(sys, "_synclo_test_sync_redis", fakeredis.FakeRedis(server=_server))
+    setattr(
+        sys,
+        "_synclo_test_async_redis",
+        fakeredis.FakeAsyncRedis(server=_server, decode_responses=True),
+    )
 
-mock_pubsub = MagicMock()
-mock_pubsub.psubscribe = AsyncMock()
-mock_pubsub.subscribe = AsyncMock()
-mock_pubsub.close = AsyncMock()
-
-
-async def _empty_async_iter():
-    if False:
-        yield None
-
-
-mock_pubsub.listen.return_value = _empty_async_iter()
-mock_redis_client.pubsub = MagicMock(return_value=mock_pubsub)
-mock_lock = AsyncMock()
-mock_lock.acquire = AsyncMock(return_value=False)
-mock_lock.release = AsyncMock(return_value=True)
-mock_redis_client.lock = MagicMock(return_value=mock_lock)
-redis.asyncio.Redis.from_url = MagicMock(return_value=mock_redis_client)
-
-fastapi_limiter.FastAPILimiter.init = AsyncMock()
+fake_server = getattr(sys, "_synclo_test_redis_server")
+_test_sync_redis = getattr(sys, "_synclo_test_sync_redis")
+_test_async_redis = getattr(sys, "_synclo_test_async_redis")
 
 
-async def _mock_rate_limiter_call(self, request: Request, response: Response):
-    return None
+def _get_fake_async_redis(*args, **kwargs):
+    return _test_async_redis
 
 
-fastapi_limiter.depends.RateLimiter.__call__ = _mock_rate_limiter_call
+redis.asyncio.Redis.from_url = MagicMock(side_effect=_get_fake_async_redis)
+set_redis(_test_async_redis)
 
 
 @pytest.fixture(scope="session")
@@ -65,7 +57,9 @@ def setup_test_db(engine):
     SessionLocal.configure(bind=engine)
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    _test_sync_redis.flushall()
     yield
+    _test_sync_redis.flushall()
     Base.metadata.drop_all(bind=engine)
 
 

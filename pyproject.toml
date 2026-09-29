@@ -13,8 +13,7 @@ dependencies = [
     "cryptography>=50.0.1",
     "email-validator>=2.3.0",
     "fastapi>=0.141.1",
-    # fastapi-limiter 0.2.0 is a breaking rewrite which needs a massive refactor of all the endpoints
-    "fastapi-limiter>=0.1.6,<0.2.0",
+    "fastapi-limiter>=0.2.0",
     "httpx>=0.28.1",
     "prometheus-client>=0.26.0",
     "prometheus-fastapi-instrumentator>=8.1.0",
@@ -38,7 +37,7 @@ dev = [
     "httpx>=0.28.1",
     "ruff>=0.16.7",
     "ty>=0.0.80",
-    "fakeredis>=2.38.0",
+    "fakeredis[lua]>=2.38.0",
 ]
 
 [tool.ruff]
