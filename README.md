@@ -69,7 +69,7 @@ services:
     container_name: synclo-backend
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       SECRET_KEY: "change_this_to_a_random_hex_key" # minimum 32 characters
       REFRESH_TOKEN_HASH_KEY: "change_this_to_a_random_hex_key" # minimum 16 characters
@@ -84,8 +84,6 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      init-perms:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
       interval: 15s
@@ -111,15 +109,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
-
-  init-perms:
-    image: ghcr.io/zyr-ux/synclo-backend:latest
-    user: "0:0"
-    restart: "no"
-    command: chown -R 10001:10001 /app/data /app/logs
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
 ```
 
 ### 3. Generate Secret Keys & Configure

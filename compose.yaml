@@ -1,13 +1,8 @@
 services:
   synclo-backend:
-    build:
-      context: .
-      platforms:
-        - "linux/amd64"
-        - "linux/arm64"
+    build: .
     image: synclo-backend
     container_name: synclo-backend
-    user: "10001:10001"
     init: true
     security_opt:
       - no-new-privileges:true
@@ -19,7 +14,7 @@ services:
     restart: unless-stopped
     stop_grace_period: 15s
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/app/data        # SQLite DB & Backups
       - ./logs:/app/logs        # Logs
@@ -28,8 +23,6 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      init-perms:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
       interval: 15s
@@ -71,16 +64,6 @@ services:
         max-file: "3"
     networks:
       - synclo-network
-
-  init-perms:
-    image: synclo-backend
-    user: "0:0"
-    restart: "no"
-    command: chown -R 10001:10001 /app/data /app/logs
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-
 
 networks:
   synclo-network:

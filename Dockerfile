@@ -1,4 +1,6 @@
-FROM python:3.14-slim-bookworm AS builder
+FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm AS builder
+
+ARG BUILDPLATFORM
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -38,16 +40,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --gid 10001 appuser && \
-    useradd --uid 10001 --gid 10001 --no-create-home --shell /sbin/nologin appuser
-
-COPY --from=builder --chown=appuser:appuser /opt/venv /opt/venv
-COPY --chown=appuser:appuser . /app
-
-RUN mkdir -p /app/data /app/logs && \
-    chown -R appuser:appuser /app
-
-USER appuser
+COPY --from=builder /opt/venv /opt/venv
+COPY . /app
 
 EXPOSE 8000
 
