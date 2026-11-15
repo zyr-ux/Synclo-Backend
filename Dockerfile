@@ -1,6 +1,4 @@
-FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm AS builder
-
-ARG BUILDPLATFORM
+FROM python:3.14-slim-bookworm AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
