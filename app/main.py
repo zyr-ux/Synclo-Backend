@@ -8,14 +8,15 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from redis.asyncio import Redis
 
 from app.database.engine import SessionLocal
-from app.core.logging_config import logger
 from app.core.config import Settings
-from app.core.constants import LOOPBACK_HOSTS, is_trusted_proxy
+from app.core.constants import LOOPBACK_HOSTS
 from app.core.limiter import set_redis
+from app.core.logging_config import logger
 from app.core.metrics import setup_metrics
 from app.services.cleanup_service import CleanupResult, run_all_cleanup
-from app.websockets.connection_manager import manager
 from app.services.push_service import launch_background_push, push_service
+from app.utilities.network_utils import is_trusted_proxy
+from app.websockets.connection_manager import manager
 
 from app.endpoints.auth_endpoints import router as auth_router
 from app.endpoints.device_endpoints import router as device_router

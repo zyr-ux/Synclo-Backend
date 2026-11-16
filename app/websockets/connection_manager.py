@@ -5,6 +5,11 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 from fastapi import WebSocket
 
+from app.core.constants import (
+    WS_CLOSE_DEFAULT,
+    WS_CLOSE_DEVICE_DELETED,
+    WS_CLOSE_SESSION_INVALIDATED,
+)
 from app.core.metrics import (
     ACTIVE_WEBSOCKETS,
     WEBSOCKET_BROADCAST_FAILURES_TOTAL,
@@ -74,7 +79,7 @@ class ConnectionManager:
                             "message": "This device has been removed from your account",
                         }
                     )
-                    await ws.close(code=4003)
+                    await ws.close(code=WS_CLOSE_DEVICE_DELETED)
                 except (RuntimeError, ConnectionError):
                     pass
                 finally:
@@ -83,10 +88,10 @@ class ConnectionManager:
     async def disconnect_user(
         self,
         user_id: str,
-        code: int = 4000,
+        code: int = WS_CLOSE_DEFAULT,
         message: Optional[dict] = None,
     ):
-        if message is None and code == 4004:
+        if message is None and code == WS_CLOSE_SESSION_INVALIDATED:
             message = {"type": "session_invalidated", "reason": "credentials_changed"}
 
         await self._disconnect_user_local(user_id, code=code, message=message)
@@ -108,7 +113,7 @@ class ConnectionManager:
     async def _disconnect_user_local(
         self,
         user_id: str,
-        code: int = 4000,
+        code: int = WS_CLOSE_DEFAULT,
         message: Optional[dict] = None,
     ):
         if user_id in self.active_connections:
@@ -195,7 +200,7 @@ class ConnectionManager:
                             if user_id:
                                 await self._disconnect_user_local(
                                     user_id,
-                                    code=data.get("code", 4000),
+                                    code=data.get("code", WS_CLOSE_DEFAULT),
                                     message=data.get("message"),
                                 )
                             continue

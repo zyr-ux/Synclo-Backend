@@ -8,16 +8,28 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 import jwt
 from jwt import ExpiredSignatureError, InvalidTokenError
 
-from app.database.engine import SessionLocal, run_in_write_transaction
 from app.core.config import Settings
-from app.core.constants import LOOPBACK_HOSTS, is_trusted_proxy
+from app.core.constants import (
+    LOOPBACK_HOSTS,
+    WS_CLOSE_DEVICE_DELETED,
+    WS_CLOSE_INTERNAL_ERROR,
+    WS_CLOSE_PING_TIMEOUT,
+    WS_CLOSE_POLICY_VIOLATION,
+    WS_CLOSE_SESSION_INVALIDATED,
+    WS_CLOSE_TOKEN_EXPIRED,
+    WS_LAST_SEEN_THROTTLE_SECONDS,
+    WS_PING_INTERVAL_SECONDS,
+    WS_PONG_TIMEOUT_SECONDS,
+)
 from app.core.logging_config import logger
-from sqlalchemy import select
-from app.database.models import User, Device, BlacklistedToken
+from app.database.engine import SessionLocal, run_in_write_transaction
+from app.database.models import BlacklistedToken, Device, User
 from app.database.schemas import ClipboardIn
-from app.services.auth import SECRET_KEY, ALGORITHM
-from app.services.clipboard_service import upsert_clipboard, soft_delete_clipboard
+from sqlalchemy import select
+from app.services.auth import ALGORITHM, SECRET_KEY
+from app.services.clipboard_service import soft_delete_clipboard, upsert_clipboard
 from app.services.push_service import launch_background_push
+from app.utilities.network_utils import is_trusted_proxy
 from app.websockets.connection_manager import manager
 
 
@@ -42,14 +54,14 @@ async def _validate_ws_security(websocket: WebSocket) -> bool:
                     "message": "Insecure WebSocket connection rejected (WSS required)",
                 }
             )
-            await websocket.close(code=1008)
+            await websocket.close(code=WS_CLOSE_POLICY_VIOLATION)
             return False
     return True
 
 
 async def _close_token_expired(websocket: WebSocket) -> None:
     await websocket.send_json({"type": "error", "message": "Token expired"})
-    await websocket.close(code=4001)
+    await websocket.close(code=WS_CLOSE_TOKEN_EXPIRED)
 
 
 async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int]]:
@@ -59,7 +71,7 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
         await websocket.send_json(
             {"type": "error", "message": "Missing or invalid Authorization header"}
         )
-        await websocket.close(code=1008)
+        await websocket.close(code=WS_CLOSE_POLICY_VIOLATION)
         return None
 
     token = auth_header[7:]
@@ -82,7 +94,7 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
             await websocket.send_json(
                 {"type": "error", "message": "Invalid token: missing required fields"}
             )
-            await websocket.close(code=1008)
+            await websocket.close(code=WS_CLOSE_POLICY_VIOLATION)
             return None
     except ExpiredSignatureError as e:
         logger.warning("WebSocket token validation failed: %s", e)
@@ -91,7 +103,7 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
     except InvalidTokenError as e:
         logger.warning("WebSocket token validation failed: %s", e)
         await websocket.send_json({"type": "error", "message": "Invalid token"})
-        await websocket.close(code=1008)
+        await websocket.close(code=WS_CLOSE_POLICY_VIOLATION)
         return None
 
     db = SessionLocal()
@@ -99,14 +111,14 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
         if db.scalars(select(BlacklistedToken).where(BlacklistedToken.token == token)).first():
             logger.warning("WebSocket connection attempted with blacklisted token")
             await websocket.send_json({"type": "error", "message": "Token has been revoked"})
-            await websocket.close(code=1008)
+            await websocket.close(code=WS_CLOSE_POLICY_VIOLATION)
             return None
 
         user = db.scalars(select(User).where(User.email == email)).first()
         if not user:
             logger.warning("WebSocket connection attempted for non-existent user")
             await websocket.send_json({"type": "error", "message": "User not found"})
-            await websocket.close(code=1008)
+            await websocket.close(code=WS_CLOSE_POLICY_VIOLATION)
             return None
 
         if epoch != user.session_epoch:
@@ -119,7 +131,7 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
             await websocket.send_json(
                 {"type": "session_invalidated", "reason": "credentials_changed"}
             )
-            await websocket.close(code=4004)
+            await websocket.close(code=WS_CLOSE_SESSION_INVALIDATED)
             return None
 
         device = db.scalars(
@@ -132,7 +144,7 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
                 user.user_id,
             )
             await websocket.send_json({"type": "error", "message": "Unauthorized device"})
-            await websocket.close(code=1008)
+            await websocket.close(code=WS_CLOSE_POLICY_VIOLATION)
             return None
 
         def mutate():
@@ -146,7 +158,6 @@ async def _authenticate_ws(websocket: WebSocket) -> Optional[tuple[str, str, int
 
 
 _last_seen_cache: dict[tuple[str, str], float] = {}
-_LAST_SEEN_THROTTLE_SECONDS = 60.0
 
 
 def _update_device_last_seen(user_id: str, device_id: str, force: bool = False):
@@ -154,7 +165,7 @@ def _update_device_last_seen(user_id: str, device_id: str, force: bool = False):
     now_mono = time.monotonic()
     if not force:
         last_updated = _last_seen_cache.get(key, 0.0)
-        if now_mono - last_updated < _LAST_SEEN_THROTTLE_SECONDS:
+        if now_mono - last_updated < WS_LAST_SEEN_THROTTLE_SECONDS:
             return
 
     session = SessionLocal()
@@ -205,7 +216,7 @@ async def _process_clipboard_message(
                     "message": "This device has been removed from your account",
                 }
             )
-            await websocket.close(code=4003)
+            await websocket.close(code=WS_CLOSE_DEVICE_DELETED)
             return
 
         if clipboard_in.is_deleted:
@@ -285,7 +296,7 @@ async def websocket_sync(websocket: WebSocket):
                 break
 
             try:
-                data = await asyncio.wait_for(websocket.receive_json(), timeout=45)
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=WS_PING_INTERVAL_SECONDS)
             except asyncio.TimeoutError:
                 if datetime.now(timezone.utc).timestamp() >= exp:
                     await _close_token_expired(websocket)
@@ -293,7 +304,7 @@ async def websocket_sync(websocket: WebSocket):
 
                 await websocket.send_json({"type": "ping"})
                 try:
-                    pong = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+                    pong = await asyncio.wait_for(websocket.receive_json(), timeout=WS_PONG_TIMEOUT_SECONDS)
                     if pong.get("type") != "pong":
                         raise ValueError("Invalid pong")
                     await asyncio.to_thread(_update_device_last_seen, user_id, device_id)
@@ -304,7 +315,7 @@ async def websocket_sync(websocket: WebSocket):
                 except Exception as e:
                     logger.warning("WebSocket ping/pong failed: %s", e)
                     try:
-                        await websocket.close(code=4002)
+                        await websocket.close(code=WS_CLOSE_PING_TIMEOUT)
                     except RuntimeError:
                         pass
                     break
@@ -326,7 +337,7 @@ async def websocket_sync(websocket: WebSocket):
         logger.error("WebSocket error: %s", e)
         logger.error(traceback.format_exc())
         try:
-            await websocket.close(code=1011)
+            await websocket.close(code=WS_CLOSE_INTERNAL_ERROR)
         except RuntimeError:
             pass
     finally:

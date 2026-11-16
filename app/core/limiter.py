@@ -14,8 +14,8 @@ from pyrate_limiter import (
 )
 from redis.asyncio import Redis
 
-from app.core.constants import is_trusted_proxy
 from app.core.logging_config import logger
+from app.utilities.network_utils import is_trusted_proxy
 
 _redis_client: Optional[Redis] = None
 

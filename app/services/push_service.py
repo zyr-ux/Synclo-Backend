@@ -20,9 +20,9 @@ from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import select
 
 from app.core.config import Settings
-from app.core.constants import LOOPBACK_HOSTS
-from app.database.engine import SessionLocal, run_in_write_transaction
+from app.core.constants import LOOPBACK_HOSTS, MAX_PUSH_RESPONSE_BYTES
 from app.core.metrics import PUSH_DISPATCHES_TOTAL, PUSH_DURATION_SECONDS
+from app.database.engine import SessionLocal, run_in_write_transaction
 from app.database.models import Device
 
 logger = logging.getLogger("clipboard_sync")
@@ -49,7 +49,6 @@ class EndpointValidationResult:
         return self.status == EndpointValidationStatus.VALID
 
 
-MAX_PUSH_RESPONSE_BYTES = 10 * 1024
 _PUSH_SUBSCRIPTION_PREFIX = "v1:"
 
 _current_pinned_ips: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar(

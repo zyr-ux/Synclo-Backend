@@ -1442,7 +1442,7 @@ When a client exceeds the request limit (typically 5 to 30 requests per minute d
 Loads environment configurations from `.env` files into a static `Settings` class. It performs startup security assertions, validating keys such as `SECRET_KEY`, `REFRESH_TOKEN_HASH_KEY`, `ENVIRONMENT`, `CLIPBOARD_RETENTION_DAYS`, and `HTTPS_ONLY`.
 
 #### [constants.py](app/core/constants.py)
-Defines project-wide size constraints (e.g. max ciphertext length of 64KB, salt lengths) and lists valid protocol and KDF versions.
+Defines project-wide size constraints (e.g. max ciphertext length of 64KB, key/salt bounds), WebSocket close codes, heartbeat timeouts, loopback hosts, push limits, and pre-computed dummy timing hashes.
 
 #### [logging_config.py](app/core/logging_config.py)
 Initializes stdout stream loggers and rotating file log handlers writing logs to the `/app/logs/` folder.
@@ -1494,6 +1494,9 @@ Pure UTC datetime utilities: normalization (`ensure_utc`), ISO 8601 formatting w
 
 #### [crypto_utils.py](app/utilities/crypto_utils.py)
 Low-level cryptographic helpers: HMAC-SHA256 refresh token hashing (`hash_refresh_token`) and strict base64 decoding with validation (`strict_b64decode`).
+
+#### [network_utils.py](app/utilities/network_utils.py)
+Network and reverse proxy identification utilities: evaluates loopback, private, and container subnet IP addresses (`is_trusted_proxy`) for secure header forwarding.
 
 #### [backup_db.py](app/utilities/backup_db.py)
 Implements zero-downtime database backups using SQLite's Online Backup API (`sqlite3.Connection.backup`), encrypts output snapshots using Fernet symmetric encryption with key derivation from `BACKUP_ENCRYPTION_KEY`, manages timestamped backup directories, retention rotation (`BACKUP_RETENTION_COUNT`), and backup health verification.
@@ -1744,6 +1747,7 @@ Synclo-Backend/
 │   │   ├── backup_db.py       # Online SQLite backup and Fernet encryption manager
 │   │   ├── crypto_utils.py    # HMAC token hashing and strict base64 decoding
 │   │   ├── datetime_utils.py  # UTC normalization and ISO 8601 formatting
+│   │   ├── network_utils.py   # Trusted proxy and loopback network detection
 │   │   ├── decrypt_db.py      # Standalone backup decryption CLI tool
 │   │   └── push_providers.json # Allowlist for validated UnifiedPush distributors
 │   ├── websockets/            # Real-time WebSocket engine

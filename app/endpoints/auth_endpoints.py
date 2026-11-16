@@ -14,19 +14,21 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.core.limiter import create_limiter
 from app.core.constants import (
-    MIN_DEVICE_ID_LEN,
-    MAX_DEVICE_ID_LEN,
-    MIN_DEVICE_NAME_LEN,
-    MAX_DEVICE_NAME_LEN,
-    MIN_AUTH_KEY_LEN,
-    MAX_AUTH_KEY_LEN,
-    MIN_SALT_LEN,
-    MAX_SALT_LEN,
-    MIN_MK_LEN,
-    MAX_MK_LEN,
-    MIN_RECOVERY_KEY_VERIFIER_LEN,
-    MAX_RECOVERY_KEY_VERIFIER_LEN,
     ALLOWED_KDF_VERSIONS,
+    DUMMY_BCRYPT_HASH,
+    MAX_AUTH_KEY_LEN,
+    MAX_DEVICE_ID_LEN,
+    MAX_DEVICE_NAME_LEN,
+    MAX_MK_LEN,
+    MAX_RECOVERY_KEY_VERIFIER_LEN,
+    MAX_SALT_LEN,
+    MIN_AUTH_KEY_LEN,
+    MIN_DEVICE_ID_LEN,
+    MIN_DEVICE_NAME_LEN,
+    MIN_MK_LEN,
+    MIN_RECOVERY_KEY_VERIFIER_LEN,
+    MIN_SALT_LEN,
+    WS_CLOSE_SESSION_INVALIDATED,
 )
 from app.database.engine import get_db, run_in_write_transaction
 from app.database.models import User, Device, RefreshToken, BlacklistedToken, Clipboard
@@ -68,9 +70,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = Settings.ACCESS_TOKEN_EXPIRE_MINUTES
 REFRESH_TOKEN_EXPIRE_DAYS = Settings.REFRESH_TOKEN_EXPIRE_DAYS
 
 
-DUMMY_BCRYPT_HASH = bcrypt.hashpw(b"timing_attack_mitigation_dummy_hash", bcrypt.gensalt()).decode(
-    "utf-8"
-)
+
 
 
 def decode_and_validate_blob(value: str, min_len: int, max_len: int, field_name: str) -> bytes:
@@ -212,7 +212,7 @@ async def recover_account(data: AccountRecoveryRequest, db: Session = Depends(ge
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
 
-    await manager.disconnect_user(user.user_id, code=4004)
+    await manager.disconnect_user(user.user_id, code=WS_CLOSE_SESSION_INVALIDATED)
 
     return {
         "access_token": access_token,
@@ -651,7 +651,7 @@ async def change_password(
     run_in_write_transaction(db, mutate)
     db.refresh(current_user)
 
-    await manager.disconnect_user(current_user.user_id, code=4004)
+    await manager.disconnect_user(current_user.user_id, code=WS_CLOSE_SESSION_INVALIDATED)
 
     return {"message": "Password changed successfully. Master key re-wrapped."}
 
@@ -763,7 +763,7 @@ async def update_email(
         message={"type": "email_updated", "email": data.email},
         exclude_device=device_id,
     )
-    await manager.disconnect_user(current_user.user_id, code=4004)
+    await manager.disconnect_user(current_user.user_id, code=WS_CLOSE_SESSION_INVALIDATED)
 
     return {
         "message": "Email updated successfully",

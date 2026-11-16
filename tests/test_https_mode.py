@@ -96,7 +96,7 @@ def test_websocket_reverse_proxied_https_accepted(client, monkeypatch, auth_user
 
 # 8. is_trusted_proxy correctly identifies loopback and private/Docker subnets vs public IPs.
 def test_is_trusted_proxy_recognition():
-    from app.core.constants import is_trusted_proxy
+    from app.utilities.network_utils import is_trusted_proxy
 
     # Loopback
     assert is_trusted_proxy("127.0.0.1") is True
