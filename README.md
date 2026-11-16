@@ -169,12 +169,7 @@ Synclo runs on port `8000`. Expose Synclo to your domain with automatic HTTPS ce
        }
 
        handle @backend {
-           reverse_proxy localhost:8000 {
-               header_up Host {host}
-               header_up X-Real-IP {remote_host}
-               header_up X-Forwarded-For {remote_host}
-               header_up X-Forwarded-Proto {scheme}
-           }
+           reverse_proxy localhost:8000
        }
 
        handle {
@@ -214,14 +209,7 @@ cd Synclo-Backend
 
 Synclo uses [uv](https://docs.astral.sh/uv/) for fast, reproducible Python dependency and virtual environment management.
 
-If you don't have `uv` installed, install it via:
-```bash
-# Linux / macOS
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Windows (PowerShell)
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
+If you don't have `uv` installed, refer to the [official uv installation guide](https://docs.astral.sh/uv/getting-started/installation/) to install it for your operating system.
 
 Initialize the virtual environment and download/install all core runtime dependencies alongside all development packages:
 
@@ -289,20 +277,20 @@ The following environment variables can be configured in your `.env` file or con
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `SECRET_KEY` | *(Required)* | Secret key used for signing JWT access tokens (minimum 32 characters). |
-| `REFRESH_TOKEN_HASH_KEY` | *(Required)* | Secret key used for HMAC hashing of refresh tokens (minimum 16 characters). |
+| `SECRET_KEY` | *(Required)* | Cryptographic secret for signing JWT access tokens and encrypting push subscriptions (min 32 characters). |
+| `REFRESH_TOKEN_HASH_KEY` | *(Required)* | Secret key used for HMAC hashing of refresh tokens before database storage (min 16 characters). |
 | `ALGORITHM` | `HS256` | JWT signing algorithm (`HS256`, `HS384`, or `HS512`). |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | JWT access token expiration time in minutes (allowed range: `1`–`60`). |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | JWT access token lifespan in minutes (allowed range: `1`–`60`). |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `30` | Refresh token lifespan in days before re-authentication is required (allowed range: `1`–`365`). |
-| `DATABASE_URL` | `sqlite:///./data/synclo.db` | SQLAlchemy database connection string (`sqlite:////app/data/synclo.db` in container setups). |
-| `REDIS_URL` | `redis://redis:6379` | Redis connection string for WebSocket pub/sub broadcasting and rate limiting (`redis://localhost:6379` in local dev). |
-| `HTTPS_ONLY` | `false` | Enforces strict HTTPS redirection (`307`), HSTS headers, and secure WebSockets (`WSS`). Defaults to `false` if omitted. |
-| `ENVIRONMENT` | `development` | Deployment environment (`development` or `production`). Production enforces strict push endpoint security constraints. |
-| `CLIPBOARD_RETENTION_DAYS` | `30` | Auto-pruning retention lifecycle in days for unpinned clipboard items (`0` to disable). Pinned items are immune. |
-| `TOMBSTONE_RETENTION_DAYS` | `30` | Retention duration in days for deletion records (tombstones) enabling offline client synchronization. |
-| `BACKUP_ENCRYPTION_KEY` | `None` | Optional Fernet key used by operational backup utilities (`app/utilities/backup_db.py`) to encrypt SQLite database snapshots (`.db.enc`). |
-| `BACKUP_RETENTION_DAYS` | `30` | Retention duration in days for database backup snapshots before automatic pruning. |
-| `BACKUP_DIR` | `data/backups` | Directory path where SQLite database backups are stored. |
+| `DATABASE_URL` | `sqlite:///./data/synclo.db` | SQLAlchemy database connection string (`sqlite:////app/data/synclo.db` in containers). |
+| `REDIS_URL` | `redis://redis:6379` | Redis connection string for real-time WebSocket pub/sub, rate limiting, and cleanup mutexes. |
+| `HTTPS_ONLY` | `false` | Enforces HTTPS redirection (`307`), HSTS headers, secure WebSockets (`WSS`), and HTTPS push distributors. |
+| `ENVIRONMENT` | `development` | Deployment mode (`development` or `production`). In `production`, interactive API docs are disabled. |
+| `CLIPBOARD_RETENTION_DAYS` | `30` | Auto-pruning threshold in days for unpinned clipboard items (`0` disables pruning; pinned items are immune). |
+| `TOMBSTONE_RETENTION_DAYS` | `30` | Soft-deleted tombstone retention limit in days before hard purge. Cursors older than this return `410 Gone`. |
+| `BACKUP_ENCRYPTION_KEY` | `None` | Optional Fernet key used to encrypt SQLite database backup snapshots at rest (`.db.enc`). |
+| `BACKUP_RETENTION_DAYS` | `30` | Retention duration in days for database backup snapshots before automatic rotation. |
+| `BACKUP_DIR` | `data/backups` | Directory path where SQLite database snapshots are stored. |
 
 ---
 
